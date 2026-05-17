@@ -1,0 +1,26 @@
+{
+  "lockfileVersion": 1,
+  "generatedBy": "sksync@0.1.0",
+  "generatedAt": "2026-05-17T00:00:00.000Z",
+  "root": ".",
+  "skills": {
+    "example-skill": {
+      "source": "skills/example-skill",
+      "hash": "sha256-placeholder",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "hash": "sha256-placeholder"
+        }
+      ],
+      "targets": [
+        {
+          "agent": "pi",
+          "scope": "user",
+          "path": "~/.pi/agent/skills/example-skill",
+          "linkType": "symlink"
+        }
+      ]
+    }
+  }
+}
