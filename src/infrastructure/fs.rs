@@ -2,7 +2,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::application::ports::{display_path, LinkStore, LinkStoreError, TargetState};
+use crate::application::ports::{
+    display_path, LinkStore, LinkStoreError, SourceStore, SourceStoreError, TargetState,
+};
 use crate::domain::skill::SourcePath;
 use crate::domain::target::TargetPath;
 
@@ -16,6 +18,19 @@ impl LinkStore for FileSystemLinkStore {
         expected_source: &SourcePath,
     ) -> Result<TargetState, LinkStoreError> {
         inspect_target_path(target.as_path(), expected_source.as_path())
+    }
+}
+
+impl SourceStore for FileSystemLinkStore {
+    fn source_exists(&self, source: &SourcePath) -> Result<bool, SourceStoreError> {
+        match fs::metadata(source.as_path()) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(source_error) => Err(SourceStoreError::Inspect {
+                path: display_path(source.as_path()),
+                source: source_error,
+            }),
+        }
     }
 }
 
