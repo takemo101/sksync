@@ -8,7 +8,9 @@ use thiserror::Error;
 use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
-use crate::application::ports::{display_path, ConfigStore, ConfigStoreError};
+use crate::application::ports::{
+    display_path, ConfigStore, ConfigStoreError, LockfileStore, LockfileStoreError,
+};
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, SUPPORTED_LOCKFILE_VERSION,
@@ -272,6 +274,24 @@ pub fn write_lockfile(
         path: display_path(path),
         source,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct FileLockfileStore {
+    path: PathBuf,
+}
+
+impl FileLockfileStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl LockfileStore for FileLockfileStore {
+    fn write(&self, lockfile: &Lockfile) -> Result<(), LockfileStoreError> {
+        write_lockfile(&self.path, lockfile)
+            .map_err(|error| LockfileStoreError::Write(error.to_string()))
+    }
 }
 
 impl RawLockfile {

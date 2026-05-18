@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use super::config::{ConfigResolveError, ResolvedConfig};
 use crate::domain::agent::AgentKind;
+use crate::domain::lockfile::Lockfile;
 use crate::domain::scope::Scope;
 use crate::domain::skill::SourcePath;
 use crate::domain::target::TargetPath;
@@ -65,6 +66,33 @@ pub trait LinkStore {
 }
 
 #[derive(Debug, Error)]
+pub enum LinkApplyError {
+    #[error("failed to create parent directory {path}: {source}")]
+    CreateParent {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("target already exists at {path}")]
+    TargetExists { path: String },
+    #[error("failed to create symlink {target} -> {source}: {error}")]
+    CreateSymlink {
+        source: String,
+        target: String,
+        #[source]
+        error: std::io::Error,
+    },
+}
+
+pub trait LinkApplier {
+    fn create_symlink(
+        &self,
+        source: &SourcePath,
+        target: &TargetPath,
+    ) -> Result<(), LinkApplyError>;
+}
+
+#[derive(Debug, Error)]
 pub enum SourceStoreError {
     #[error("failed to inspect source {path}: {source}")]
     Inspect {
@@ -95,6 +123,16 @@ pub trait TargetResolver {
         scope: Scope,
         target_dir_override: Option<&Path>,
     ) -> Result<TargetPath, TargetResolverError>;
+}
+
+#[derive(Debug, Error)]
+pub enum LockfileStoreError {
+    #[error("failed to write lockfile: {0}")]
+    Write(String),
+}
+
+pub trait LockfileStore {
+    fn write(&self, lockfile: &Lockfile) -> Result<(), LockfileStoreError>;
 }
 
 pub fn display_path(path: &Path) -> String {

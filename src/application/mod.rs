@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod apply;
 pub mod config;
 pub mod plan;
 pub mod ports;
