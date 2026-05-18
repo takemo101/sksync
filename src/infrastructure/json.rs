@@ -2,15 +2,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{display_path, ConfigStore, ConfigStoreError};
 use crate::domain::agent::AgentKind;
+use crate::domain::lockfile::{
+    Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, SUPPORTED_LOCKFILE_VERSION,
+};
 use crate::domain::scope::Scope;
 use crate::domain::skill::{SkillName, SourcePath};
+use crate::domain::target::TargetPath;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,12 +156,257 @@ impl ConfigStore for FileConfigStore {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum LockfileJsonError {
+    #[error("failed to read lockfile at {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write lockfile at {path}: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse lockfile at {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to serialize lockfile: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("unsupported lockfileVersion {found}; supported version is {supported}")]
+    UnsupportedVersion { found: u32, supported: u32 },
+    #[error("invalid lockfile field: {0}")]
+    InvalidField(String),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLockfile {
+    lockfile_version: u32,
+    generated_by: String,
+    generated_at: String,
+    root: PathBuf,
+    skills: BTreeMap<String, RawLockedSkill>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLockedSkill {
+    source: PathBuf,
+    hash: String,
+    files: Vec<RawLockedFile>,
+    targets: Vec<RawLockedTarget>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLockedFile {
+    path: PathBuf,
+    hash: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLockedTarget {
+    agent: String,
+    scope: String,
+    path: PathBuf,
+    link_type: String,
+}
+
+pub fn read_lockfile(path: impl AsRef<Path>) -> Result<Lockfile, LockfileJsonError> {
+    let path = path.as_ref();
+    let content = std::fs::read_to_string(path).map_err(|source| LockfileJsonError::Read {
+        path: display_path(path),
+        source,
+    })?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).map_err(|source| {
+        LockfileJsonError::Parse {
+            path: display_path(path),
+            source,
+        }
+    })?;
+    reject_unsupported_lockfile_version(&value)?;
+    let raw = serde_json::from_value::<RawLockfile>(value).map_err(|source| {
+        LockfileJsonError::Parse {
+            path: display_path(path),
+            source,
+        }
+    })?;
+
+    raw.try_into_domain()
+}
+
+fn reject_unsupported_lockfile_version(value: &serde_json::Value) -> Result<(), LockfileJsonError> {
+    let Some(found) = value
+        .get("lockfileVersion")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+    else {
+        return Ok(());
+    };
+
+    if found != SUPPORTED_LOCKFILE_VERSION {
+        return Err(LockfileJsonError::UnsupportedVersion {
+            found,
+            supported: SUPPORTED_LOCKFILE_VERSION,
+        });
+    }
+
+    Ok(())
+}
+
+pub fn write_lockfile(
+    path: impl AsRef<Path>,
+    lockfile: &Lockfile,
+) -> Result<(), LockfileJsonError> {
+    let path = path.as_ref();
+    let raw = RawLockfile::from_domain(lockfile);
+    let content = serde_json::to_string_pretty(&raw)?;
+    std::fs::write(path, format!("{content}\n")).map_err(|source| LockfileJsonError::Write {
+        path: display_path(path),
+        source,
+    })
+}
+
+impl RawLockfile {
+    fn try_into_domain(self) -> Result<Lockfile, LockfileJsonError> {
+        if self.lockfile_version != SUPPORTED_LOCKFILE_VERSION {
+            return Err(LockfileJsonError::UnsupportedVersion {
+                found: self.lockfile_version,
+                supported: SUPPORTED_LOCKFILE_VERSION,
+            });
+        }
+
+        let mut skills = BTreeMap::new();
+        for (name, raw_skill) in self.skills {
+            let skill_name = SkillName::new(name.clone()).map_err(|source| {
+                LockfileJsonError::InvalidField(format!("skill name '{name}': {source}"))
+            })?;
+            let source = SourcePath::new(raw_skill.source).map_err(|source| {
+                LockfileJsonError::InvalidField(format!("skill '{name}' source: {source}"))
+            })?;
+            let hash = Digest::new(raw_skill.hash).map_err(|source| {
+                LockfileJsonError::InvalidField(format!("skill '{name}' hash: {source}"))
+            })?;
+            let files = raw_skill
+                .files
+                .into_iter()
+                .map(|file| {
+                    Ok(LockedFile {
+                        path: file.path,
+                        hash: Digest::new(file.hash).map_err(|source| {
+                            LockfileJsonError::InvalidField(format!(
+                                "skill '{name}' file hash: {source}"
+                            ))
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, LockfileJsonError>>()?;
+            let targets = raw_skill
+                .targets
+                .into_iter()
+                .map(|target| {
+                    Ok(LockedTarget {
+                        agent: AgentKind::from_str(&target.agent).map_err(|source| {
+                            LockfileJsonError::InvalidField(format!(
+                                "target agent '{}': {source}",
+                                target.agent
+                            ))
+                        })?,
+                        scope: Scope::from_str(&target.scope).map_err(|source| {
+                            LockfileJsonError::InvalidField(format!(
+                                "target scope '{}': {source}",
+                                target.scope
+                            ))
+                        })?,
+                        path: TargetPath::new(target.path).map_err(|source| {
+                            LockfileJsonError::InvalidField(format!("target path: {source}"))
+                        })?,
+                        link_type: LinkType::from_str(&target.link_type).map_err(|source| {
+                            LockfileJsonError::InvalidField(format!(
+                                "target linkType '{}': {source}",
+                                target.link_type
+                            ))
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, LockfileJsonError>>()?;
+
+            skills.insert(
+                skill_name,
+                LockedSkill {
+                    source,
+                    hash,
+                    files,
+                    targets,
+                },
+            );
+        }
+
+        Ok(Lockfile {
+            generated_by: self.generated_by,
+            generated_at: self.generated_at,
+            root: self.root,
+            skills,
+        })
+    }
+
+    fn from_domain(lockfile: &Lockfile) -> Self {
+        let skills = lockfile
+            .skills
+            .iter()
+            .map(|(name, skill)| {
+                (
+                    name.as_str().to_owned(),
+                    RawLockedSkill {
+                        source: skill.source.as_path().to_path_buf(),
+                        hash: skill.hash.as_str().to_owned(),
+                        files: skill
+                            .files
+                            .iter()
+                            .map(|file| RawLockedFile {
+                                path: file.path.clone(),
+                                hash: file.hash.as_str().to_owned(),
+                            })
+                            .collect(),
+                        targets: skill
+                            .targets
+                            .iter()
+                            .map(|target| RawLockedTarget {
+                                agent: target.agent.as_str().to_owned(),
+                                scope: target.scope.as_str().to_owned(),
+                                path: target.path.as_path().to_path_buf(),
+                                link_type: target.link_type.as_str().to_owned(),
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            lockfile_version: SUPPORTED_LOCKFILE_VERSION,
+            generated_by: lockfile.generated_by.clone(),
+            generated_at: lockfile.generated_at.clone(),
+            root: lockfile.root.clone(),
+            skills,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FileConfigStore, RawConfig};
+    use super::{read_lockfile, write_lockfile, FileConfigStore, LockfileJsonError, RawConfig};
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::ConfigStore;
     use crate::domain::agent::AgentKind;
+    use crate::domain::lockfile::SUPPORTED_LOCKFILE_VERSION;
     use crate::domain::scope::Scope;
     use std::path::Path;
 
@@ -229,5 +479,62 @@ mod tests {
 
         assert_eq!(store.path(), config_path.as_path());
         assert_eq!(config.skills[0].name.as_str(), "example-skill");
+    }
+
+    #[test]
+    fn parses_example_lockfile() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let lockfile_path = temp_dir.path().join("sksync-lock.json");
+        std::fs::write(
+            &lockfile_path,
+            include_str!("../../sksync-lock.example.json"),
+        )
+        .expect("write lockfile fixture");
+
+        let lockfile = read_lockfile(&lockfile_path).expect("example lockfile parses");
+        let (name, skill) = lockfile.skills.iter().next().expect("one locked skill");
+
+        assert_eq!(lockfile.generated_by, "sksync@0.1.0");
+        assert_eq!(lockfile.root, Path::new("."));
+        assert_eq!(name.as_str(), "example-skill");
+        assert_eq!(skill.hash.as_str(), "sha256-placeholder");
+        assert_eq!(skill.targets[0].agent, AgentKind::Pi);
+        assert_eq!(skill.targets[0].scope, Scope::User);
+    }
+
+    #[test]
+    fn lockfile_roundtrips_through_json_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_path = temp_dir.path().join("source-lock.json");
+        let roundtrip_path = temp_dir.path().join("roundtrip-lock.json");
+        std::fs::write(&source_path, include_str!("../../sksync-lock.example.json"))
+            .expect("write source lockfile");
+        let lockfile = read_lockfile(&source_path).expect("read source lockfile");
+
+        write_lockfile(&roundtrip_path, &lockfile).expect("write lockfile");
+        let reread = read_lockfile(&roundtrip_path).expect("read roundtrip lockfile");
+
+        assert_eq!(reread, lockfile);
+    }
+
+    #[test]
+    fn rejects_unsupported_lockfile_version() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let lockfile_path = temp_dir.path().join("sksync-lock.json");
+        std::fs::write(
+            &lockfile_path,
+            include_str!("../../sksync-lock.example.json")
+                .replace("\"lockfileVersion\": 1", "\"lockfileVersion\": 2"),
+        )
+        .expect("write lockfile fixture");
+
+        let error = read_lockfile(&lockfile_path).expect_err("unsupported version fails");
+        assert!(matches!(
+            error,
+            LockfileJsonError::UnsupportedVersion {
+                found: 2,
+                supported: SUPPORTED_LOCKFILE_VERSION,
+            }
+        ));
     }
 }

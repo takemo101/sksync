@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod agent;
+pub mod lockfile;
 pub mod scope;
 pub mod skill;
 pub mod target;
