@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
 use crate::application::config::ResolvedConfig;
+use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::ConfigStore;
 use crate::domain::link_plan::LinkPlan;
@@ -70,7 +71,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
         Command::Check => run_check(),
-        Command::List => not_implemented("list"),
+        Command::List => run_list(),
         Command::Tui => not_implemented("tui"),
     }
 }
@@ -189,6 +190,26 @@ fn run_check() -> Result<()> {
     } else {
         bail!("check found {} problem(s)", report.problems.len())
     }
+}
+
+fn run_list() -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let config = FileConfigStore::new(current_dir.join("sksync.config.json")).load()?;
+    let lockfile = read_lockfile(current_dir.join("sksync-lock.json")).ok();
+    let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
+    let report = list_skills(
+        &config,
+        lockfile.as_ref(),
+        &FileSystemLinkStore,
+        &target_resolver,
+    );
+
+    for line in report.display_lines() {
+        println!("{line}");
+    }
+
+    Ok(())
 }
 
 fn not_implemented(command: &str) -> Result<()> {
