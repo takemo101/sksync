@@ -1,5 +1,13 @@
-use anyhow::{bail, Result};
+use std::path::PathBuf;
+
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
+
+use crate::application::plan::build_link_plan;
+use crate::application::ports::ConfigStore;
+use crate::infrastructure::builtin_agents::TargetPathResolver;
+use crate::infrastructure::fs::FileSystemLinkStore;
+use crate::infrastructure::json::FileConfigStore;
 
 /// sksync command line interface.
 #[derive(Debug, Parser)]
@@ -51,10 +59,7 @@ pub fn run() -> Result<()> {
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init => not_implemented("init"),
-        Command::Plan(args) => {
-            let _dry_run = args.dry_run;
-            not_implemented("plan")
-        }
+        Command::Plan(args) => run_plan(args),
         Command::Apply(args) => {
             let _force = args.force;
             not_implemented("apply")
@@ -63,6 +68,26 @@ fn dispatch(command: Command) -> Result<()> {
         Command::List => not_implemented("list"),
         Command::Tui => not_implemented("tui"),
     }
+}
+
+fn run_plan(_args: PlanArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let config_store = FileConfigStore::new(current_dir.join("sksync.config.json"));
+    let config = config_store.load()?;
+    let fs_store = FileSystemLinkStore;
+    let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
+    let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+
+    if plan.is_empty() {
+        println!("No actions planned.");
+    } else {
+        for line in plan.display_lines() {
+            println!("{line}");
+        }
+    }
+
+    Ok(())
 }
 
 fn not_implemented(command: &str) -> Result<()> {

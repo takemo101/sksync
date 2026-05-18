@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::application::ports::{TargetResolver, TargetResolverError};
 use crate::domain::agent::AgentKind;
 use crate::domain::scope::Scope;
 use crate::domain::target::{TargetPath, TargetPathError};
@@ -53,6 +54,22 @@ impl TargetPathResolver {
         }
 
         raw_target.to_path_buf()
+    }
+}
+
+impl TargetResolver for TargetPathResolver {
+    fn resolve_agent_target(
+        &self,
+        agent: &AgentKind,
+        scope: Scope,
+        target_dir_override: Option<&Path>,
+    ) -> Result<TargetPath, TargetResolverError> {
+        self.resolve(agent, scope, target_dir_override)
+            .map_err(|error| TargetResolverError::Resolve {
+                agent: agent.as_str().to_owned(),
+                scope,
+                message: error.to_string(),
+            })
     }
 }
 
