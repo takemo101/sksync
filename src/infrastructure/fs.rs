@@ -3,7 +3,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::application::ports::{
-    display_path, LinkStore, LinkStoreError, SourceStore, SourceStoreError, TargetState,
+    display_path, LinkApplier, LinkApplyError, LinkStore, LinkStoreError, SourceStore,
+    SourceStoreError, TargetState,
 };
 use crate::domain::skill::SourcePath;
 use crate::domain::target::TargetPath;
@@ -31,6 +32,35 @@ impl SourceStore for FileSystemLinkStore {
                 source: source_error,
             }),
         }
+    }
+}
+
+impl LinkApplier for FileSystemLinkStore {
+    fn create_symlink(
+        &self,
+        source: &SourcePath,
+        target: &TargetPath,
+    ) -> Result<(), LinkApplyError> {
+        if let Some(parent) = target.as_path().parent() {
+            fs::create_dir_all(parent).map_err(|source| LinkApplyError::CreateParent {
+                path: display_path(parent),
+                source,
+            })?;
+        }
+
+        if fs::symlink_metadata(target.as_path()).is_ok() {
+            return Err(LinkApplyError::TargetExists {
+                path: display_path(target.as_path()),
+            });
+        }
+
+        std::os::unix::fs::symlink(source.as_path(), target.as_path()).map_err(|error| {
+            LinkApplyError::CreateSymlink {
+                source: display_path(source.as_path()),
+                target: display_path(target.as_path()),
+                error,
+            }
+        })
     }
 }
 
