@@ -5,4 +5,5 @@
 #![allow(dead_code)]
 
 pub mod builtin_agents;
+pub mod hash;
 pub mod json;
