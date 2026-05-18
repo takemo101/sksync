@@ -30,8 +30,14 @@ shared skill store
   ├─ skills/foo/SKILL.md
   └─ skills/bar/SKILL.md
 
-sksync.config.json
-  └─ agents: pi, claude-code, codex, gemini, opencode
+sksync.config.json / ~/.config/sksync/config.json
+  └─ dependencies: GitHub/local source + target agents
+
+~/.config/sksync/agents.json
+  └─ global-only target directories per agent
+
+sksync update
+  └─ GitHub/local source -> <project>/skills/foo
 
 sksync apply
   ├─ ~/.pi/agent/skills/foo -> <project>/skills/foo
@@ -44,50 +50,61 @@ sksync apply
 | 用語 | 意味 |
 | --- | --- |
 | skill | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート |
-| source | skill の実体ディレクトリ |
+| source | SkillKit-style install source または skill の実体ディレクトリ |
+| dependency | どこから skill を取得し、どの agent へリンクするかの設定 |
 | target | 各エージェントが参照する配置先 |
-| mapping | source をどの agent target にリンクするかの設定 |
+| mapping | agent ごとの target directory 設定 |
 | lockfile | 実際に同期した skill の内容・バージョン・リンク先を固定するファイル |
 
 ## 4. 設定ファイル案
 
-ファイル名: `sksync.config.json`
+`sksync` は設定を2種類に分ける。
+
+1. **install dependency config**: どの source から skill を取得し、どの agent へ symlink するか。project (`sksync.config.json`) と global (`~/.config/sksync/config.json`) の両方で利用できる。
+2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global-only (`~/.config/sksync/agents.json`)。
+
+### install dependency config
 
 ```json
 {
   "$schema": "https://example.com/sksync.schema.json",
   "skillDir": "./skills",
-  "agents": {
-    "pi": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "claude-code": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "codex": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "gemini": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "opencode": {
-      "enabled": true,
-      "scope": "user"
-    }
-  },
-  "skills": {
+  "dependencies": {
     "reviewer": {
-      "source": "./skills/reviewer",
+      "source": "github:owner/repo/skills/reviewer#main",
       "agents": ["pi", "claude-code", "codex"]
     },
     "browser": {
-      "source": "./skills/browser",
+      "source": "https://github.com/owner/repo/tree/main/skills/browser",
       "agents": ["pi", "gemini", "opencode"]
+    },
+    "local-helper": {
+      "source": "./vendor/local-helper",
+      "agents": ["pi"]
     }
+  }
+}
+```
+
+SkillKit と同様に source は短い文字列を基本にする。
+
+```text
+github:owner/repo/path/to/skill#ref
+owner/repo/path/to/skill#ref
+https://github.com/owner/repo/tree/ref/path/to/skill
+./local-skill
+```
+
+内部的には `repo/ref/path` に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。
+
+### global-only agent target mapping
+
+```json
+{
+  "$schema": "https://example.com/sksync.agents.schema.json",
+  "agents": {
+    "pi": { "targetDir": "~/.pi/agent/skills" },
+    "claude-code": { "targetDir": "~/.claude/skills" }
   }
 }
 ```
@@ -95,10 +112,9 @@ sksync apply
 ### 設定方針
 
 - `skillDir` は相対パス可能
-- `skills.*.source` が省略されたら `skillDir/<skillName>` とみなす
-- `agents.*.scope` は `user` / `project` を想定
-- agent ごとの実際の target path は built-in mapping から解決する
-- 必要なら `agents.*.targetDir` で上書きできる
+- `dependencies.*.source` がある skill は `sksync update` で `skillDir/<skillName>` に配置する
+- 既存互換として `skills.*.source` は local-only skill として扱う
+- agent ごとの実際の target path は built-in mapping または global-only `agents.json` から解決する
 
 ## 5. Built-in Agent Mapping 案
 

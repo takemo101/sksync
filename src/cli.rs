@@ -7,17 +7,20 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
-use crate::application::config::ResolvedConfig;
+use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
 use crate::application::init::init_project;
 use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::ConfigStore;
+use crate::application::update::update_dependencies;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
-use crate::infrastructure::json::{read_lockfile, FileConfigStore, FileLockfileStore};
+use crate::infrastructure::json::{
+    read_agent_mappings, read_lockfile, FileConfigStore, FileLockfileStore,
+};
 
 /// sksync command line interface.
 #[derive(Debug, Parser)]
@@ -39,6 +42,8 @@ enum Command {
     Plan(PlanArgs),
     /// Apply the synchronization plan to the filesystem.
     Apply(ApplyArgs),
+    /// Download or refresh dependency skills into skillDir.
+    Update,
     /// Check config, lockfile, hashes, and symlink health.
     Check,
     /// List managed skills and agent link status.
@@ -71,6 +76,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Init => run_init(),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
+        Command::Update => run_update(),
         Command::Check => run_check(),
         Command::List => run_list(),
         Command::Tui => run_tui(),
@@ -110,16 +116,56 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_update() -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config = load_config(&current_dir)?;
+    let report = update_dependencies(&config)?;
+
+    for updated in report.updated {
+        println!(
+            "Updated {} from {} -> {}",
+            updated.name,
+            updated.source,
+            updated.destination.display()
+        );
+    }
+    for skipped in report.skipped {
+        println!("Skipped {skipped}: no dependency source");
+    }
+    Ok(())
+}
+
 fn load_plan() -> Result<(ResolvedConfig, LinkPlan, PathBuf)> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let config_store = FileConfigStore::new(current_dir.join("sksync.config.json"));
-    let config = config_store.load()?;
+    let config = load_config(&current_dir)?;
     let fs_store = FileSystemLinkStore;
     let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
     let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
 
     Ok((config, plan, current_dir))
+}
+
+fn load_config(current_dir: &std::path::Path) -> Result<ResolvedConfig> {
+    let project_config = current_dir.join("sksync.config.json");
+    let global_config = dirs::config_dir().map(|dir| dir.join("sksync/config.json"));
+    let config_path = if project_config.exists() {
+        project_config
+    } else if let Some(path) = global_config.filter(|path| path.exists()) {
+        path
+    } else {
+        project_config
+    };
+
+    let mut config = FileConfigStore::new(config_path).load()?;
+    if let Some(config_dir) = dirs::config_dir() {
+        let mapping_path = config_dir.join("sksync/agents.json");
+        if mapping_path.exists() {
+            let mappings = read_agent_mappings(&mapping_path)?;
+            apply_agent_target_dirs(&mut config, mappings)?;
+        }
+    }
+    Ok(config)
 }
 
 fn print_plan(plan: &LinkPlan) {
@@ -204,7 +250,7 @@ fn run_check() -> Result<()> {
 fn run_list() -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let config = FileConfigStore::new(current_dir.join("sksync.config.json")).load()?;
+    let config = load_config(&current_dir)?;
     let lockfile = read_lockfile(current_dir.join("sksync-lock.json")).ok();
     let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
     let report = list_skills(
@@ -255,7 +301,10 @@ mod tests {
             .map(|subcommand| subcommand.get_name().to_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, ["init", "plan", "apply", "check", "list", "tui"]);
+        assert_eq!(
+            names,
+            ["init", "plan", "apply", "update", "check", "list", "tui"]
+        );
     }
 
     #[test]

@@ -1,32 +1,14 @@
 {
   "$schema": "https://example.com/sksync.schema.json",
   "skillDir": "./skills",
-  "agents": {
-    "pi": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "claude-code": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "codex": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "gemini": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "opencode": {
-      "enabled": true,
-      "scope": "user"
-    }
-  },
-  "skills": {
+  "dependencies": {
     "example-skill": {
-      "source": "./skills/example-skill",
+      "source": "github:owner/repo/path/to/skills/example-skill#main",
       "agents": ["pi", "claude-code", "codex", "gemini", "opencode"]
+    },
+    "local-example": {
+      "source": "./vendor/local-example",
+      "agents": ["pi"]
     }
   }
 }

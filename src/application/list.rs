@@ -99,8 +99,11 @@ pub fn list_skills(
                 continue;
             }
 
-            let target = match target_resolver.resolve_agent_target(agent, agent_config.scope, None)
-            {
+            let target = match target_resolver.resolve_agent_target(
+                agent,
+                agent_config.scope,
+                agent_config.target_dir.as_deref(),
+            ) {
                 Ok(target_dir) => TargetPath::new(target_dir.as_path().join(skill.name.as_str())),
                 Err(error) => {
                     targets.push(ListedTarget {
@@ -209,6 +212,7 @@ mod tests {
                 kind: AgentKind::Pi,
                 enabled: true,
                 scope: Scope::Project,
+                target_dir: None,
             },
         );
         ResolvedConfig {
@@ -217,6 +221,7 @@ mod tests {
             skills: vec![ResolvedSkill {
                 name: SkillName::new("review").unwrap(),
                 source,
+                install_source: None,
                 agents: vec![AgentKind::Pi],
             }],
         }

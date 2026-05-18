@@ -30,6 +30,7 @@ cargo run -- --help
 ```bash
 cargo run -- init
 cargo run -- plan --dry-run
+cargo run -- update
 cargo run -- apply
 cargo run -- check
 cargo run -- list
@@ -58,6 +59,23 @@ cargo run -- init
 
 ```bash
 cargo run -- plan --dry-run
+```
+
+### `sksync update`
+
+`dependencies` に書かれた SkillKit-style source から最新の skill を `skillDir` にダウンロード / コピーします。
+
+```bash
+cargo run -- update
+```
+
+対応する source 例:
+
+```text
+github:owner/repo/path/to/skill#main
+owner/repo/path/to/skill#main
+https://github.com/owner/repo/tree/main/path/to/skill
+./local-skill
 ```
 
 ### `sksync apply`
@@ -94,17 +112,17 @@ cargo run -- list
 
 ### Config / lockfile examples
 
-- [`sksync.config.example.json`](sksync.config.example.json)
+- [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
+- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.config/sksync/agents.json`)
 - [`sksync-lock.example.json`](sksync-lock.example.json)
 
 ## 今後の予定
 
 以下は設計済みですが、CLI MVP ではまだ未実装または placeholder です。
 
-- `sksync install`
-- `sksync tui`
-- TUI 操作フロー
-- registry / GitHub / local path からの skill install
+- `sksync install` / `sksync add`
+- `sksync tui` の追加UX
+- registry / GitLab / gist support
 
 詳細は以下を参照してください。
 
