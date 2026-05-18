@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod apply;
+pub mod check;
 pub mod config;
 pub mod plan;
 pub mod ports;

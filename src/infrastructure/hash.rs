@@ -5,7 +5,9 @@ use sha2::{Digest as ShaDigest, Sha256};
 use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
 
+use crate::application::ports::{SourceHash, SourceHashStore, SourceHashStoreError};
 use crate::domain::lockfile::Digest;
+use crate::domain::skill::SourcePath;
 
 #[derive(Debug, Error)]
 pub enum HashError {
@@ -35,6 +37,22 @@ pub struct DirectoryHash {
 pub struct FileHash {
     pub path: PathBuf,
     pub hash: Digest,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Sha256SourceHashStore;
+
+impl SourceHashStore for Sha256SourceHashStore {
+    fn hash_source(&self, source: &SourcePath) -> Result<SourceHash, SourceHashStoreError> {
+        hash_directory(source.as_path())
+            .map(|directory| SourceHash {
+                hash: directory.hash,
+            })
+            .map_err(|error| SourceHashStoreError::Hash {
+                path: source.as_path().display().to_string(),
+                message: error.to_string(),
+            })
+    }
 }
 
 pub fn hash_directory(source_dir: impl AsRef<Path>) -> Result<DirectoryHash, HashError> {

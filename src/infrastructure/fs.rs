@@ -54,9 +54,14 @@ impl LinkApplier for FileSystemLinkStore {
             });
         }
 
-        std::os::unix::fs::symlink(source.as_path(), target.as_path()).map_err(|error| {
+        let link_source = source
+            .as_path()
+            .canonicalize()
+            .unwrap_or_else(|_| source.as_path().to_path_buf());
+
+        std::os::unix::fs::symlink(&link_source, target.as_path()).map_err(|error| {
             LinkApplyError::CreateSymlink {
-                source: display_path(source.as_path()),
+                source: display_path(&link_source),
                 target: display_path(target.as_path()),
                 error,
             }

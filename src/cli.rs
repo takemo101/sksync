@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
+use crate::application::check::check_lockfile;
 use crate::application::config::ResolvedConfig;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::ConfigStore;
@@ -13,8 +14,8 @@ use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
-use crate::infrastructure::hash::hash_directory;
-use crate::infrastructure::json::{FileConfigStore, FileLockfileStore};
+use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
+use crate::infrastructure::json::{read_lockfile, FileConfigStore, FileLockfileStore};
 
 /// sksync command line interface.
 #[derive(Debug, Parser)]
@@ -68,7 +69,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Init => not_implemented("init"),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
-        Command::Check => not_implemented("check"),
+        Command::Check => run_check(),
         Command::List => not_implemented("list"),
         Command::Tui => not_implemented("tui"),
     }
@@ -172,6 +173,22 @@ fn generated_at() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| format!("unix:{}", duration.as_secs()))
         .unwrap_or_else(|_| "unix:0".to_owned())
+}
+
+fn run_check() -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let lockfile = read_lockfile(current_dir.join("sksync-lock.json"))?;
+    let report = check_lockfile(&lockfile, &Sha256SourceHashStore, &FileSystemLinkStore);
+
+    for line in report.display_lines() {
+        println!("{line}");
+    }
+
+    if report.is_success() {
+        Ok(())
+    } else {
+        bail!("check found {} problem(s)", report.problems.len())
+    }
 }
 
 fn not_implemented(command: &str) -> Result<()> {
