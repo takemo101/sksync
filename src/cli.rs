@@ -73,7 +73,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Apply(args) => run_apply(args),
         Command::Check => run_check(),
         Command::List => run_list(),
-        Command::Tui => not_implemented("tui"),
+        Command::Tui => run_tui(),
     }
 }
 
@@ -221,8 +221,14 @@ fn run_list() -> Result<()> {
     Ok(())
 }
 
-fn not_implemented(command: &str) -> Result<()> {
-    bail!("sksync {command} is not implemented yet")
+fn run_tui() -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let app = crate::tui::app::TuiApp::new(
+        current_dir.clone(),
+        current_dir.join("sksync.config.json").exists(),
+        current_dir.join("sksync-lock.json").exists(),
+    );
+    crate::tui::run(app)
 }
 
 #[cfg(test)]
