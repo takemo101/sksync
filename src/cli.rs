@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
 use crate::application::config::ResolvedConfig;
+use crate::application::init::init_project;
 use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::ConfigStore;
@@ -67,13 +68,21 @@ pub fn run() -> Result<()> {
 
 fn dispatch(command: Command) -> Result<()> {
     match command {
-        Command::Init => not_implemented("init"),
+        Command::Init => run_init(),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
         Command::Check => run_check(),
         Command::List => run_list(),
         Command::Tui => not_implemented("tui"),
     }
+}
+
+fn run_init() -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let result = init_project(&current_dir)?;
+    println!("Created {}", result.config_path.display());
+    println!("Created {}", result.skills_dir.display());
+    Ok(())
 }
 
 fn run_plan(_args: PlanArgs) -> Result<()> {
