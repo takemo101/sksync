@@ -13,28 +13,98 @@
   - opencode
   - pi
 
-## 初期スコープ
+## CLI MVP
 
-まずは設計フェーズとして、以下を定義します。
+現在の実装では、Rust 製 CLI として以下を試せます。
 
-- Rust 製 CLI / TUI アプリケーションとしての構成
-- 設定ファイル形式
-- lockfile 形式
-- built-in agent mapping
-- CLI コマンド案
-- TUI 実行フロー
-- symlink 同期の安全ルール
-
-## 想定コマンド
+### Build
 
 ```bash
-sksync init
-sksync install
-sksync apply
-sksync check
-sksync list
-sksync tui
+cargo build
+cargo test
+cargo run -- --help
 ```
+
+ローカルでコマンドを実行する場合は、以下のように `cargo run --` 経由で起動できます。
+
+```bash
+cargo run -- init
+cargo run -- plan --dry-run
+cargo run -- apply
+cargo run -- check
+cargo run -- list
+```
+
+ビルド済みバイナリを使う場合は `cargo build` 後に `./target/debug/sksync ...` を実行してください。
+
+### `sksync init`
+
+新規プロジェクト用の雛形を作成します。
+
+```bash
+cargo run -- init
+```
+
+作成されるもの:
+
+- `sksync.config.json`
+- `skills/`
+
+既に `sksync.config.json` が存在する場合は上書きせず失敗します。
+
+### `sksync plan --dry-run`
+
+`sksync.config.json` を読み込み、現在の target 状態を検査して、作成予定・同期済み・衝突・drift などを表示します。
+
+```bash
+cargo run -- plan --dry-run
+```
+
+### `sksync apply`
+
+planner の create symlink action だけを実行し、成功後に `sksync-lock.json` を書き出します。
+
+```bash
+cargo run -- apply
+```
+
+### `sksync check`
+
+`sksync-lock.json` と現在状態を比較し、source hash drift、target missing、broken symlink などを検出します。問題がある場合は非ゼロ終了します。
+
+```bash
+cargo run -- check
+```
+
+### `sksync list`
+
+設定済み skill と agent ごとの target path / 状態を一覧表示します。`sksync-lock.json` がある場合は locked hash も表示します。
+
+```bash
+cargo run -- list
+```
+
+### Safety rules
+
+- 既存の通常ファイルは上書きしません。
+- `apply` は create symlink action のみ実行します。
+- conflict / drift / source missing がある場合、`apply` は失敗します。
+- target path の親ディレクトリは必要に応じて作成します。
+- テスト・実行例では一時ディレクトリを使うと安全です。
+
+### Config / lockfile examples
+
+- [`sksync.config.example.json`](sksync.config.example.json)
+- [`sksync-lock.example.json`](sksync-lock.example.json)
+
+## 今後の予定
+
+以下は設計済みですが、CLI MVP ではまだ未実装または placeholder です。
+
+- `sksync install`
+- `sksync tui`
+- TUI 操作フロー
+- registry / GitHub / local path からの skill install
 
 詳細は以下を参照してください。
 
