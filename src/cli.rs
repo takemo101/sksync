@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
+use serde_json::json;
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
@@ -38,18 +40,35 @@ struct Cli {
 enum Command {
     /// Create a starter sksync.config.json and skills directory.
     Init,
+    /// Add a dependency, update it, and apply symlinks.
+    Add(AddArgs),
     /// Show the synchronization plan without changing the filesystem.
     Plan(PlanArgs),
     /// Apply the synchronization plan to the filesystem.
     Apply(ApplyArgs),
     /// Download or refresh dependency skills into skillDir.
-    Update,
+    Update(UpdateArgs),
     /// Check config, lockfile, hashes, and symlink health.
     Check,
     /// List managed skills and agent link status.
     List,
     /// Launch the interactive terminal UI.
     Tui,
+}
+
+#[derive(Debug, Args)]
+struct AddArgs {
+    /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, skills.sh/owner/skill, or ./local-skill.
+    source: String,
+    /// Agent to link into. Can be passed multiple times.
+    #[arg(short, long = "agent", required = true)]
+    agents: Vec<String>,
+    /// Override inferred skill name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Write ~/.config/sksync/config.json instead of ./sksync.config.json.
+    #[arg(long)]
+    global: bool,
 }
 
 #[derive(Debug, Args)]
@@ -66,6 +85,13 @@ struct ApplyArgs {
     force: bool,
 }
 
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     dispatch(cli.command)
@@ -74,9 +100,10 @@ pub fn run() -> Result<()> {
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init => run_init(),
+        Command::Add(args) => run_add(args),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
-        Command::Update => run_update(),
+        Command::Update(args) => run_update(args),
         Command::Check => run_check(),
         Command::List => run_list(),
         Command::Tui => run_tui(),
@@ -91,14 +118,45 @@ fn run_init() -> Result<()> {
     Ok(())
 }
 
+fn run_add(args: AddArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let skill_name = args.name.unwrap_or_else(|| infer_skill_name(&args.source));
+
+    write_dependency_config(
+        &config_path,
+        &skill_name,
+        &args.source,
+        &args.agents,
+        args.global,
+    )?;
+    println!("Added {skill_name} to {}", config_path.display());
+
+    let config = load_config_from_path(&config_path)?;
+    print_update_report(update_dependencies(&config)?);
+    let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
+    let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+    let fs_store = FileSystemLinkStore;
+    let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
+    apply_link_plan(
+        &plan,
+        &lockfile,
+        &fs_store,
+        &lockfile_store,
+        ApplyOptions { force: false },
+    )?;
+    print_plan(&plan);
+    Ok(())
+}
+
 fn run_plan(_args: PlanArgs) -> Result<()> {
-    let (_config, plan, _current_dir) = load_plan()?;
+    let (_config, plan, _current_dir) = load_plan(false)?;
     print_plan(&plan);
     Ok(())
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
-    let (config, plan, current_dir) = load_plan()?;
+    let (config, plan, current_dir) = load_plan(false)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &current_dir)?;
     let fs_store = FileSystemLinkStore;
     let lockfile_store = FileLockfileStore::new(current_dir.join("sksync-lock.json"));
@@ -116,11 +174,14 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_update() -> Result<()> {
+fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let config = load_config(&current_dir)?;
-    let report = update_dependencies(&config)?;
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    print_update_report(update_dependencies(&config)?);
+    Ok(())
+}
 
+fn print_update_report(report: crate::application::update::UpdateReport) {
     for updated in report.updated {
         println!(
             "Updated {} from {} -> {}",
@@ -132,31 +193,42 @@ fn run_update() -> Result<()> {
     for skipped in report.skipped {
         println!("Skipped {skipped}: no dependency source");
     }
-    Ok(())
 }
 
-fn load_plan() -> Result<(ResolvedConfig, LinkPlan, PathBuf)> {
+fn load_plan(global: bool) -> Result<(ResolvedConfig, LinkPlan, PathBuf)> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config = load_config_for_scope(global, &current_dir)?;
+    build_plan_from_config(config, global, &current_dir)
+}
+
+fn build_plan_from_config(
+    config: ResolvedConfig,
+    global: bool,
+    current_dir: &Path,
+) -> Result<(ResolvedConfig, LinkPlan, PathBuf)> {
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let config = load_config(&current_dir)?;
+    let root_dir = if global {
+        config_root_for_global()?
+    } else {
+        current_dir.to_path_buf()
+    };
     let fs_store = FileSystemLinkStore;
-    let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
+    let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
     let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
 
-    Ok((config, plan, current_dir))
+    Ok((config, plan, root_dir))
 }
 
-fn load_config(current_dir: &std::path::Path) -> Result<ResolvedConfig> {
-    let project_config = current_dir.join("sksync.config.json");
-    let global_config = dirs::config_dir().map(|dir| dir.join("sksync/config.json"));
-    let config_path = if project_config.exists() {
-        project_config
-    } else if let Some(path) = global_config.filter(|path| path.exists()) {
-        path
-    } else {
-        project_config
-    };
+fn load_config(current_dir: &Path) -> Result<ResolvedConfig> {
+    load_config_for_scope(false, current_dir)
+}
 
+fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedConfig> {
+    let config_path = config_path_for(global, current_dir)?;
+    load_config_from_path(&config_path)
+}
+
+fn load_config_from_path(config_path: &Path) -> Result<ResolvedConfig> {
     let mut config = FileConfigStore::new(config_path).load()?;
     if let Some(config_dir) = dirs::config_dir() {
         let mapping_path = config_dir.join("sksync/agents.json");
@@ -166,6 +238,96 @@ fn load_config(current_dir: &std::path::Path) -> Result<ResolvedConfig> {
         }
     }
     Ok(config)
+}
+
+fn config_path_for(global: bool, current_dir: &Path) -> Result<PathBuf> {
+    if global {
+        Ok(config_root_for_global()?.join("config.json"))
+    } else {
+        Ok(current_dir.join("sksync.config.json"))
+    }
+}
+
+fn lockfile_path_for(global: bool, current_dir: &Path) -> Result<PathBuf> {
+    if global {
+        Ok(config_root_for_global()?.join("sksync-lock.json"))
+    } else {
+        Ok(current_dir.join("sksync-lock.json"))
+    }
+}
+
+fn config_root_for_global() -> Result<PathBuf> {
+    dirs::config_dir()
+        .map(|dir| dir.join("sksync"))
+        .context("failed to determine global config directory")
+}
+
+fn write_dependency_config(
+    config_path: &Path,
+    skill_name: &str,
+    source: &str,
+    agents: &[String],
+    global: bool,
+) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut value = if config_path.exists() {
+        let content = fs::read_to_string(config_path)
+            .with_context(|| format!("failed to read {}", config_path.display()))?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .with_context(|| format!("failed to parse {}", config_path.display()))?
+    } else {
+        default_config_json(global)?
+    };
+
+    let dependencies = value
+        .as_object_mut()
+        .context("config root must be a JSON object")?
+        .entry("dependencies")
+        .or_insert_with(|| json!({}));
+    let dependencies = dependencies
+        .as_object_mut()
+        .context("dependencies must be a JSON object")?;
+    dependencies.insert(
+        skill_name.to_owned(),
+        json!({
+            "source": source,
+            "agents": agents,
+        }),
+    );
+
+    let content = serde_json::to_string_pretty(&value)?;
+    fs::write(config_path, format!("{content}\n"))
+        .with_context(|| format!("failed to write {}", config_path.display()))
+}
+
+fn default_config_json(global: bool) -> Result<serde_json::Value> {
+    let skill_dir = if global {
+        config_root_for_global()?
+            .join("skills")
+            .display()
+            .to_string()
+    } else {
+        "./skills".to_owned()
+    };
+    Ok(json!({
+        "$schema": "https://example.com/sksync.schema.json",
+        "skillDir": skill_dir,
+        "dependencies": {}
+    }))
+}
+
+fn infer_skill_name(source: &str) -> String {
+    let without_ref = source.split('#').next().unwrap_or(source);
+    let trimmed = without_ref.trim_end_matches('/');
+    trimmed
+        .rsplit('/')
+        .find(|part| !part.is_empty() && *part != "tree")
+        .unwrap_or("skill")
+        .trim_end_matches(".git")
+        .to_owned()
 }
 
 fn print_plan(plan: &LinkPlan) {
@@ -303,7 +465,7 @@ mod tests {
 
         assert_eq!(
             names,
-            ["init", "plan", "apply", "update", "check", "list", "tui"]
+            ["init", "add", "plan", "apply", "update", "check", "list", "tui",]
         );
     }
 

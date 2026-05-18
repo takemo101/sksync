@@ -51,6 +51,12 @@ pub enum UpdateError {
     Git { repo: String, message: String },
     #[error("install source path does not exist for {skill}: {path}")]
     MissingSourcePath { skill: String, path: String },
+    #[error("registry source is not supported yet for {skill}: {registry}/{package}")]
+    UnsupportedRegistry {
+        skill: String,
+        registry: String,
+        package: String,
+    },
 }
 
 pub fn update_dependencies(config: &ResolvedConfig) -> Result<UpdateReport, UpdateError> {
@@ -107,6 +113,11 @@ fn install_to_staging(
             copy_dir_contents(path, staging)?;
             Ok(path.display().to_string())
         }
+        InstallSource::Registry(registry_source) => Err(UpdateError::UnsupportedRegistry {
+            skill: skill.name.as_str().to_owned(),
+            registry: registry_source.registry.clone(),
+            package: registry_source.package.clone(),
+        }),
         InstallSource::Git(git_source) => {
             let clone_dir = staging.join(".repo");
             let mut command = Command::new("git");

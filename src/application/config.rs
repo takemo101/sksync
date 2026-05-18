@@ -71,6 +71,7 @@ pub struct ResolvedSkill {
 pub enum InstallSource {
     Git(GitInstallSource),
     Local(PathBuf),
+    Registry(RegistryInstallSource),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +79,13 @@ pub struct GitInstallSource {
     pub url: String,
     pub reference: Option<String>,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryInstallSource {
+    pub registry: String,
+    pub package: String,
+    pub reference: Option<String>,
 }
 
 pub fn apply_agent_target_dirs(

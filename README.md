@@ -29,6 +29,7 @@ cargo run -- --help
 
 ```bash
 cargo run -- init
+cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- plan --dry-run
 cargo run -- update
 cargo run -- apply
@@ -53,6 +54,22 @@ cargo run -- init
 
 既に `sksync.config.json` が存在する場合は上書きせず失敗します。
 
+### `sksync add`
+
+SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。
+
+```bash
+cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- add github:owner/repo/path/to/skill#main --agent pi
+cargo run -- add ./local-skill --agent pi --agent gemini
+```
+
+`--global` を付けると `~/.config/sksync/config.json` に追加し、グローバル設定として扱います。
+
+```bash
+cargo run -- add owner/repo/path/to/skill --agent pi --global
+```
+
 ### `sksync plan --dry-run`
 
 `sksync.config.json` を読み込み、現在の target 状態を検査して、作成予定・同期済み・衝突・drift などを表示します。
@@ -67,6 +84,7 @@ cargo run -- plan --dry-run
 
 ```bash
 cargo run -- update
+cargo run -- update --global
 ```
 
 対応する source 例:
@@ -75,6 +93,8 @@ cargo run -- update
 github:owner/repo/path/to/skill#main
 owner/repo/path/to/skill#main
 https://github.com/owner/repo/tree/main/path/to/skill
+skills.sh/owner/repo/skill
+registry:owner/repo/skill#version
 ./local-skill
 ```
 

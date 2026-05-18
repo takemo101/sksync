@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::application::config::{
-    ConfigResolveError, GitInstallSource, InstallSource, ResolvedAgent, ResolvedConfig,
-    ResolvedSkill,
+    ConfigResolveError, GitInstallSource, InstallSource, RegistryInstallSource, ResolvedAgent,
+    ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, LockfileStore, LockfileStoreError,
@@ -53,7 +53,7 @@ pub struct RawSkillConfig {
     pub agents: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawDependencyConfig {
     pub source: RawInstallSource,
@@ -61,14 +61,14 @@ pub struct RawDependencyConfig {
     pub agents: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum RawInstallSource {
     Shorthand(String),
     Structured(RawStructuredInstallSource),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawStructuredInstallSource {
     pub provider: Option<String>,
@@ -314,30 +314,45 @@ fn parse_structured_install_source(
     skill: &str,
     source: RawStructuredInstallSource,
 ) -> Result<InstallSource, ConfigResolveError> {
-    if source.provider.as_deref() == Some("local") {
-        let path = source
-            .path
-            .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
-                skill: skill.to_owned(),
-                message: "local source requires path".to_owned(),
+    match source.provider.as_deref() {
+        Some("local") => {
+            let path = source
+                .path
+                .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "local source requires path".to_owned(),
+                })?;
+            Ok(InstallSource::Local(path))
+        }
+        Some("registry") => {
+            let registry = source.url.unwrap_or_else(|| "skills.sh".to_owned());
+            let package = source
+                .repo
+                .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "registry source requires repo/package".to_owned(),
+                })?;
+            Ok(InstallSource::Registry(RegistryInstallSource {
+                registry,
+                package,
+                reference: source.reference,
+            }))
+        }
+        _ => {
+            let repo = source.repo.or(source.url).ok_or_else(|| {
+                ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "git source requires repo or url".to_owned(),
+                }
             })?;
-        return Ok(InstallSource::Local(path));
+            let path = source.path.unwrap_or_else(|| PathBuf::from("."));
+            Ok(InstallSource::Git(GitInstallSource {
+                url: git_url_from_repo(&repo),
+                reference: source.reference,
+                path,
+            }))
+        }
     }
-
-    let repo =
-        source
-            .repo
-            .or(source.url)
-            .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
-                skill: skill.to_owned(),
-                message: "git source requires repo or url".to_owned(),
-            })?;
-    let path = source.path.unwrap_or_else(|| PathBuf::from("."));
-    Ok(InstallSource::Git(GitInstallSource {
-        url: git_url_from_repo(&repo),
-        reference: source.reference,
-        path,
-    }))
 }
 
 fn parse_install_source_string(
@@ -353,6 +368,20 @@ fn parse_install_source_string(
     }
 
     let (body, reference) = split_ref(value);
+    if let Some(package) = body.strip_prefix("registry:") {
+        return Ok(InstallSource::Registry(RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package: package.to_owned(),
+            reference: reference.map(str::to_owned),
+        }));
+    }
+    if body.starts_with("skills.sh/") {
+        return Ok(InstallSource::Registry(RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package: body.trim_start_matches("skills.sh/").to_owned(),
+            reference: reference.map(str::to_owned),
+        }));
+    }
     let body = body.strip_prefix("github:").unwrap_or(body);
     let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
     if parts.len() >= 2 && !body.contains("://") {

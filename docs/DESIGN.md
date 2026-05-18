@@ -47,14 +47,14 @@ sksync apply
 
 ## 3. 用語
 
-| 用語 | 意味 |
-| --- | --- |
-| skill | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート |
-| source | SkillKit-style install source または skill の実体ディレクトリ |
-| dependency | どこから skill を取得し、どの agent へリンクするかの設定 |
-| target | 各エージェントが参照する配置先 |
-| mapping | agent ごとの target directory 設定 |
-| lockfile | 実際に同期した skill の内容・バージョン・リンク先を固定するファイル |
+| 用語       | 意味                                                                |
+| ---------- | ------------------------------------------------------------------- |
+| skill      | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート    |
+| source     | SkillKit-style install source または skill の実体ディレクトリ       |
+| dependency | どこから skill を取得し、どの agent へリンクするかの設定            |
+| target     | 各エージェントが参照する配置先                                      |
+| mapping    | agent ごとの target directory 設定                                  |
+| lockfile   | 実際に同期した skill の内容・バージョン・リンク先を固定するファイル |
 
 ## 4. 設定ファイル案
 
@@ -86,16 +86,18 @@ sksync apply
 }
 ```
 
-SkillKit と同様に source は短い文字列を基本にする。
+SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.config/sksync/config.json` を更新する。
 
 ```text
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
+skills.sh/owner/repo/skill
+registry:owner/repo/skill#version
 ./local-skill
 ```
 
-内部的には `repo/ref/path` に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。
+内部的には `repo/ref/path` または registry source に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` 以外の追加も provider 実装を足すだけにする。
 
 ### global-only agent target mapping
 
@@ -120,13 +122,13 @@ https://github.com/owner/repo/tree/ref/path/to/skill
 
 > 実際のパスは各ツールの仕様確認後に確定する。ここでは初期設計として override 可能な default を置く。
 
-| agent | user scope default | project scope default | 備考 |
-| --- | --- | --- | --- |
-| pi | `~/.pi/agent/skills` | `.pi/agent/skills` | 既存 pi skill 形式に合わせる |
-| claude-code | `~/.claude/skills` | `.claude/skills` | Claude Code の skill 配置先として扱う |
-| codex | `~/.codex/skills` | `.codex/skills` | 将来 instructions 変換が必要かも |
-| gemini | `~/.gemini/skills` | `.gemini/skills` | Gemini CLI 側仕様に合わせて調整 |
-| opencode | `~/.config/opencode/skills` | `.opencode/skills` | OS 差分に注意 |
+| agent       | user scope default          | project scope default | 備考                                  |
+| ----------- | --------------------------- | --------------------- | ------------------------------------- |
+| pi          | `~/.pi/agent/skills`        | `.pi/agent/skills`    | 既存 pi skill 形式に合わせる          |
+| claude-code | `~/.claude/skills`          | `.claude/skills`      | Claude Code の skill 配置先として扱う |
+| codex       | `~/.codex/skills`           | `.codex/skills`       | 将来 instructions 変換が必要かも      |
+| gemini      | `~/.gemini/skills`          | `.gemini/skills`      | Gemini CLI 側仕様に合わせて調整       |
+| opencode    | `~/.config/opencode/skills` | `.opencode/skills`    | OS 差分に注意                         |
 
 ## 6. Lockfile 案
 
@@ -245,16 +247,16 @@ https://github.com/owner/repo/tree/ref/path/to/skill
 
 ### TUI 操作
 
-| key | action |
-| --- | --- |
-| `↑/↓` | skill / agent の移動 |
-| `tab` | pane 切り替え |
+| key     | action                    |
+| ------- | ------------------------- |
+| `↑/↓`   | skill / agent の移動      |
+| `tab`   | pane 切り替え             |
 | `space` | 一時的な enabled 切り替え |
-| `d` | dry-run |
-| `a` | apply |
-| `c` | check |
-| `l` | lockfile 再生成 |
-| `q` | quit |
+| `d`     | dry-run                   |
+| `a`     | apply                     |
+| `c`     | check                     |
+| `l`     | lockfile 再生成           |
+| `q`     | quit                      |
 
 ### TUI の原則
 
@@ -279,16 +281,16 @@ https://github.com/owner/repo/tree/ref/path/to/skill
 
 ### crate 候補
 
-| 用途 | crate |
-| --- | --- |
-| CLI parser | `clap` |
-| config / lockfile serialize | `serde`, `serde_json` |
-| path / home dir 解決 | `dirs`, `shellexpand` |
-| hash | `sha2`, `hex` |
-| glob / walk | `walkdir`, `ignore` |
-| error handling | `anyhow`, `thiserror` |
-| TUI | `ratatui`, `crossterm` |
-| snapshot / temp tests | `insta`, `tempfile` |
+| 用途                        | crate                  |
+| --------------------------- | ---------------------- |
+| CLI parser                  | `clap`                 |
+| config / lockfile serialize | `serde`, `serde_json`  |
+| path / home dir 解決        | `dirs`, `shellexpand`  |
+| hash                        | `sha2`, `hex`          |
+| glob / walk                 | `walkdir`, `ignore`    |
+| error handling              | `anyhow`, `thiserror`  |
+| TUI                         | `ratatui`, `crossterm` |
+| snapshot / temp tests       | `insta`, `tempfile`    |
 
 ### モジュール構成案
 
