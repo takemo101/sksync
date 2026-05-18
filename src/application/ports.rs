@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::config::{ConfigResolveError, ResolvedConfig};
 use crate::domain::agent::AgentKind;
-use crate::domain::lockfile::Lockfile;
+use crate::domain::lockfile::{Digest, Lockfile};
 use crate::domain::scope::Scope;
 use crate::domain::skill::SourcePath;
 use crate::domain::target::TargetPath;
@@ -104,6 +104,21 @@ pub enum SourceStoreError {
 
 pub trait SourceStore {
     fn source_exists(&self, source: &SourcePath) -> Result<bool, SourceStoreError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceHash {
+    pub hash: Digest,
+}
+
+#[derive(Debug, Error)]
+pub enum SourceHashStoreError {
+    #[error("failed to hash source {path}: {message}")]
+    Hash { path: String, message: String },
+}
+
+pub trait SourceHashStore {
+    fn hash_source(&self, source: &SourcePath) -> Result<SourceHash, SourceHashStoreError>;
 }
 
 #[derive(Debug, Error)]
