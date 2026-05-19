@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as GitCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
-use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
+use crate::application::config::{apply_agent_target_dirs, InstallSource, ResolvedConfig};
 use crate::application::init::init_project;
 use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
@@ -42,6 +44,10 @@ enum Command {
     Init,
     /// Add a dependency, update it, and apply symlinks.
     Add(AddArgs),
+    /// Remove a dependency, installed skill, managed symlinks, and lock entry.
+    Remove(RemoveArgs),
+    /// Show dependencies that can be updated.
+    Outdated(OutdatedArgs),
     /// Show the synchronization plan without changing the filesystem.
     Plan(PlanArgs),
     /// Apply the synchronization plan to the filesystem.
@@ -71,6 +77,31 @@ struct AddArgs {
     /// Write ~/.config/sksync/config.json instead of ./sksync.config.json.
     #[arg(long)]
     global: bool,
+}
+
+#[derive(Debug, Args)]
+struct RemoveArgs {
+    /// Skill name to remove.
+    skill: String,
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Remove only from config and lockfile, leaving installed files and symlinks untouched.
+    #[arg(long)]
+    config_only: bool,
+    /// Keep the installed skill directory under skillDir.
+    #[arg(long)]
+    keep_files: bool,
+}
+
+#[derive(Debug, Args)]
+struct OutdatedArgs {
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -130,6 +161,8 @@ fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init => run_init(),
         Command::Add(args) => run_add(args),
+        Command::Remove(args) => run_remove(args),
+        Command::Outdated(args) => run_outdated(args),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
         Command::Install(args) => run_install(args),
@@ -174,6 +207,235 @@ fn run_add(args: AddArgs) -> Result<()> {
     )?;
     print_plan(&plan);
     Ok(())
+}
+
+fn run_remove(args: RemoveArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    let skill = config
+        .skills
+        .iter()
+        .find(|skill| skill.name.as_str() == args.skill);
+    let skill_source = skill.map(|skill| skill.source.as_path().to_path_buf());
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let mut lockfile = read_lockfile(&lockfile_path).ok();
+
+    if !args.config_only {
+        if let Some(locked) = lockfile.as_ref().and_then(|lockfile| {
+            lockfile
+                .skills
+                .get(&crate::domain::skill::SkillName::new(args.skill.clone()).ok()?)
+        }) {
+            remove_managed_symlinks(locked)?;
+        }
+        if !args.keep_files {
+            if let Some(source) = skill_source {
+                if source.exists() {
+                    fs::remove_dir_all(&source).with_context(|| {
+                        format!("failed to remove installed skill {}", source.display())
+                    })?;
+                    println!("Removed {}", source.display());
+                }
+            }
+        }
+    }
+
+    FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
+        .remove_dependency(&args.skill)?;
+    if let Some(lockfile) = &mut lockfile {
+        if let Ok(skill_name) = crate::domain::skill::SkillName::new(args.skill.clone()) {
+            lockfile.skills.remove(&skill_name);
+            FileLockfileStore::new(lockfile_path).write(lockfile)?;
+        }
+    }
+    println!("Removed {}", args.skill);
+    Ok(())
+}
+
+fn remove_managed_symlinks(locked: &LockedSkill) -> Result<()> {
+    for target in &locked.targets {
+        match fs::symlink_metadata(target.path.as_path()) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                if symlink_points_to_locked_source(target.path.as_path(), locked.source.as_path())?
+                {
+                    fs::remove_file(target.path.as_path()).with_context(|| {
+                        format!(
+                            "failed to remove symlink {}",
+                            target.path.as_path().display()
+                        )
+                    })?;
+                    println!("Removed symlink {}", target.path.as_path().display());
+                } else {
+                    println!(
+                        "Skipped symlink not pointing to locked source {}",
+                        target.path.as_path().display()
+                    );
+                }
+            }
+            Ok(_) => {
+                println!(
+                    "Skipped non-symlink target {}",
+                    target.path.as_path().display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect target {}",
+                        target.path.as_path().display()
+                    )
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+fn symlink_points_to_locked_source(target: &Path, source: &Path) -> Result<bool> {
+    let actual = fs::read_link(target)
+        .with_context(|| format!("failed to read symlink {}", target.display()))?;
+    if actual == source {
+        return Ok(true);
+    }
+    let actual_abs = if actual.is_absolute() {
+        actual
+    } else {
+        target
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(actual)
+    };
+    let source_abs = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to determine current directory")?
+            .join(source)
+    };
+    Ok(actual_abs == source_abs
+        || (actual_abs.exists()
+            && source_abs.exists()
+            && fs::canonicalize(actual_abs)? == fs::canonicalize(source_abs)?))
+}
+
+fn run_outdated(args: OutdatedArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let lockfile = read_lockfile(&lockfile_path)?;
+    let rows = collect_outdated(&config, &lockfile);
+    if args.json {
+        let json_rows = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "skill": row.skill,
+                    "current": row.current,
+                    "wanted": row.wanted,
+                    "latest": row.latest,
+                    "source": row.source,
+                    "status": row.status,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&json_rows)?);
+    } else if rows.is_empty() {
+        println!("All skills are up to date.");
+    } else {
+        println!("Skill\tCurrent\tWanted\tLatest\tSource\tStatus");
+        for row in rows {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                row.skill, row.current, row.wanted, row.latest, row.source, row.status
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct OutdatedRow {
+    skill: String,
+    current: String,
+    wanted: String,
+    latest: String,
+    source: String,
+    status: String,
+}
+
+fn collect_outdated(config: &ResolvedConfig, lockfile: &Lockfile) -> Vec<OutdatedRow> {
+    config
+        .skills
+        .iter()
+        .filter_map(|skill| {
+            let locked = lockfile.skills.get(&skill.name)?;
+            match (&skill.install_source, &locked.install_source) {
+                (Some(InstallSource::Git(config_git)), Some(InstallSource::Git(locked_git))) => {
+                    let wanted_ref = config_git.reference.as_deref().unwrap_or("HEAD");
+                    let latest = git_remote_rev(&config_git.url, wanted_ref)
+                        .unwrap_or_else(|error| format!("error: {error}"));
+                    let current = locked_git
+                        .reference
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    if latest == current {
+                        None
+                    } else {
+                        Some(OutdatedRow {
+                            skill: skill.name.as_str().to_owned(),
+                            current,
+                            wanted: wanted_ref.to_owned(),
+                            latest,
+                            source: config_git.url.clone(),
+                            status: "outdated".to_owned(),
+                        })
+                    }
+                }
+                (
+                    Some(InstallSource::Registry(config_registry)),
+                    Some(InstallSource::Registry(locked_registry)),
+                ) => Some(OutdatedRow {
+                    skill: skill.name.as_str().to_owned(),
+                    current: locked_registry
+                        .reference
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_owned()),
+                    wanted: config_registry
+                        .reference
+                        .clone()
+                        .unwrap_or_else(|| "latest".to_owned()),
+                    latest: "unsupported".to_owned(),
+                    source: format!(
+                        "registry:{}/{}",
+                        config_registry.registry, config_registry.package
+                    ),
+                    status: "registry-provider-missing".to_owned(),
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn git_remote_rev(repo: &str, reference: &str) -> Result<String> {
+    let output = GitCommand::new("git")
+        .arg("ls-remote")
+        .arg(repo)
+        .arg(reference)
+        .output()
+        .with_context(|| format!("failed to query remote {repo}"))?;
+    if !output.status.success() {
+        bail!(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("no revision found for {repo} {reference}"))
 }
 
 fn run_plan(args: PlanArgs) -> Result<()> {
@@ -516,7 +778,10 @@ mod tests {
 
         assert_eq!(
             names,
-            ["init", "add", "plan", "apply", "install", "update", "check", "list", "tui",]
+            [
+                "init", "add", "remove", "outdated", "plan", "apply", "install", "update", "check",
+                "list", "tui",
+            ]
         );
     }
 

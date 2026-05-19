@@ -225,24 +225,20 @@ registry:example.com/owner/repo/skill#version
 
 ### `sksync remove <skill>`
 
-将来実装予定。
-
 - config の `dependencies.<skill>` を削除する
 - `skills/<skill>` を削除する
 - sksync が管理している symlink のみ削除する
 - lockfile の該当 entry を削除する
 - `--global` で global config / lockfile を対象にする
-- `--keep-files` / `--config-only` のような安全オプションを検討する
+- `--keep-files` / `--config-only` で削除範囲を制御する
 
 ### `sksync outdated`
 
-将来実装予定。
-
 - config と lockfile を読み込む
 - Git source は lockfile の commit と remote ref の HEAD を比較する
-- registry source は lockfile の resolved version と latest / wanted version を比較する
-- 更新可能な skill を `current / wanted / latest / source` 形式で表示する
-- `--global` と `--json` を検討する
+- registry source は provider 未実装時に `registry-provider-missing` として表示する
+- 更新可能な skill を `current / wanted / latest / source / status` 形式で表示する
+- `--global` と `--json` をサポートする
 
 ### `sksync apply`
 

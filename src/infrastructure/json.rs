@@ -509,6 +509,30 @@ impl DependencyConfigStore for FileDependencyConfigStore {
         source: &str,
         agents: &[String],
     ) -> Result<(), DependencyConfigStoreError> {
+        let mut value = self.load_or_default()?;
+        let dependencies = dependencies_object_mut(&mut value)?;
+        dependencies.insert(
+            skill_name.to_owned(),
+            json!({
+                "source": source,
+                "agents": agents,
+            }),
+        );
+        self.write_value(&value)
+    }
+
+    fn remove_dependency(&self, skill_name: &str) -> Result<(), DependencyConfigStoreError> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let mut value = self.load_or_default()?;
+        dependencies_object_mut(&mut value)?.remove(skill_name);
+        self.write_value(&value)
+    }
+}
+
+impl FileDependencyConfigStore {
+    fn load_or_default(&self) -> Result<serde_json::Value, DependencyConfigStoreError> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| {
                 DependencyConfigStoreError::CreateDir {
@@ -517,7 +541,7 @@ impl DependencyConfigStore for FileDependencyConfigStore {
                 }
             })?;
         }
-        let mut value = if self.path.exists() {
+        if self.path.exists() {
             let content = std::fs::read_to_string(&self.path).map_err(|source| {
                 DependencyConfigStoreError::Read {
                     path: display_path(&self.path),
@@ -529,34 +553,18 @@ impl DependencyConfigStore for FileDependencyConfigStore {
                     path: display_path(&self.path),
                     source,
                 }
-            })?
+            })
         } else {
-            json!({
+            Ok(json!({
                 "$schema": "https://example.com/sksync.schema.json",
                 "skillDir": self.default_skill_dir,
                 "dependencies": {}
-            })
-        };
+            }))
+        }
+    }
 
-        let dependencies = value
-            .as_object_mut()
-            .ok_or_else(|| {
-                DependencyConfigStoreError::InvalidField("config root must be an object".to_owned())
-            })?
-            .entry("dependencies")
-            .or_insert_with(|| json!({}));
-        let dependencies = dependencies.as_object_mut().ok_or_else(|| {
-            DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
-        })?;
-        dependencies.insert(
-            skill_name.to_owned(),
-            json!({
-                "source": source,
-                "agents": agents,
-            }),
-        );
-
-        let content = serde_json::to_string_pretty(&value)?;
+    fn write_value(&self, value: &serde_json::Value) -> Result<(), DependencyConfigStoreError> {
+        let content = serde_json::to_string_pretty(value)?;
         std::fs::write(&self.path, format!("{content}\n")).map_err(|source| {
             DependencyConfigStoreError::Write {
                 path: display_path(&self.path),
@@ -564,6 +572,21 @@ impl DependencyConfigStore for FileDependencyConfigStore {
             }
         })
     }
+}
+
+fn dependencies_object_mut(
+    value: &mut serde_json::Value,
+) -> Result<&mut serde_json::Map<String, serde_json::Value>, DependencyConfigStoreError> {
+    let dependencies = value
+        .as_object_mut()
+        .ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField("config root must be an object".to_owned())
+        })?
+        .entry("dependencies")
+        .or_insert_with(|| json!({}));
+    dependencies.as_object_mut().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
+    })
 }
 
 impl ConfigStore for FileConfigStore {
