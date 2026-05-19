@@ -24,15 +24,22 @@
 - Run dry-run/check/apply from TUI
 - Add confirmation modal before apply
 
-## Phase 3: Portability and install workflow
+## Phase 3: npm-like dependency workflow
 
-- Add install/update/remove workflows
+- Stabilize `add` / `install` / `update` semantics
+- Add `remove <skill>` for dependency, installed skill, lockfile entry, and managed symlink removal
+- Add `outdated` for Git / registry version drift reporting
+- Do not add a `ci` command for now; lockfile-first `install` covers the current reproducibility need
+
+## Phase 4: Portability and install workflow
+
 - Add lockfile migration support
 - Add custom agent mappings
 - Add cross-platform symlink/junction behavior
-
-## Phase 4: Registry or source integrations
-
-- Explore GitHub/local path based skill installation
-- Consider registry-like index only if needed
 - Preserve lockfile reproducibility across machines
+
+## Phase 5: Registry or source integrations
+
+- Implement `registry:skills.sh/<package>` provider
+- Support additional `registry:<host>/<package>#version` providers
+- Explore GitLab / gist sources after GitHub/local/registry are stable

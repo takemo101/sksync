@@ -178,7 +178,22 @@ registry:example.com/owner/repo/skill#version
 ## 7. CLI / TUI コマンド案
 
 `sksync` は Rust 製の単一バイナリとして提供する。
-通常の自動化・CI・スクリプト用途では CLI、手元で状態を確認しながら実行したい場合は TUI を使う。
+通常の自動化・スクリプト用途では CLI、手元で状態を確認しながら実行したい場合は TUI を使う。
+コマンド体系は npm に近い依存管理モデルに寄せる。ただし `ci` 相当のコマンドは現時点では設けない。
+
+### npm-like command model
+
+| command                               | npm analog                      | 役割                                                                                      |
+| ------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `sksync add <source> --agent <agent>` | `npm install <pkg>` / `npm add` | dependency config に追加し、取得・link まで実行する                                       |
+| `sksync install`                      | `npm install`                   | lockfile があれば lockfile を優先して再現し、なければ config から構成して lockfile を作る |
+| `sksync update`                       | `npm update`                    | config の dependencies から最新または指定 version を取得し、lockfile を更新する           |
+| `sksync remove <skill>`               | `npm uninstall`                 | dependency / installed skill / lockfile entry / managed symlink を削除する                |
+| `sksync outdated`                     | `npm outdated`                  | lockfile の resolved source と upstream/latest を比較し、更新可能な skill を表示する      |
+| `sksync apply`                        | sksync specific                 | installed skill から agent target へ symlink を反映する                                   |
+| `sksync check`                        | `npm ls` / health check         | lockfile hash、source、target symlink の drift を検査する                                 |
+| `sksync list`                         | `npm ls`                        | 管理中 skill と agent ごとの link 状態を一覧表示する                                      |
+| `sksync tui`                          | n/a                             | 状態確認と操作を TUI で行う                                                               |
 
 ### `sksync init`
 
@@ -186,14 +201,48 @@ registry:example.com/owner/repo/skill#version
 - `skills/` ディレクトリを作成
 - built-in agent mapping のコメント付き例を出す
 
+### `sksync add <source> --agent <agent>`
+
+- SkillKit-style source を受け取る
+- `dependencies.<skill>` を config に追加する
+- `--agent` は複数指定できる
+- `--global` の場合は `~/.config/sksync/config.json` を更新する
+- 追加後に install/apply 相当の処理を実行する
+
 ### `sksync install`
 
-将来用。
+- lockfile があれば `installSource` を優先して `skills/<name>` を再構成する
+- lockfile がなければ config の dependencies から取得して lockfile を作成する
+- 再構成後に managed symlink を apply する
+- `--global` で global config / lockfile を対象にする
 
-- GitHub repo / local path / registry から skill を追加
-- `skills/` に実体を置く
-- `sksync.config.json` に追加
-- lockfile を更新
+### `sksync update`
+
+- config の dependencies を元に最新または指定 version を取得する
+- Git source は取得後に exact commit SHA に解決し、lockfile に保存する
+- registry source は resolved version / artifact URL / integrity を lockfile に保存する想定
+- `update` 自体は dependency 更新と lockfile 更新を主目的とし、symlink 反映は `install` / `apply` に寄せる
+
+### `sksync remove <skill>`
+
+将来実装予定。
+
+- config の `dependencies.<skill>` を削除する
+- `skills/<skill>` を削除する
+- sksync が管理している symlink のみ削除する
+- lockfile の該当 entry を削除する
+- `--global` で global config / lockfile を対象にする
+- `--keep-files` / `--config-only` のような安全オプションを検討する
+
+### `sksync outdated`
+
+将来実装予定。
+
+- config と lockfile を読み込む
+- Git source は lockfile の commit と remote ref の HEAD を比較する
+- registry source は lockfile の resolved version と latest / wanted version を比較する
+- 更新可能な skill を `current / wanted / latest / source` 形式で表示する
+- `--global` と `--json` を検討する
 
 ### `sksync apply`
 
