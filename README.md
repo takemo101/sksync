@@ -30,6 +30,8 @@ cargo run -- --help
 ```bash
 cargo run -- init
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- remove skill-name
+cargo run -- outdated
 cargo run -- plan --dry-run
 cargo run -- update
 cargo run -- apply
@@ -69,6 +71,27 @@ cargo run -- add ./local-skill --agent pi --agent gemini
 
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --global
+```
+
+### `sksync remove`
+
+指定した skill を dependency config / installed skill directory / managed symlink / lockfile から削除します。
+
+```bash
+cargo run -- remove cuekit-dogfood
+cargo run -- remove cuekit-dogfood --global
+cargo run -- remove cuekit-dogfood --keep-files
+cargo run -- remove cuekit-dogfood --config-only
+```
+
+### `sksync outdated`
+
+lockfile と upstream を比較して、更新可能な skill を表示します。Git source は remote ref の HEAD と lockfile の resolved commit を比較します。Registry source は provider 未実装の場合 `registry-provider-missing` として表示します。
+
+```bash
+cargo run -- outdated
+cargo run -- outdated --global
+cargo run -- outdated --json
 ```
 
 ### `sksync plan --dry-run`
@@ -139,6 +162,8 @@ cargo run -- list --global
 ### Safety rules
 
 - 既存の通常ファイルは上書きしません。
+- `remove` は sksync が管理している symlink だけを削除します。
+- `outdated` は Git source の remote ref と lockfile commit を比較します。
 - `install` は lockfile があれば lockfile の resolved source を優先します。
 - `update` は dependencies から最新を取得して lockfile を更新します。
 - `apply` は create symlink action のみ実行します。

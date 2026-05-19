@@ -27,8 +27,8 @@
 ## Phase 3: npm-like dependency workflow
 
 - Stabilize `add` / `install` / `update` semantics
-- Add `remove <skill>` for dependency, installed skill, lockfile entry, and managed symlink removal
-- Add `outdated` for Git / registry version drift reporting
+- Implement `remove <skill>` for dependency, installed skill, lockfile entry, and managed symlink removal
+- Implement `outdated` for Git drift reporting and registry provider placeholder reporting
 - Do not add a `ci` command for now; lockfile-first `install` covers the current reproducibility need
 
 ## Phase 4: Portability and install workflow
