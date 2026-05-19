@@ -165,13 +165,19 @@ pub enum SkillInstallError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledSkillSource {
+    pub label: String,
+    pub resolved_source: InstallSource,
+}
+
 pub trait SkillInstaller {
     fn install_skill(
         &self,
         source: &InstallSource,
         destination: &Path,
         skill_name: &str,
-    ) -> Result<String, SkillInstallError>;
+    ) -> Result<InstalledSkillSource, SkillInstallError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -626,9 +626,73 @@ struct RawLockfile {
 #[serde(rename_all = "camelCase")]
 struct RawLockedSkill {
     source: PathBuf,
+    #[serde(default)]
+    install_source: Option<RawLockedInstallSource>,
     hash: String,
     files: Vec<RawLockedFile>,
     targets: Vec<RawLockedTarget>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum RawLockedInstallSource {
+    Git {
+        url: String,
+        #[serde(rename = "ref")]
+        reference: Option<String>,
+        path: PathBuf,
+    },
+    Local {
+        path: PathBuf,
+    },
+    Registry {
+        registry: String,
+        package: String,
+        #[serde(rename = "ref")]
+        reference: Option<String>,
+    },
+}
+
+impl RawLockedInstallSource {
+    fn try_into_domain(self) -> Result<InstallSource, LockfileJsonError> {
+        Ok(match self {
+            Self::Git {
+                url,
+                reference,
+                path,
+            } => InstallSource::Git(GitInstallSource {
+                url,
+                reference,
+                path,
+            }),
+            Self::Local { path } => InstallSource::Local(path),
+            Self::Registry {
+                registry,
+                package,
+                reference,
+            } => InstallSource::Registry(RegistryInstallSource {
+                registry,
+                package,
+                reference,
+            }),
+        })
+    }
+
+    fn from_domain(source: &InstallSource) -> Self {
+        match source {
+            InstallSource::Git(git) => Self::Git {
+                url: git.url.clone(),
+                reference: git.reference.clone(),
+                path: git.path.clone(),
+            },
+            InstallSource::Local(path) => Self::Local { path: path.clone() },
+            InstallSource::Registry(registry) => Self::Registry {
+                registry: registry.registry.clone(),
+                package: registry.package.clone(),
+                reference: registry.reference.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -788,6 +852,10 @@ impl RawLockfile {
                 skill_name,
                 LockedSkill {
                     source,
+                    install_source: raw_skill
+                        .install_source
+                        .map(RawLockedInstallSource::try_into_domain)
+                        .transpose()?,
                     hash,
                     files,
                     targets,
@@ -812,6 +880,10 @@ impl RawLockfile {
                     name.as_str().to_owned(),
                     RawLockedSkill {
                         source: skill.source.as_path().to_path_buf(),
+                        install_source: skill
+                            .install_source
+                            .as_ref()
+                            .map(RawLockedInstallSource::from_domain),
                         hash: skill.hash.as_str().to_owned(),
                         files: skill
                             .files
@@ -945,6 +1017,7 @@ mod tests {
         assert_eq!(lockfile.root, Path::new("."));
         assert_eq!(name.as_str(), "example-skill");
         assert_eq!(skill.hash.as_str(), "sha256-placeholder");
+        assert!(skill.install_source.is_some());
         assert_eq!(skill.targets[0].agent, AgentKind::Pi);
         assert_eq!(skill.targets[0].scope, Scope::User);
     }
@@ -971,7 +1044,7 @@ mod tests {
         std::fs::write(
             &lockfile_path,
             include_str!("../../sksync-lock.example.json")
-                .replace("\"lockfileVersion\": 1", "\"lockfileVersion\": 2"),
+                .replace("\"lockfileVersion\": 2", "\"lockfileVersion\": 999"),
         )
         .expect("write lockfile fixture");
 
@@ -979,7 +1052,7 @@ mod tests {
         assert!(matches!(
             error,
             LockfileJsonError::UnsupportedVersion {
-                found: 2,
+                found: 999,
                 supported: SUPPORTED_LOCKFILE_VERSION,
             }
         ));

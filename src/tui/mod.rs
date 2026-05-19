@@ -190,10 +190,16 @@ fn build_lockfile_from_plan(
     for item in &plan.items {
         let hash = hash_directory(item.source.as_path())
             .with_context(|| format!("failed to hash {}", item.source.as_path().display()))?;
+        let skill_config = config
+            .skills
+            .iter()
+            .find(|skill| skill.name == item.skill)
+            .context("planned skill is missing from resolved config")?;
         let entry = skills
             .entry(item.skill.clone())
             .or_insert_with(|| LockedSkill {
                 source: item.source.clone(),
+                install_source: skill_config.install_source.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files

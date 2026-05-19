@@ -80,9 +80,18 @@ cargo run -- plan --dry-run
 cargo run -- plan --global
 ```
 
+### `sksync install`
+
+`sksync-lock.json` があれば lockfile に記録された source を優先して skill を再構成し、symlink まで作成します。lockfile がなければ config から取得して lockfile を作成します。
+
+```bash
+cargo run -- install
+cargo run -- install --global
+```
+
 ### `sksync update`
 
-`dependencies` に書かれた SkillKit-style source から最新の skill を `skillDir` にダウンロード / コピーします。
+`dependencies` に書かれた SkillKit-style source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。
 
 ```bash
 cargo run -- update
@@ -130,6 +139,8 @@ cargo run -- list --global
 ### Safety rules
 
 - 既存の通常ファイルは上書きしません。
+- `install` は lockfile があれば lockfile の resolved source を優先します。
+- `update` は dependencies から最新を取得して lockfile を更新します。
 - `apply` は create symlink action のみ実行します。
 - project config は project scope、`--global` config は user scope として target を解決します。
 - conflict / drift / source missing がある場合、`apply` は失敗します。

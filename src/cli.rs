@@ -8,7 +8,7 @@ use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
 use crate::application::init::init_project;
 use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
-use crate::application::ports::DependencyConfigStore;
+use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::update_dependencies;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
@@ -46,7 +46,9 @@ enum Command {
     Plan(PlanArgs),
     /// Apply the synchronization plan to the filesystem.
     Apply(ApplyArgs),
-    /// Download or refresh dependency skills into skillDir.
+    /// Recreate skills from sksync-lock.json when present, then apply symlinks.
+    Install(InstallArgs),
+    /// Download latest dependency skills and refresh sksync-lock.json.
     Update(UpdateArgs),
     /// Check config, lockfile, hashes, and symlink health.
     Check(CheckArgs),
@@ -92,6 +94,13 @@ struct ApplyArgs {
 }
 
 #[derive(Debug, Args)]
+struct InstallArgs {
+    /// Use ~/.config/sksync/config.json and global lockfile instead of project files.
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
 struct UpdateArgs {
     /// Use ~/.config/sksync/config.json instead of project config.
     #[arg(long)]
@@ -123,6 +132,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Add(args) => run_add(args),
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
+        Command::Install(args) => run_install(args),
         Command::Update(args) => run_update(args),
         Command::Check(args) => run_check(args),
         Command::List(args) => run_list(args),
@@ -147,8 +157,10 @@ fn run_add(args: AddArgs) -> Result<()> {
         .add_dependency(&skill_name, &args.source, &args.agents)?;
     println!("Added {skill_name} to {}", config_path.display());
 
-    let config = load_config_from_path(&config_path, scope_for(args.global))?;
-    print_update_report(update_dependencies(&config, &FileSystemSkillInstaller)?);
+    let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+    let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+    apply_update_report_sources(&mut config, &report);
+    print_update_report(report);
     let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
     let fs_store = FileSystemLinkStore;
@@ -189,11 +201,59 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_install(args: InstallArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let mut config = load_config_for_scope(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    if lockfile_path.exists() {
+        let lockfile = read_lockfile(&lockfile_path)?;
+        apply_locked_install_sources(&mut config, &lockfile);
+    }
+    let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+    apply_update_report_sources(&mut config, &report);
+    print_update_report(report);
+    let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
+    let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+    let fs_store = FileSystemLinkStore;
+    let lockfile_store = FileLockfileStore::new(lockfile_path);
+    apply_link_plan(
+        &plan,
+        &lockfile,
+        &fs_store,
+        &lockfile_store,
+        ApplyOptions { force: false },
+    )?;
+    print_plan(&plan);
+    println!("Wrote sksync-lock.json");
+    Ok(())
+}
+
 fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let config = load_config_for_scope(args.global, &current_dir)?;
-    print_update_report(update_dependencies(&config, &FileSystemSkillInstaller)?);
+    let mut config = load_config_for_scope(args.global, &current_dir)?;
+    let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+    apply_update_report_sources(&mut config, &report);
+    print_update_report(report);
+    let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
+    let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+    FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?).write(&lockfile)?;
+    println!("Wrote sksync-lock.json");
     Ok(())
+}
+
+fn apply_update_report_sources(
+    config: &mut ResolvedConfig,
+    report: &crate::application::update::UpdateReport,
+) {
+    for updated in &report.updated {
+        if let Some(skill) = config
+            .skills
+            .iter_mut()
+            .find(|skill| skill.name.as_str() == updated.name)
+        {
+            skill.install_source = Some(updated.resolved_source.clone());
+        }
+    }
 }
 
 fn print_update_report(report: crate::application::update::UpdateReport) {
@@ -207,6 +267,16 @@ fn print_update_report(report: crate::application::update::UpdateReport) {
     }
     for skipped in report.skipped {
         println!("Skipped {skipped}: no dependency source");
+    }
+}
+
+fn apply_locked_install_sources(config: &mut ResolvedConfig, lockfile: &Lockfile) {
+    for skill in &mut config.skills {
+        if let Some(locked) = lockfile.skills.get(&skill.name) {
+            if let Some(install_source) = &locked.install_source {
+                skill.install_source = Some(install_source.clone());
+            }
+        }
     }
 }
 
@@ -232,10 +302,6 @@ fn build_plan_from_config(
     let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
 
     Ok((config, plan, root_dir))
-}
-
-fn load_config(current_dir: &Path) -> Result<ResolvedConfig> {
-    load_config_for_scope(false, current_dir)
 }
 
 fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedConfig> {
@@ -324,10 +390,16 @@ fn build_lockfile_from_plan(
     for item in &plan.items {
         let hash = hash_directory(item.source.as_path())
             .with_context(|| format!("failed to hash {}", item.source.as_path().display()))?;
+        let skill_config = config
+            .skills
+            .iter()
+            .find(|skill| skill.name == item.skill)
+            .context("planned skill is missing from resolved config")?;
         let entry = skills
             .entry(item.skill.clone())
             .or_insert_with(|| LockedSkill {
                 source: item.source.clone(),
+                install_source: skill_config.install_source.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files
@@ -444,7 +516,7 @@ mod tests {
 
         assert_eq!(
             names,
-            ["init", "add", "plan", "apply", "update", "check", "list", "tui",]
+            ["init", "add", "plan", "apply", "install", "update", "check", "list", "tui",]
         );
     }
 

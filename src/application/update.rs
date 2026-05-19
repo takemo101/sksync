@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use super::config::InstallSource;
 use super::config::ResolvedConfig;
 use super::ports::{SkillInstallError, SkillInstaller};
 
@@ -15,6 +16,7 @@ pub struct UpdateReport {
 pub struct UpdatedSkill {
     pub name: String,
     pub source: String,
+    pub resolved_source: InstallSource,
     pub destination: PathBuf,
 }
 
@@ -39,11 +41,12 @@ pub fn update_dependencies(
             continue;
         };
         let destination = skill.source.as_path().to_path_buf();
-        let source_label =
+        let installed =
             installer.install_skill(install_source, &destination, skill.name.as_str())?;
         report.updated.push(UpdatedSkill {
             name: skill.name.as_str().to_owned(),
-            source: source_label,
+            source: installed.label,
+            resolved_source: installed.resolved_source,
             destination,
         });
     }
@@ -55,7 +58,7 @@ pub fn update_dependencies(
 mod tests {
     use super::update_dependencies;
     use crate::application::config::{InstallSource, ResolvedAgent, ResolvedConfig, ResolvedSkill};
-    use crate::application::ports::{SkillInstallError, SkillInstaller};
+    use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
     use crate::domain::agent::AgentKind;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
@@ -73,9 +76,12 @@ mod tests {
             source: &InstallSource,
             destination: &Path,
             _skill_name: &str,
-        ) -> Result<String, SkillInstallError> {
+        ) -> Result<InstalledSkillSource, SkillInstallError> {
             self.installed.borrow_mut().push(destination.to_path_buf());
-            Ok(format!("{source:?}"))
+            Ok(InstalledSkillSource {
+                label: format!("{source:?}"),
+                resolved_source: source.clone(),
+            })
         }
     }
 
