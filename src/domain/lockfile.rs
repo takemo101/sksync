@@ -4,12 +4,14 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::application::config::InstallSource;
+
 use super::agent::AgentKind;
 use super::scope::Scope;
 use super::skill::{SkillName, SourcePath};
 use super::target::TargetPath;
 
-pub const SUPPORTED_LOCKFILE_VERSION: u32 = 1;
+pub const SUPPORTED_LOCKFILE_VERSION: u32 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DigestError {
@@ -87,6 +89,7 @@ pub struct Lockfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedSkill {
     pub source: SourcePath,
+    pub install_source: Option<InstallSource>,
     pub hash: Digest,
     pub files: Vec<LockedFile>,
     pub targets: Vec<LockedTarget>,

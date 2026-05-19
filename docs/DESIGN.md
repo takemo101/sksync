@@ -97,7 +97,7 @@ registry:example.com/owner/repo/skill#version
 ./local-skill
 ```
 
-内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
+内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
 
 ### global-only agent target mapping
 
@@ -114,9 +114,9 @@ registry:example.com/owner/repo/skill#version
 ### 設定方針
 
 - `skillDir` は相対パス可能
-- `dependencies.*.source` がある skill は `sksync update` で `skillDir/<skillName>` に配置する
+- `dependencies.*.source` がある skill は `sksync update` / `sksync install` で `skillDir/<skillName>` に配置する
 - project config は project scope、global config (`--global`) は user scope として agent target を解決する
-- `sksync plan/apply/check/list/update` は `--global` で global config / lockfile を対象にできる
+- `sksync plan/apply/check/list/install/update` は `--global` で global config / lockfile を対象にできる
 - 既存互換として `skills.*.source` は local-only skill として扱う
 - agent ごとの実際の target path は built-in mapping または global-only `agents.json` から解決する
 

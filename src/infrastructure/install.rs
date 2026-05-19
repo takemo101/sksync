@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::application::config::InstallSource;
-use crate::application::ports::{SkillInstallError, SkillInstaller};
+use crate::application::config::{GitInstallSource, InstallSource};
+use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
 
 #[derive(Debug, Clone, Default)]
 pub struct FileSystemSkillInstaller;
@@ -14,7 +14,7 @@ impl SkillInstaller for FileSystemSkillInstaller {
         source: &InstallSource,
         destination: &Path,
         skill_name: &str,
-    ) -> Result<String, SkillInstallError> {
+    ) -> Result<InstalledSkillSource, SkillInstallError> {
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|error| SkillInstallError::Prepare {
             path: parent.display().to_string(),
@@ -30,13 +30,16 @@ impl SkillInstaller for FileSystemSkillInstaller {
             message: error.to_string(),
         })?;
 
-        let source_label = install_to_staging(source, &staging)?;
+        let installed = install_to_staging(source, &staging)?;
         replace_destination(&staging, destination)?;
-        Ok(source_label)
+        Ok(installed)
     }
 }
 
-fn install_to_staging(source: &InstallSource, staging: &Path) -> Result<String, SkillInstallError> {
+fn install_to_staging(
+    source: &InstallSource,
+    staging: &Path,
+) -> Result<InstalledSkillSource, SkillInstallError> {
     match source {
         InstallSource::Local(path) => {
             if !path.exists() {
@@ -45,7 +48,10 @@ fn install_to_staging(source: &InstallSource, staging: &Path) -> Result<String, 
                 });
             }
             copy_dir_contents(path, staging)?;
-            Ok(path.display().to_string())
+            Ok(InstalledSkillSource {
+                label: path.display().to_string(),
+                resolved_source: source.clone(),
+            })
         }
         InstallSource::Registry(registry_source) => Err(SkillInstallError::UnsupportedRegistry {
             registry: registry_source.registry.clone(),
@@ -83,19 +89,39 @@ fn install_to_staging(source: &InstallSource, staging: &Path) -> Result<String, 
                 });
             }
             copy_dir_contents(&source_path, staging)?;
+            let rev = resolve_git_head(&clone_dir, &git_source.url)?;
             remove_dir(&clone_dir)?;
-            Ok(format!(
-                "{}{}:{}",
-                git_source.url,
-                git_source
-                    .reference
-                    .as_ref()
-                    .map(|reference| format!("#{reference}"))
-                    .unwrap_or_default(),
-                git_source.path.display()
-            ))
+            let resolved_source = InstallSource::Git(GitInstallSource {
+                url: git_source.url.clone(),
+                reference: Some(rev.clone()),
+                path: git_source.path.clone(),
+            });
+            Ok(InstalledSkillSource {
+                label: format!("{}#{}:{}", git_source.url, rev, git_source.path.display()),
+                resolved_source,
+            })
         }
     }
+}
+
+fn resolve_git_head(clone_dir: &Path, repo: &str) -> Result<String, SkillInstallError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(clone_dir)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .map_err(|error| SkillInstallError::Git {
+            repo: repo.to_owned(),
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(SkillInstallError::Git {
+            repo: repo.to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn replace_destination(staging: &Path, destination: &Path) -> Result<(), SkillInstallError> {

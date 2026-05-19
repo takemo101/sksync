@@ -291,6 +291,7 @@ mod tests {
             SkillName::new("review").unwrap(),
             LockedSkill {
                 source: SourcePath::new(&source).unwrap(),
+                install_source: None,
                 hash: Digest::new("sha256-locked").unwrap(),
                 files: Vec::new(),
                 targets: Vec::new(),
