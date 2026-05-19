@@ -368,17 +368,16 @@ fn parse_install_source_string(
     }
 
     let (body, reference) = split_ref(value);
-    if let Some(package) = body.strip_prefix("registry:") {
+    if let Some(registry_source) = body.strip_prefix("registry:") {
+        let (registry, package) = registry_source.split_once('/').ok_or_else(|| {
+            ConfigResolveError::InvalidInstallSource {
+                skill: skill.to_owned(),
+                message: "registry source must be registry:<host>/<package>".to_owned(),
+            }
+        })?;
         return Ok(InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
+            registry: registry.to_owned(),
             package: package.to_owned(),
-            reference: reference.map(str::to_owned),
-        }));
-    }
-    if body.starts_with("skills.sh/") {
-        return Ok(InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
-            package: body.trim_start_matches("skills.sh/").to_owned(),
             reference: reference.map(str::to_owned),
         }));
     }

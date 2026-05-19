@@ -92,12 +92,12 @@ SkillKit と同様に source は短い文字列を基本にする。`sksync add 
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
-skills.sh/owner/repo/skill
-registry:owner/repo/skill#version
+registry:skills.sh/owner/repo/skill#version
+registry:example.com/owner/repo/skill#version
 ./local-skill
 ```
 
-内部的には `repo/ref/path` または registry source に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` 以外の追加も provider 実装を足すだけにする。
+内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
 
 ### global-only agent target mapping
 
