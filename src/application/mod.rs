@@ -11,3 +11,4 @@ pub mod init;
 pub mod list;
 pub mod plan;
 pub mod ports;
+pub mod update;

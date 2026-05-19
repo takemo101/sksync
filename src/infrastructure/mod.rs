@@ -7,4 +7,5 @@
 pub mod builtin_agents;
 pub mod fs;
 pub mod hash;
+pub mod install;
 pub mod json;

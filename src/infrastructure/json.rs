@@ -3,13 +3,16 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use thiserror::Error;
 
 use crate::application::config::{
-    ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
+    ConfigResolveError, GitInstallSource, InstallSource, RegistryInstallSource, ResolvedAgent,
+    ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
-    display_path, ConfigStore, ConfigStoreError, LockfileStore, LockfileStoreError,
+    display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
+    LockfileStore, LockfileStoreError,
 };
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
@@ -24,9 +27,14 @@ use crate::domain::target::TargetPath;
 pub struct RawConfig {
     #[serde(rename = "$schema")]
     pub schema: Option<String>,
+    #[serde(default = "default_skill_dir")]
     pub skill_dir: PathBuf,
+    #[serde(default)]
     pub agents: BTreeMap<String, RawAgentConfig>,
+    #[serde(default)]
     pub skills: BTreeMap<String, RawSkillConfig>,
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, RawDependencyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +42,9 @@ pub struct RawConfig {
 pub struct RawAgentConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_scope")]
     pub scope: String,
+    pub target_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,45 +55,114 @@ pub struct RawSkillConfig {
     pub agents: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawDependencyConfig {
+    pub source: RawInstallSource,
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RawInstallSource {
+    Shorthand(String),
+    Structured(RawStructuredInstallSource),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawStructuredInstallSource {
+    pub provider: Option<String>,
+    pub url: Option<String>,
+    pub repo: Option<String>,
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAgentMappings {
+    #[serde(default)]
+    agents: BTreeMap<String, RawAgentTargetMapping>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawAgentTargetMapping {
+    target_dir: PathBuf,
+}
+
+#[derive(Debug, Error)]
+pub enum AgentMappingJsonError {
+    #[error("failed to read agent mapping at {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse agent mapping at {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+pub fn read_agent_mappings(
+    path: impl AsRef<Path>,
+) -> Result<BTreeMap<String, PathBuf>, AgentMappingJsonError> {
+    let path = path.as_ref();
+    let content = std::fs::read_to_string(path).map_err(|source| AgentMappingJsonError::Read {
+        path: display_path(path),
+        source,
+    })?;
+    let raw = serde_json::from_str::<RawAgentMappings>(&content).map_err(|source| {
+        AgentMappingJsonError::Parse {
+            path: display_path(path),
+            source,
+        }
+    })?;
+    Ok(raw
+        .agents
+        .into_iter()
+        .map(|(name, mapping)| (name, mapping.target_dir))
+        .collect())
+}
+
 fn default_enabled() -> bool {
     true
 }
 
+fn default_scope() -> String {
+    "user".to_owned()
+}
+
+fn default_skill_dir() -> PathBuf {
+    PathBuf::from("./skills")
+}
+
 impl RawConfig {
     pub fn resolve(self) -> Result<ResolvedConfig, ConfigResolveError> {
+        self.resolve_with_default_scope(Scope::User)
+    }
+
+    pub fn resolve_with_default_scope(
+        self,
+        default_dependency_scope: Scope,
+    ) -> Result<ResolvedConfig, ConfigResolveError> {
         let skill_dir = SourcePath::new(self.skill_dir)?;
         let mut agents = BTreeMap::new();
         let mut known_agents = BTreeSet::new();
 
         for (name, raw_agent) in self.agents {
-            let kind = parse_agent_kind(&name)?;
-            let key = kind.as_str().to_owned();
-            let scope = Scope::from_str(&raw_agent.scope).map_err(|source| {
-                ConfigResolveError::InvalidScope {
-                    agent: name.clone(),
-                    source,
-                }
-            })?;
-
-            known_agents.insert(key.clone());
-            agents.insert(
-                key,
-                ResolvedAgent {
-                    kind,
-                    enabled: raw_agent.enabled,
-                    scope,
-                },
-            );
+            upsert_agent(&mut agents, &mut known_agents, name, raw_agent)?;
         }
 
-        let mut skills = Vec::with_capacity(self.skills.len());
+        let mut skills = Vec::with_capacity(self.skills.len() + self.dependencies.len());
         for (name, raw_skill) in self.skills {
-            let skill_name = SkillName::new(name.clone()).map_err(|source| {
-                ConfigResolveError::InvalidSkillName {
-                    name: name.clone(),
-                    source,
-                }
-            })?;
+            let skill_name = parse_skill_name(&name)?;
             let source_path = raw_skill
                 .source
                 .unwrap_or_else(|| skill_dir.as_path().join(skill_name.as_str()));
@@ -93,19 +172,40 @@ impl RawConfig {
                     source,
                 }
             })?;
-            let mut skill_agents = Vec::with_capacity(raw_skill.agents.len());
-
-            for agent in raw_skill.agents {
-                let kind = parse_agent_kind(&agent)?;
-                if !known_agents.contains(kind.as_str()) {
-                    return Err(ConfigResolveError::UnknownAgent { skill: name, agent });
-                }
-                skill_agents.push(kind);
-            }
+            let skill_agents = resolve_skill_agents(&name, raw_skill.agents, &known_agents)?;
 
             skills.push(ResolvedSkill {
                 name: skill_name,
                 source,
+                install_source: None,
+                agents: skill_agents,
+            });
+        }
+
+        for (name, raw_dependency) in self.dependencies {
+            let skill_name = parse_skill_name(&name)?;
+            let source = SourcePath::new(skill_dir.as_path().join(skill_name.as_str())).map_err(
+                |source| ConfigResolveError::InvalidSkillSource {
+                    skill: name.clone(),
+                    source,
+                },
+            )?;
+            let skill_agents = resolve_or_create_dependency_agents(
+                &name,
+                raw_dependency.agents,
+                &mut agents,
+                &mut known_agents,
+                default_dependency_scope,
+            )?;
+            if skill_agents.is_empty() {
+                return Err(ConfigResolveError::MissingAgents { skill: name });
+            }
+            let install_source = parse_install_source(&name, raw_dependency.source)?;
+
+            skills.push(ResolvedSkill {
+                name: skill_name,
+                source,
+                install_source: Some(install_source),
                 agents: skill_agents,
             });
         }
@@ -118,11 +218,238 @@ impl RawConfig {
     }
 }
 
+fn upsert_agent(
+    agents: &mut BTreeMap<String, ResolvedAgent>,
+    known_agents: &mut BTreeSet<String>,
+    name: String,
+    raw_agent: RawAgentConfig,
+) -> Result<(), ConfigResolveError> {
+    let kind = parse_agent_kind(&name)?;
+    let key = kind.as_str().to_owned();
+    let scope =
+        Scope::from_str(&raw_agent.scope).map_err(|source| ConfigResolveError::InvalidScope {
+            agent: name.clone(),
+            source,
+        })?;
+
+    known_agents.insert(key.clone());
+    agents.insert(
+        key,
+        ResolvedAgent {
+            kind,
+            enabled: raw_agent.enabled,
+            scope,
+            target_dir: raw_agent.target_dir,
+        },
+    );
+    Ok(())
+}
+
+fn parse_skill_name(name: &str) -> Result<SkillName, ConfigResolveError> {
+    SkillName::new(name.to_owned()).map_err(|source| ConfigResolveError::InvalidSkillName {
+        name: name.to_owned(),
+        source,
+    })
+}
+
+fn resolve_skill_agents(
+    skill: &str,
+    raw_agents: Vec<String>,
+    known_agents: &BTreeSet<String>,
+) -> Result<Vec<AgentKind>, ConfigResolveError> {
+    let mut skill_agents = Vec::with_capacity(raw_agents.len());
+    for agent in raw_agents {
+        let kind = parse_agent_kind(&agent)?;
+        if !known_agents.contains(kind.as_str()) {
+            return Err(ConfigResolveError::UnknownAgent {
+                skill: skill.to_owned(),
+                agent,
+            });
+        }
+        skill_agents.push(kind);
+    }
+    Ok(skill_agents)
+}
+
+fn resolve_or_create_dependency_agents(
+    skill: &str,
+    raw_agents: Vec<String>,
+    agents: &mut BTreeMap<String, ResolvedAgent>,
+    known_agents: &mut BTreeSet<String>,
+    default_scope: Scope,
+) -> Result<Vec<AgentKind>, ConfigResolveError> {
+    let mut skill_agents = Vec::with_capacity(raw_agents.len());
+    for agent in raw_agents {
+        let kind = parse_agent_kind(&agent)?;
+        let key = kind.as_str().to_owned();
+        if !known_agents.contains(&key) {
+            known_agents.insert(key.clone());
+            agents.insert(
+                key,
+                ResolvedAgent {
+                    kind: kind.clone(),
+                    enabled: true,
+                    scope: default_scope,
+                    target_dir: None,
+                },
+            );
+        }
+        skill_agents.push(kind);
+    }
+    if skill_agents.is_empty() {
+        return Err(ConfigResolveError::MissingAgents {
+            skill: skill.to_owned(),
+        });
+    }
+    Ok(skill_agents)
+}
+
 fn parse_agent_kind(name: &str) -> Result<AgentKind, ConfigResolveError> {
     AgentKind::from_str(name).map_err(|source| ConfigResolveError::InvalidAgentName {
         name: name.to_owned(),
         source,
     })
+}
+
+fn parse_install_source(
+    skill: &str,
+    raw: RawInstallSource,
+) -> Result<InstallSource, ConfigResolveError> {
+    match raw {
+        RawInstallSource::Shorthand(value) => parse_install_source_string(skill, &value),
+        RawInstallSource::Structured(source) => parse_structured_install_source(skill, source),
+    }
+}
+
+fn parse_structured_install_source(
+    skill: &str,
+    source: RawStructuredInstallSource,
+) -> Result<InstallSource, ConfigResolveError> {
+    match source.provider.as_deref() {
+        Some("local") => {
+            let path = source
+                .path
+                .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "local source requires path".to_owned(),
+                })?;
+            Ok(InstallSource::Local(path))
+        }
+        Some("registry") => {
+            let registry = source.url.unwrap_or_else(|| "skills.sh".to_owned());
+            let package = source
+                .repo
+                .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "registry source requires repo/package".to_owned(),
+                })?;
+            Ok(InstallSource::Registry(RegistryInstallSource {
+                registry,
+                package,
+                reference: source.reference,
+            }))
+        }
+        _ => {
+            let repo = source.repo.or(source.url).ok_or_else(|| {
+                ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: "git source requires repo or url".to_owned(),
+                }
+            })?;
+            let path = source.path.unwrap_or_else(|| PathBuf::from("."));
+            Ok(InstallSource::Git(GitInstallSource {
+                url: git_url_from_repo(&repo),
+                reference: source.reference,
+                path,
+            }))
+        }
+    }
+}
+
+fn parse_install_source_string(
+    skill: &str,
+    value: &str,
+) -> Result<InstallSource, ConfigResolveError> {
+    if value.starts_with("./") || value.starts_with("../") || value.starts_with('/') {
+        return Ok(InstallSource::Local(PathBuf::from(value)));
+    }
+
+    if let Some(parsed) = parse_github_tree_url(value) {
+        return Ok(InstallSource::Git(parsed));
+    }
+
+    let (body, reference) = split_ref(value);
+    if let Some(registry_source) = body.strip_prefix("registry:") {
+        let (registry, package) = registry_source.split_once('/').ok_or_else(|| {
+            ConfigResolveError::InvalidInstallSource {
+                skill: skill.to_owned(),
+                message: "registry source must be registry:<host>/<package>".to_owned(),
+            }
+        })?;
+        return Ok(InstallSource::Registry(RegistryInstallSource {
+            registry: registry.to_owned(),
+            package: package.to_owned(),
+            reference: reference.map(str::to_owned),
+        }));
+    }
+    let body = body.strip_prefix("github:").unwrap_or(body);
+    let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() >= 2 && !body.contains("://") {
+        let repo = format!("{}/{}", parts[0], parts[1]);
+        let path = if parts.len() > 2 {
+            parts[2..].join("/")
+        } else {
+            ".".to_owned()
+        };
+        return Ok(InstallSource::Git(GitInstallSource {
+            url: git_url_from_repo(&repo),
+            reference: reference.map(str::to_owned),
+            path: PathBuf::from(path),
+        }));
+    }
+
+    Err(ConfigResolveError::InvalidInstallSource {
+        skill: skill.to_owned(),
+        message: format!("unsupported source '{value}'"),
+    })
+}
+
+fn split_ref(value: &str) -> (&str, Option<&str>) {
+    value
+        .rsplit_once('#')
+        .map_or((value, None), |(body, reference)| (body, Some(reference)))
+}
+
+fn parse_github_tree_url(value: &str) -> Option<GitInstallSource> {
+    let prefix = "https://github.com/";
+    let rest = value.strip_prefix(prefix)?;
+    let (body, reference_override) = split_ref(rest);
+    let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let repo = format!("{}/{}", parts[0], parts[1]);
+    let mut reference = reference_override.map(str::to_owned);
+    let mut path = PathBuf::from(".");
+    if parts.get(2) == Some(&"tree") && parts.len() >= 4 {
+        reference = Some(parts[3].to_owned());
+        if parts.len() > 4 {
+            path = PathBuf::from(parts[4..].join("/"));
+        }
+    }
+    Some(GitInstallSource {
+        url: git_url_from_repo(&repo),
+        reference,
+        path,
+    })
+}
+
+fn git_url_from_repo(repo_or_url: &str) -> String {
+    if repo_or_url.contains("://") || repo_or_url.ends_with(".git") {
+        repo_or_url.to_owned()
+    } else {
+        format!("https://github.com/{repo_or_url}.git")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +464,105 @@ impl FileConfigStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn load_with_default_scope(
+        &self,
+        default_dependency_scope: Scope,
+    ) -> Result<ResolvedConfig, ConfigStoreError> {
+        let content =
+            std::fs::read_to_string(&self.path).map_err(|source| ConfigStoreError::Read {
+                path: display_path(&self.path),
+                source,
+            })?;
+        let raw = serde_json::from_str::<RawConfig>(&content).map_err(|source| {
+            ConfigStoreError::Parse {
+                path: display_path(&self.path),
+                source,
+            }
+        })?;
+
+        raw.resolve_with_default_scope(default_dependency_scope)
+            .map_err(ConfigStoreError::from)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileDependencyConfigStore {
+    path: PathBuf,
+    default_skill_dir: PathBuf,
+}
+
+impl FileDependencyConfigStore {
+    pub fn new(path: impl Into<PathBuf>, default_skill_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            default_skill_dir: default_skill_dir.into(),
+        }
+    }
+}
+
+impl DependencyConfigStore for FileDependencyConfigStore {
+    fn add_dependency(
+        &self,
+        skill_name: &str,
+        source: &str,
+        agents: &[String],
+    ) -> Result<(), DependencyConfigStoreError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                DependencyConfigStoreError::CreateDir {
+                    path: display_path(parent),
+                    source,
+                }
+            })?;
+        }
+        let mut value = if self.path.exists() {
+            let content = std::fs::read_to_string(&self.path).map_err(|source| {
+                DependencyConfigStoreError::Read {
+                    path: display_path(&self.path),
+                    source,
+                }
+            })?;
+            serde_json::from_str::<serde_json::Value>(&content).map_err(|source| {
+                DependencyConfigStoreError::Parse {
+                    path: display_path(&self.path),
+                    source,
+                }
+            })?
+        } else {
+            json!({
+                "$schema": "https://example.com/sksync.schema.json",
+                "skillDir": self.default_skill_dir,
+                "dependencies": {}
+            })
+        };
+
+        let dependencies = value
+            .as_object_mut()
+            .ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField("config root must be an object".to_owned())
+            })?
+            .entry("dependencies")
+            .or_insert_with(|| json!({}));
+        let dependencies = dependencies.as_object_mut().ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
+        })?;
+        dependencies.insert(
+            skill_name.to_owned(),
+            json!({
+                "source": source,
+                "agents": agents,
+            }),
+        );
+
+        let content = serde_json::to_string_pretty(&value)?;
+        std::fs::write(&self.path, format!("{content}\n")).map_err(|source| {
+            DependencyConfigStoreError::Write {
+                path: display_path(&self.path),
+                source,
+            }
+        })
     }
 }
 
@@ -439,9 +865,10 @@ mod tests {
 
         assert_eq!(config.skill_dir.as_path(), Path::new("./skills"));
         assert_eq!(config.agents.len(), 5);
-        assert_eq!(config.skills.len(), 1);
+        assert_eq!(config.skills.len(), 2);
         assert_eq!(config.skills[0].name.as_str(), "example-skill");
         assert_eq!(config.skills[0].agents.len(), 5);
+        assert!(config.skills[0].install_source.is_some());
         assert_eq!(config.agents["pi"].kind, AgentKind::Pi);
         assert_eq!(config.agents["pi"].scope, Scope::User);
     }

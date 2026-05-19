@@ -29,7 +29,9 @@ cargo run -- --help
 
 ```bash
 cargo run -- init
+cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- plan --dry-run
+cargo run -- update
 cargo run -- apply
 cargo run -- check
 cargo run -- list
@@ -52,12 +54,50 @@ cargo run -- init
 
 既に `sksync.config.json` が存在する場合は上書きせず失敗します。
 
+### `sksync add`
+
+SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。
+
+```bash
+cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- add github:owner/repo/path/to/skill#main --agent pi
+cargo run -- add registry:skills.sh/owner/repo/skill#version --agent pi
+cargo run -- add ./local-skill --agent pi --agent gemini
+```
+
+`--global` を付けると `~/.config/sksync/config.json` に追加し、グローバル設定として扱います。
+
+```bash
+cargo run -- add owner/repo/path/to/skill --agent pi --global
+```
+
 ### `sksync plan --dry-run`
 
 `sksync.config.json` を読み込み、現在の target 状態を検査して、作成予定・同期済み・衝突・drift などを表示します。
 
 ```bash
 cargo run -- plan --dry-run
+cargo run -- plan --global
+```
+
+### `sksync update`
+
+`dependencies` に書かれた SkillKit-style source から最新の skill を `skillDir` にダウンロード / コピーします。
+
+```bash
+cargo run -- update
+cargo run -- update --global
+```
+
+対応する source 例:
+
+```text
+github:owner/repo/path/to/skill#main
+owner/repo/path/to/skill#main
+https://github.com/owner/repo/tree/main/path/to/skill
+registry:skills.sh/owner/repo/skill#version
+registry:example.com/owner/repo/skill#version
+./local-skill
 ```
 
 ### `sksync apply`
@@ -66,6 +106,7 @@ planner の create symlink action だけを実行し、成功後に `sksync-lock
 
 ```bash
 cargo run -- apply
+cargo run -- apply --global
 ```
 
 ### `sksync check`
@@ -74,6 +115,7 @@ cargo run -- apply
 
 ```bash
 cargo run -- check
+cargo run -- check --global
 ```
 
 ### `sksync list`
@@ -82,29 +124,31 @@ cargo run -- check
 
 ```bash
 cargo run -- list
+cargo run -- list --global
 ```
 
 ### Safety rules
 
 - 既存の通常ファイルは上書きしません。
 - `apply` は create symlink action のみ実行します。
+- project config は project scope、`--global` config は user scope として target を解決します。
 - conflict / drift / source missing がある場合、`apply` は失敗します。
 - target path の親ディレクトリは必要に応じて作成します。
 - テスト・実行例では一時ディレクトリを使うと安全です。
 
 ### Config / lockfile examples
 
-- [`sksync.config.example.json`](sksync.config.example.json)
+- [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
+- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.config/sksync/agents.json`)
 - [`sksync-lock.example.json`](sksync-lock.example.json)
 
 ## 今後の予定
 
 以下は設計済みですが、CLI MVP ではまだ未実装または placeholder です。
 
-- `sksync install`
-- `sksync tui`
-- TUI 操作フロー
-- registry / GitHub / local path からの skill install
+- `sksync install` / `sksync add`
+- `sksync tui` の追加UX
+- registry / GitLab / gist support
 
 詳細は以下を参照してください。
 

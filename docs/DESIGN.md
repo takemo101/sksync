@@ -30,8 +30,14 @@ shared skill store
   ├─ skills/foo/SKILL.md
   └─ skills/bar/SKILL.md
 
-sksync.config.json
-  └─ agents: pi, claude-code, codex, gemini, opencode
+sksync.config.json / ~/.config/sksync/config.json
+  └─ dependencies: GitHub/local source + target agents
+
+~/.config/sksync/agents.json
+  └─ global-only target directories per agent
+
+sksync update
+  └─ GitHub/local source -> <project>/skills/foo
 
 sksync apply
   ├─ ~/.pi/agent/skills/foo -> <project>/skills/foo
@@ -41,53 +47,66 @@ sksync apply
 
 ## 3. 用語
 
-| 用語 | 意味 |
-| --- | --- |
-| skill | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート |
-| source | skill の実体ディレクトリ |
-| target | 各エージェントが参照する配置先 |
-| mapping | source をどの agent target にリンクするかの設定 |
-| lockfile | 実際に同期した skill の内容・バージョン・リンク先を固定するファイル |
+| 用語       | 意味                                                                |
+| ---------- | ------------------------------------------------------------------- |
+| skill      | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート    |
+| source     | SkillKit-style install source または skill の実体ディレクトリ       |
+| dependency | どこから skill を取得し、どの agent へリンクするかの設定            |
+| target     | 各エージェントが参照する配置先                                      |
+| mapping    | agent ごとの target directory 設定                                  |
+| lockfile   | 実際に同期した skill の内容・バージョン・リンク先を固定するファイル |
 
 ## 4. 設定ファイル案
 
-ファイル名: `sksync.config.json`
+`sksync` は設定を2種類に分ける。
+
+1. **install dependency config**: どの source から skill を取得し、どの agent へ symlink するか。project (`sksync.config.json`) と global (`~/.config/sksync/config.json`) の両方で利用できる。
+2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global-only (`~/.config/sksync/agents.json`)。
+
+### install dependency config
 
 ```json
 {
   "$schema": "https://example.com/sksync.schema.json",
   "skillDir": "./skills",
-  "agents": {
-    "pi": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "claude-code": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "codex": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "gemini": {
-      "enabled": true,
-      "scope": "user"
-    },
-    "opencode": {
-      "enabled": true,
-      "scope": "user"
-    }
-  },
-  "skills": {
+  "dependencies": {
     "reviewer": {
-      "source": "./skills/reviewer",
+      "source": "github:owner/repo/skills/reviewer#main",
       "agents": ["pi", "claude-code", "codex"]
     },
     "browser": {
-      "source": "./skills/browser",
+      "source": "https://github.com/owner/repo/tree/main/skills/browser",
       "agents": ["pi", "gemini", "opencode"]
+    },
+    "local-helper": {
+      "source": "./vendor/local-helper",
+      "agents": ["pi"]
     }
+  }
+}
+```
+
+SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.config/sksync/config.json` を更新する。
+
+```text
+github:owner/repo/path/to/skill#ref
+owner/repo/path/to/skill#ref
+https://github.com/owner/repo/tree/ref/path/to/skill
+registry:skills.sh/owner/repo/skill#version
+registry:example.com/owner/repo/skill#version
+./local-skill
+```
+
+内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化し、`sksync update` が `skillDir/<skillName>` に配置する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
+
+### global-only agent target mapping
+
+```json
+{
+  "$schema": "https://example.com/sksync.agents.schema.json",
+  "agents": {
+    "pi": { "targetDir": "~/.pi/agent/skills" },
+    "claude-code": { "targetDir": "~/.claude/skills" }
   }
 }
 ```
@@ -95,22 +114,23 @@ sksync apply
 ### 設定方針
 
 - `skillDir` は相対パス可能
-- `skills.*.source` が省略されたら `skillDir/<skillName>` とみなす
-- `agents.*.scope` は `user` / `project` を想定
-- agent ごとの実際の target path は built-in mapping から解決する
-- 必要なら `agents.*.targetDir` で上書きできる
+- `dependencies.*.source` がある skill は `sksync update` で `skillDir/<skillName>` に配置する
+- project config は project scope、global config (`--global`) は user scope として agent target を解決する
+- `sksync plan/apply/check/list/update` は `--global` で global config / lockfile を対象にできる
+- 既存互換として `skills.*.source` は local-only skill として扱う
+- agent ごとの実際の target path は built-in mapping または global-only `agents.json` から解決する
 
 ## 5. Built-in Agent Mapping 案
 
 > 実際のパスは各ツールの仕様確認後に確定する。ここでは初期設計として override 可能な default を置く。
 
-| agent | user scope default | project scope default | 備考 |
-| --- | --- | --- | --- |
-| pi | `~/.pi/agent/skills` | `.pi/agent/skills` | 既存 pi skill 形式に合わせる |
-| claude-code | `~/.claude/skills` | `.claude/skills` | Claude Code の skill 配置先として扱う |
-| codex | `~/.codex/skills` | `.codex/skills` | 将来 instructions 変換が必要かも |
-| gemini | `~/.gemini/skills` | `.gemini/skills` | Gemini CLI 側仕様に合わせて調整 |
-| opencode | `~/.config/opencode/skills` | `.opencode/skills` | OS 差分に注意 |
+| agent       | user scope default          | project scope default | 備考                                  |
+| ----------- | --------------------------- | --------------------- | ------------------------------------- |
+| pi          | `~/.pi/agent/skills`        | `.pi/agent/skills`    | 既存 pi skill 形式に合わせる          |
+| claude-code | `~/.claude/skills`          | `.claude/skills`      | Claude Code の skill 配置先として扱う |
+| codex       | `~/.codex/skills`           | `.codex/skills`       | 将来 instructions 変換が必要かも      |
+| gemini      | `~/.gemini/skills`          | `.gemini/skills`      | Gemini CLI 側仕様に合わせて調整       |
+| opencode    | `~/.config/opencode/skills` | `.opencode/skills`    | OS 差分に注意                         |
 
 ## 6. Lockfile 案
 
@@ -229,16 +249,16 @@ sksync apply
 
 ### TUI 操作
 
-| key | action |
-| --- | --- |
-| `↑/↓` | skill / agent の移動 |
-| `tab` | pane 切り替え |
+| key     | action                    |
+| ------- | ------------------------- |
+| `↑/↓`   | skill / agent の移動      |
+| `tab`   | pane 切り替え             |
 | `space` | 一時的な enabled 切り替え |
-| `d` | dry-run |
-| `a` | apply |
-| `c` | check |
-| `l` | lockfile 再生成 |
-| `q` | quit |
+| `d`     | dry-run                   |
+| `a`     | apply                     |
+| `c`     | check                     |
+| `l`     | lockfile 再生成           |
+| `q`     | quit                      |
 
 ### TUI の原則
 
@@ -263,16 +283,16 @@ sksync apply
 
 ### crate 候補
 
-| 用途 | crate |
-| --- | --- |
-| CLI parser | `clap` |
-| config / lockfile serialize | `serde`, `serde_json` |
-| path / home dir 解決 | `dirs`, `shellexpand` |
-| hash | `sha2`, `hex` |
-| glob / walk | `walkdir`, `ignore` |
-| error handling | `anyhow`, `thiserror` |
-| TUI | `ratatui`, `crossterm` |
-| snapshot / temp tests | `insta`, `tempfile` |
+| 用途                        | crate                  |
+| --------------------------- | ---------------------- |
+| CLI parser                  | `clap`                 |
+| config / lockfile serialize | `serde`, `serde_json`  |
+| path / home dir 解決        | `dirs`, `shellexpand`  |
+| hash                        | `sha2`, `hex`          |
+| glob / walk                 | `walkdir`, `ignore`    |
+| error handling              | `anyhow`, `thiserror`  |
+| TUI                         | `ratatui`, `crossterm` |
+| snapshot / temp tests       | `insta`, `tempfile`    |
 
 ### モジュール構成案
 

@@ -47,8 +47,11 @@ pub fn build_link_plan(
                 continue;
             }
 
-            let target_dir =
-                target_resolver.resolve_agent_target(agent, agent_config.scope, None)?;
+            let target_dir = target_resolver.resolve_agent_target(
+                agent,
+                agent_config.scope,
+                agent_config.target_dir.as_deref(),
+            )?;
             let target = TargetPath::new(target_dir.as_path().join(skill.name.as_str()))?;
             let action = if source_exists {
                 inspect_action(link_store, &target, &skill.source)?
@@ -157,6 +160,7 @@ mod tests {
                 kind: AgentKind::Pi,
                 enabled: true,
                 scope: Scope::User,
+                target_dir: None,
             },
         );
 
@@ -166,6 +170,7 @@ mod tests {
             skills: vec![ResolvedSkill {
                 name: SkillName::new("review").unwrap(),
                 source: SourcePath::new("skills/review").unwrap(),
+                install_source: None,
                 agents: vec![AgentKind::Pi],
             }],
         }

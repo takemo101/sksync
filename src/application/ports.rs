@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::config::{ConfigResolveError, ResolvedConfig};
+use super::config::{ConfigResolveError, InstallSource, ResolvedConfig};
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{Digest, Lockfile};
 use crate::domain::scope::Scope;
@@ -29,6 +29,47 @@ pub enum ConfigStoreError {
 
 pub trait ConfigStore {
     fn load(&self) -> Result<ResolvedConfig, ConfigStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum DependencyConfigStoreError {
+    #[error("failed to read config at {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to create config directory {path}: {source}")]
+    CreateDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config at {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("invalid config field: {0}")]
+    InvalidField(String),
+    #[error("failed to serialize config: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("failed to write config at {path}: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+pub trait DependencyConfigStore {
+    fn add_dependency(
+        &self,
+        skill_name: &str,
+        source: &str,
+        agents: &[String],
+    ) -> Result<(), DependencyConfigStoreError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +145,33 @@ pub enum SourceStoreError {
 
 pub trait SourceStore {
     fn source_exists(&self, source: &SourcePath) -> Result<bool, SourceStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum SkillInstallError {
+    #[error("failed to prepare destination {path}: {message}")]
+    Prepare { path: String, message: String },
+    #[error("install source path does not exist: {path}")]
+    MissingSourcePath { path: String },
+    #[error("git command failed for {repo}: {message}")]
+    Git { repo: String, message: String },
+    #[error("registry source is not supported yet: {registry}/{package}")]
+    UnsupportedRegistry { registry: String, package: String },
+    #[error("failed to copy {from} to {to}: {message}")]
+    Copy {
+        from: String,
+        to: String,
+        message: String,
+    },
+}
+
+pub trait SkillInstaller {
+    fn install_skill(
+        &self,
+        source: &InstallSource,
+        destination: &Path,
+        skill_name: &str,
+    ) -> Result<String, SkillInstallError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

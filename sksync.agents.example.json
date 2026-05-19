@@ -1,0 +1,20 @@
+{
+  "$schema": "https://example.com/sksync.agents.schema.json",
+  "agents": {
+    "pi": {
+      "targetDir": "~/.pi/agent/skills"
+    },
+    "claude-code": {
+      "targetDir": "~/.claude/skills"
+    },
+    "codex": {
+      "targetDir": "~/.codex/skills"
+    },
+    "gemini": {
+      "targetDir": "~/.gemini/skills"
+    },
+    "opencode": {
+      "targetDir": "~/.config/opencode/skills"
+    }
+  }
+}
