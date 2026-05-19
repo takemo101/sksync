@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use thiserror::Error;
 
 use crate::application::config::{
@@ -10,7 +11,8 @@ use crate::application::config::{
     ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
-    display_path, ConfigStore, ConfigStoreError, LockfileStore, LockfileStoreError,
+    display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
+    LockfileStore, LockfileStoreError,
 };
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
@@ -143,6 +145,13 @@ fn default_skill_dir() -> PathBuf {
 
 impl RawConfig {
     pub fn resolve(self) -> Result<ResolvedConfig, ConfigResolveError> {
+        self.resolve_with_default_scope(Scope::User)
+    }
+
+    pub fn resolve_with_default_scope(
+        self,
+        default_dependency_scope: Scope,
+    ) -> Result<ResolvedConfig, ConfigResolveError> {
         let skill_dir = SourcePath::new(self.skill_dir)?;
         let mut agents = BTreeMap::new();
         let mut known_agents = BTreeSet::new();
@@ -186,6 +195,7 @@ impl RawConfig {
                 raw_dependency.agents,
                 &mut agents,
                 &mut known_agents,
+                default_dependency_scope,
             )?;
             if skill_agents.is_empty() {
                 return Err(ConfigResolveError::MissingAgents { skill: name });
@@ -266,6 +276,7 @@ fn resolve_or_create_dependency_agents(
     raw_agents: Vec<String>,
     agents: &mut BTreeMap<String, ResolvedAgent>,
     known_agents: &mut BTreeSet<String>,
+    default_scope: Scope,
 ) -> Result<Vec<AgentKind>, ConfigResolveError> {
     let mut skill_agents = Vec::with_capacity(raw_agents.len());
     for agent in raw_agents {
@@ -278,7 +289,7 @@ fn resolve_or_create_dependency_agents(
                 ResolvedAgent {
                     kind: kind.clone(),
                     enabled: true,
-                    scope: Scope::User,
+                    scope: default_scope,
                     target_dir: None,
                 },
             );
@@ -453,6 +464,105 @@ impl FileConfigStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn load_with_default_scope(
+        &self,
+        default_dependency_scope: Scope,
+    ) -> Result<ResolvedConfig, ConfigStoreError> {
+        let content =
+            std::fs::read_to_string(&self.path).map_err(|source| ConfigStoreError::Read {
+                path: display_path(&self.path),
+                source,
+            })?;
+        let raw = serde_json::from_str::<RawConfig>(&content).map_err(|source| {
+            ConfigStoreError::Parse {
+                path: display_path(&self.path),
+                source,
+            }
+        })?;
+
+        raw.resolve_with_default_scope(default_dependency_scope)
+            .map_err(ConfigStoreError::from)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileDependencyConfigStore {
+    path: PathBuf,
+    default_skill_dir: PathBuf,
+}
+
+impl FileDependencyConfigStore {
+    pub fn new(path: impl Into<PathBuf>, default_skill_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            default_skill_dir: default_skill_dir.into(),
+        }
+    }
+}
+
+impl DependencyConfigStore for FileDependencyConfigStore {
+    fn add_dependency(
+        &self,
+        skill_name: &str,
+        source: &str,
+        agents: &[String],
+    ) -> Result<(), DependencyConfigStoreError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                DependencyConfigStoreError::CreateDir {
+                    path: display_path(parent),
+                    source,
+                }
+            })?;
+        }
+        let mut value = if self.path.exists() {
+            let content = std::fs::read_to_string(&self.path).map_err(|source| {
+                DependencyConfigStoreError::Read {
+                    path: display_path(&self.path),
+                    source,
+                }
+            })?;
+            serde_json::from_str::<serde_json::Value>(&content).map_err(|source| {
+                DependencyConfigStoreError::Parse {
+                    path: display_path(&self.path),
+                    source,
+                }
+            })?
+        } else {
+            json!({
+                "$schema": "https://example.com/sksync.schema.json",
+                "skillDir": self.default_skill_dir,
+                "dependencies": {}
+            })
+        };
+
+        let dependencies = value
+            .as_object_mut()
+            .ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField("config root must be an object".to_owned())
+            })?
+            .entry("dependencies")
+            .or_insert_with(|| json!({}));
+        let dependencies = dependencies.as_object_mut().ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
+        })?;
+        dependencies.insert(
+            skill_name.to_owned(),
+            json!({
+                "source": source,
+                "agents": agents,
+            }),
+        );
+
+        let content = serde_json::to_string_pretty(&value)?;
+        std::fs::write(&self.path, format!("{content}\n")).map_err(|source| {
+            DependencyConfigStoreError::Write {
+                path: display_path(&self.path),
+                source,
+            }
+        })
     }
 }
 

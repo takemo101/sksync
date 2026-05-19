@@ -115,6 +115,8 @@ registry:example.com/owner/repo/skill#version
 
 - `skillDir` は相対パス可能
 - `dependencies.*.source` がある skill は `sksync update` で `skillDir/<skillName>` に配置する
+- project config は project scope、global config (`--global`) は user scope として agent target を解決する
+- `sksync plan/apply/check/list/update` は `--global` で global config / lockfile を対象にできる
 - 既存互換として `skills.*.source` は local-only skill として扱う
 - agent ごとの実際の target path は built-in mapping または global-only `agents.json` から解決する
 

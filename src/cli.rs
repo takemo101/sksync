@@ -1,11 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
-use serde_json::json;
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
@@ -13,16 +8,21 @@ use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
 use crate::application::init::init_project;
 use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
-use crate::application::ports::ConfigStore;
+use crate::application::ports::DependencyConfigStore;
 use crate::application::update::update_dependencies;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
+use crate::domain::scope::Scope;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
+use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
-    read_agent_mappings, read_lockfile, FileConfigStore, FileLockfileStore,
+    read_agent_mappings, read_lockfile, FileConfigStore, FileDependencyConfigStore,
+    FileLockfileStore,
 };
+use anyhow::{bail, Context, Result};
+use clap::{Args, Parser, Subcommand};
 
 /// sksync command line interface.
 #[derive(Debug, Parser)]
@@ -49,9 +49,9 @@ enum Command {
     /// Download or refresh dependency skills into skillDir.
     Update(UpdateArgs),
     /// Check config, lockfile, hashes, and symlink health.
-    Check,
+    Check(CheckArgs),
     /// List managed skills and agent link status.
-    List,
+    List(ListArgs),
     /// Launch the interactive terminal UI.
     Tui,
 }
@@ -76,6 +76,9 @@ struct PlanArgs {
     /// Explicitly run in dry-run mode.
     #[arg(long)]
     dry_run: bool,
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
 }
 
 #[derive(Debug, Args)]
@@ -83,11 +86,28 @@ struct ApplyArgs {
     /// Allow replacing existing sksync-managed links when it is safe to do so.
     #[arg(long)]
     force: bool,
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
 }
 
 #[derive(Debug, Args)]
 struct UpdateArgs {
     /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
+struct ListArgs {
+    /// Use ~/.config/sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
+struct CheckArgs {
+    /// Use ~/.config/sksync/sksync-lock.json instead of project lockfile.
     #[arg(long)]
     global: bool,
 }
@@ -104,8 +124,8 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Plan(args) => run_plan(args),
         Command::Apply(args) => run_apply(args),
         Command::Update(args) => run_update(args),
-        Command::Check => run_check(),
-        Command::List => run_list(),
+        Command::Check(args) => run_check(args),
+        Command::List(args) => run_list(args),
         Command::Tui => run_tui(),
     }
 }
@@ -123,17 +143,12 @@ fn run_add(args: AddArgs) -> Result<()> {
     let config_path = config_path_for(args.global, &current_dir)?;
     let skill_name = args.name.unwrap_or_else(|| infer_skill_name(&args.source));
 
-    write_dependency_config(
-        &config_path,
-        &skill_name,
-        &args.source,
-        &args.agents,
-        args.global,
-    )?;
+    FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
+        .add_dependency(&skill_name, &args.source, &args.agents)?;
     println!("Added {skill_name} to {}", config_path.display());
 
-    let config = load_config_from_path(&config_path)?;
-    print_update_report(update_dependencies(&config)?);
+    let config = load_config_from_path(&config_path, scope_for(args.global))?;
+    print_update_report(update_dependencies(&config, &FileSystemSkillInstaller)?);
     let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
     let fs_store = FileSystemLinkStore;
@@ -149,17 +164,17 @@ fn run_add(args: AddArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_plan(_args: PlanArgs) -> Result<()> {
-    let (_config, plan, _current_dir) = load_plan(false)?;
+fn run_plan(args: PlanArgs) -> Result<()> {
+    let (_config, plan, _current_dir) = load_plan(args.global)?;
     print_plan(&plan);
     Ok(())
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
-    let (config, plan, current_dir) = load_plan(false)?;
+    let (config, plan, current_dir) = load_plan(args.global)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &current_dir)?;
     let fs_store = FileSystemLinkStore;
-    let lockfile_store = FileLockfileStore::new(current_dir.join("sksync-lock.json"));
+    let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
 
     apply_link_plan(
         &plan,
@@ -177,7 +192,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
 fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config = load_config_for_scope(args.global, &current_dir)?;
-    print_update_report(update_dependencies(&config)?);
+    print_update_report(update_dependencies(&config, &FileSystemSkillInstaller)?);
     Ok(())
 }
 
@@ -225,11 +240,11 @@ fn load_config(current_dir: &Path) -> Result<ResolvedConfig> {
 
 fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedConfig> {
     let config_path = config_path_for(global, current_dir)?;
-    load_config_from_path(&config_path)
+    load_config_from_path(&config_path, scope_for(global))
 }
 
-fn load_config_from_path(config_path: &Path) -> Result<ResolvedConfig> {
-    let mut config = FileConfigStore::new(config_path).load()?;
+fn load_config_from_path(config_path: &Path, default_scope: Scope) -> Result<ResolvedConfig> {
+    let mut config = FileConfigStore::new(config_path).load_with_default_scope(default_scope)?;
     if let Some(config_dir) = dirs::config_dir() {
         let mapping_path = config_dir.join("sksync/agents.json");
         if mapping_path.exists() {
@@ -238,6 +253,14 @@ fn load_config_from_path(config_path: &Path) -> Result<ResolvedConfig> {
         }
     }
     Ok(config)
+}
+
+fn scope_for(global: bool) -> Scope {
+    if global {
+        Scope::User
+    } else {
+        Scope::Project
+    }
 }
 
 fn config_path_for(global: bool, current_dir: &Path) -> Result<PathBuf> {
@@ -262,61 +285,12 @@ fn config_root_for_global() -> Result<PathBuf> {
         .context("failed to determine global config directory")
 }
 
-fn write_dependency_config(
-    config_path: &Path,
-    skill_name: &str,
-    source: &str,
-    agents: &[String],
-    global: bool,
-) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
+    if global {
+        Ok(config_root_for_global()?.join("skills"))
+    } else {
+        Ok(PathBuf::from("./skills"))
     }
-    let mut value = if config_path.exists() {
-        let content = fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?;
-        serde_json::from_str::<serde_json::Value>(&content)
-            .with_context(|| format!("failed to parse {}", config_path.display()))?
-    } else {
-        default_config_json(global)?
-    };
-
-    let dependencies = value
-        .as_object_mut()
-        .context("config root must be a JSON object")?
-        .entry("dependencies")
-        .or_insert_with(|| json!({}));
-    let dependencies = dependencies
-        .as_object_mut()
-        .context("dependencies must be a JSON object")?;
-    dependencies.insert(
-        skill_name.to_owned(),
-        json!({
-            "source": source,
-            "agents": agents,
-        }),
-    );
-
-    let content = serde_json::to_string_pretty(&value)?;
-    fs::write(config_path, format!("{content}\n"))
-        .with_context(|| format!("failed to write {}", config_path.display()))
-}
-
-fn default_config_json(global: bool) -> Result<serde_json::Value> {
-    let skill_dir = if global {
-        config_root_for_global()?
-            .join("skills")
-            .display()
-            .to_string()
-    } else {
-        "./skills".to_owned()
-    };
-    Ok(json!({
-        "$schema": "https://example.com/sksync.schema.json",
-        "skillDir": skill_dir,
-        "dependencies": {}
-    }))
 }
 
 fn infer_skill_name(source: &str) -> String {
@@ -393,9 +367,9 @@ fn generated_at() -> String {
         .unwrap_or_else(|_| "unix:0".to_owned())
 }
 
-fn run_check() -> Result<()> {
+fn run_check(args: CheckArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let lockfile = read_lockfile(current_dir.join("sksync-lock.json"))?;
+    let lockfile = read_lockfile(lockfile_path_for(args.global, &current_dir)?)?;
     let report = check_lockfile(&lockfile, &Sha256SourceHashStore, &FileSystemLinkStore);
 
     for line in report.display_lines() {
@@ -409,12 +383,17 @@ fn run_check() -> Result<()> {
     }
 }
 
-fn run_list() -> Result<()> {
+fn run_list(args: ListArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let config = load_config(&current_dir)?;
-    let lockfile = read_lockfile(current_dir.join("sksync-lock.json")).ok();
-    let target_resolver = TargetPathResolver::new(&current_dir, home_dir);
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let lockfile = read_lockfile(lockfile_path_for(args.global, &current_dir)?).ok();
+    let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
     let report = list_skills(
         &config,
         lockfile.as_ref(),

@@ -77,6 +77,7 @@ cargo run -- add owner/repo/path/to/skill --agent pi --global
 
 ```bash
 cargo run -- plan --dry-run
+cargo run -- plan --global
 ```
 
 ### `sksync update`
@@ -105,6 +106,7 @@ planner の create symlink action だけを実行し、成功後に `sksync-lock
 
 ```bash
 cargo run -- apply
+cargo run -- apply --global
 ```
 
 ### `sksync check`
@@ -113,6 +115,7 @@ cargo run -- apply
 
 ```bash
 cargo run -- check
+cargo run -- check --global
 ```
 
 ### `sksync list`
@@ -121,12 +124,14 @@ cargo run -- check
 
 ```bash
 cargo run -- list
+cargo run -- list --global
 ```
 
 ### Safety rules
 
 - 既存の通常ファイルは上書きしません。
 - `apply` は create symlink action のみ実行します。
+- project config は project scope、`--global` config は user scope として target を解決します。
 - conflict / drift / source missing がある場合、`apply` は失敗します。
 - target path の親ディレクトリは必要に応じて作成します。
 - テスト・実行例では一時ディレクトリを使うと安全です。
