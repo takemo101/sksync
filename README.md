@@ -155,11 +155,15 @@ cargo run -- list --global
 
 ## 今後の予定
 
-以下は設計済みですが、CLI MVP ではまだ未実装または placeholder です。
+npm-like な依存管理コマンド体系に寄せていきます。
 
-- `sksync install` / `sksync add`
+- `sksync remove <skill>` - dependency / installed skill / managed symlink / lockfile entry を削除
+- `sksync outdated` - lockfile と upstream/latest を比較して更新可能な skill を表示
 - `sksync tui` の追加UX
-- registry / GitLab / gist support
+- `registry:skills.sh/<package>` provider
+- GitLab / gist support
+
+`ci` 相当の専用コマンドは現時点では追加しません。lockfile 再現は `sksync install` に集約します。
 
 詳細は以下を参照してください。
 
