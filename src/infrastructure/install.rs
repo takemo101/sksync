@@ -30,9 +30,12 @@ impl SkillInstaller for FileSystemSkillInstaller {
             message: error.to_string(),
         })?;
 
-        let installed = install_to_staging(source, &staging)?;
-        replace_destination(&staging, destination)?;
-        Ok(installed)
+        let result = install_to_staging(source, &staging)
+            .and_then(|installed| replace_destination(&staging, destination).map(|()| installed));
+        if result.is_err() && staging.exists() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        result
     }
 }
 
@@ -59,29 +62,7 @@ fn install_to_staging(
         }),
         InstallSource::Git(git_source) => {
             let clone_dir = staging.join(".repo");
-            let mut command = Command::new("git");
-            command
-                .arg("clone")
-                .arg("--depth")
-                .arg("1")
-                .arg("--filter=blob:none");
-            if let Some(reference) = &git_source.reference {
-                command.arg("--branch").arg(reference);
-            }
-            let output = command
-                .arg(&git_source.url)
-                .arg(&clone_dir)
-                .output()
-                .map_err(|error| SkillInstallError::Git {
-                    repo: git_source.url.clone(),
-                    message: error.to_string(),
-                })?;
-            if !output.status.success() {
-                return Err(SkillInstallError::Git {
-                    repo: git_source.url.clone(),
-                    message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-                });
-            }
+            clone_git_source(git_source, &clone_dir)?;
             let source_path = clone_dir.join(&git_source.path);
             if !source_path.exists() {
                 return Err(SkillInstallError::MissingSourcePath {
@@ -102,6 +83,71 @@ fn install_to_staging(
             })
         }
     }
+}
+
+fn clone_git_source(
+    git_source: &GitInstallSource,
+    clone_dir: &Path,
+) -> Result<(), SkillInstallError> {
+    let output = Command::new("git")
+        .arg("clone")
+        .arg("--filter=blob:none")
+        .arg("--no-checkout")
+        .arg(&git_source.url)
+        .arg(clone_dir)
+        .output()
+        .map_err(|error| SkillInstallError::Git {
+            repo: git_source.url.clone(),
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(SkillInstallError::Git {
+            repo: git_source.url.clone(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+
+    checkout_git_reference(
+        clone_dir,
+        &git_source.url,
+        git_source.reference.as_deref().unwrap_or("HEAD"),
+    )
+}
+
+fn checkout_git_reference(
+    clone_dir: &Path,
+    repo: &str,
+    reference: &str,
+) -> Result<(), SkillInstallError> {
+    if run_git(clone_dir, repo, &["checkout", "--detach", reference]).is_ok() {
+        return Ok(());
+    }
+
+    run_git(
+        clone_dir,
+        repo,
+        &["fetch", "--depth", "1", "origin", reference],
+    )?;
+    run_git(clone_dir, repo, &["checkout", "--detach", "FETCH_HEAD"])
+}
+
+fn run_git(clone_dir: &Path, repo: &str, args: &[&str]) -> Result<(), SkillInstallError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(clone_dir)
+        .args(args)
+        .output()
+        .map_err(|error| SkillInstallError::Git {
+            repo: repo.to_owned(),
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(SkillInstallError::Git {
+            repo: repo.to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn resolve_git_head(clone_dir: &Path, repo: &str) -> Result<String, SkillInstallError> {
@@ -186,8 +232,10 @@ fn staging_dir(skill_dir: &Path, skill_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::FileSystemSkillInstaller;
-    use crate::application::config::InstallSource;
-    use crate::application::ports::SkillInstaller;
+    use crate::application::config::{GitInstallSource, InstallSource};
+    use crate::application::ports::{SkillInstallError, SkillInstaller};
+    use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn local_dependency_is_copied_into_destination() {
@@ -205,5 +253,97 @@ mod tests {
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
             "# Review"
         );
+    }
+
+    #[test]
+    fn git_dependency_can_install_exact_commit_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        create_git_skill_repo(&remote, "# Review v1");
+        let rev = git_output(&remote, &["rev-parse", "HEAD"]);
+        std::fs::write(remote.join("skills/review/SKILL.md"), "# Review v2").unwrap();
+        git(&remote, &["add", "."]);
+        git(&remote, &["commit", "-m", "update review"]);
+        let destination = temp.path().join("skills/review");
+
+        FileSystemSkillInstaller
+            .install_skill(
+                &InstallSource::Git(GitInstallSource {
+                    url: remote.display().to_string(),
+                    reference: Some(rev.clone()),
+                    path: "skills/review".into(),
+                }),
+                &destination,
+                "review",
+            )
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            "# Review v1"
+        );
+    }
+
+    #[test]
+    fn staging_directory_is_removed_when_install_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("skills/review");
+        let error = FileSystemSkillInstaller
+            .install_skill(
+                &InstallSource::Local(temp.path().join("missing")),
+                &destination,
+                "review",
+            )
+            .expect_err("missing source should fail");
+
+        assert!(matches!(error, SkillInstallError::MissingSourcePath { .. }));
+        assert!(!temp
+            .path()
+            .join(format!(
+                "skills/.sksync-update-review-{}",
+                std::process::id()
+            ))
+            .exists());
+    }
+
+    fn create_git_skill_repo(path: &Path, skill_content: &str) {
+        std::fs::create_dir_all(path.join("skills/review")).unwrap();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "test@example.com"]);
+        git(path, &["config", "user.name", "Test User"]);
+        std::fs::write(path.join("skills/review/SKILL.md"), skill_content).unwrap();
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "add review"]);
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_output(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 }
