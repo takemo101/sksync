@@ -183,17 +183,18 @@ registry:example.com/owner/repo/skill#version
 
 ### npm-like command model
 
-| command                               | npm analog                      | 役割                                                                                      |
-| ------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `sksync add <source> --agent <agent>` | `npm install <pkg>` / `npm add` | dependency config に追加し、取得・link まで実行する                                       |
-| `sksync install`                      | `npm install`                   | lockfile があれば lockfile を優先して再現し、なければ config から構成して lockfile を作る |
-| `sksync update`                       | `npm update`                    | config の dependencies から最新または指定 version を取得し、lockfile を更新する           |
-| `sksync remove <skill>`               | `npm uninstall`                 | dependency / installed skill / lockfile entry / managed symlink を削除する                |
-| `sksync outdated`                     | `npm outdated`                  | lockfile の resolved source と upstream/latest を比較し、更新可能な skill を表示する      |
-| `sksync apply`                        | sksync specific                 | installed skill から agent target へ symlink を反映する                                   |
-| `sksync check`                        | `npm ls` / health check         | lockfile hash、source、target symlink の drift を検査する                                 |
-| `sksync list`                         | `npm ls`                        | 管理中 skill と agent ごとの link 状態を一覧表示する                                      |
-| `sksync tui`                          | n/a                             | 状態確認と操作を TUI で行う                                                               |
+| command                                 | npm analog                      | 役割                                                                                      |
+| --------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `sksync add <source> --agent <agent>`   | `npm install <pkg>` / `npm add` | dependency config に追加し、取得・link まで実行する                                       |
+| `sksync install`                        | `npm install`                   | lockfile があれば lockfile を優先して再現し、なければ config から構成して lockfile を作る |
+| `sksync update`                         | `npm update`                    | config の dependencies から最新または指定 version を取得し、lockfile を更新する           |
+| `sksync remove <skill>`                 | `npm uninstall`                 | dependency / installed skill / lockfile entry / managed symlink を削除する                |
+| `sksync remove <skill> --agent <agent>` | npm optional dependency removal | 指定 agent の dependency target / managed symlink だけを削除する                          |
+| `sksync outdated`                       | `npm outdated`                  | lockfile の resolved source と upstream/latest を比較し、更新可能な skill を表示する      |
+| `sksync apply`                          | sksync specific                 | installed skill から agent target へ symlink を反映する                                   |
+| `sksync check`                          | `npm ls` / health check         | lockfile hash、source、target symlink の drift を検査する                                 |
+| `sksync list`                           | `npm ls`                        | 管理中 skill と agent ごとの link 状態を一覧表示する                                      |
+| `sksync tui`                            | n/a                             | 状態確認と操作を TUI で行う                                                               |
 
 ### `sksync init`
 
@@ -231,6 +232,18 @@ registry:example.com/owner/repo/skill#version
 - lockfile の該当 entry を削除する
 - `--global` で global config / lockfile を対象にする
 - `--keep-files` / `--config-only` で削除範囲を制御する
+
+### `sksync remove <skill> --agent <agent>`
+
+将来追加予定の agent 単位削除。
+
+- `--agent` は複数指定できる
+- 指定 agent の managed symlink のみ削除する
+- config の `dependencies.<skill>.agents` から指定 agent だけを削除する
+- lockfile の `skills.<skill>.targets` から指定 agent の target だけを削除する
+- `skills/<skill>` 本体と他 agent の symlink は残す
+- 最後の agent を削除した場合は `sksync remove <skill>` と同じ全体削除にフォールバックする
+- `--global` で global config / lockfile を対象にする
 
 ### `sksync outdated`
 

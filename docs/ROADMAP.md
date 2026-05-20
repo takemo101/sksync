@@ -28,6 +28,7 @@
 
 - Stabilize `add` / `install` / `update` semantics
 - Implement `remove <skill>` for dependency, installed skill, lockfile entry, and managed symlink removal
+- Add `remove <skill> --agent <agent>` for agent-scoped symlink / target removal
 - Implement `outdated` for Git drift reporting and registry provider placeholder reporting
 - Do not add a `ci` command for now; lockfile-first `install` covers the current reproducibility need
 
