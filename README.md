@@ -84,6 +84,15 @@ cargo run -- remove cuekit-dogfood --keep-files
 cargo run -- remove cuekit-dogfood --config-only
 ```
 
+将来予定の agent 単位削除では、`--agent` を指定して対象 agent の link だけを外せるようにします。
+
+```bash
+cargo run -- remove cuekit-dogfood --agent pi
+cargo run -- remove cuekit-dogfood --agent pi --agent claude-code
+```
+
+この場合は `dependencies.<skill>.agents` と lockfile targets から指定 agent だけを外し、他 agent の link と `skills/<skill>` 本体は残します。最後の agent を外した場合は skill 全体の削除と同じ扱いにします。
+
 ### `sksync outdated`
 
 lockfile と upstream を比較して、更新可能な skill を表示します。Git source は remote ref の HEAD と lockfile の resolved commit を比較します。Registry source は provider 未実装の場合 `registry-provider-missing` として表示します。
@@ -182,7 +191,7 @@ cargo run -- list --global
 
 npm-like な依存管理コマンド体系に寄せていきます。
 
-- `sksync remove <skill>` - dependency / installed skill / managed symlink / lockfile entry を削除
+- `sksync remove <skill> --agent <agent>` - 指定 agent の managed symlink だけを外す
 - `sksync outdated` - lockfile と upstream/latest を比較して更新可能な skill を表示
 - `sksync tui` の追加UX
 - `registry:skills.sh/<package>` provider
