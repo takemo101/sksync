@@ -11,7 +11,8 @@ use super::scope::Scope;
 use super::skill::{SkillName, SourcePath};
 use super::target::TargetPath;
 
-pub const SUPPORTED_LOCKFILE_VERSION: u32 = 2;
+pub const SUPPORTED_LOCKFILE_VERSION: u32 = 3;
+pub const LEGACY_LOCKFILE_VERSION_WITH_TARGETS: u32 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DigestError {

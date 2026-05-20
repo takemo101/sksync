@@ -187,7 +187,7 @@ project-local の生成物は `.gitignore` します。
 
 - `.sksync/` - downloaded/copied skill bodies (`.sksync/skills/<skill>`)
 - `skills/` - legacy generated skill store from older defaults
-- `sksync-lock.json` - 現状は machine-local target path を含むため、portable lockfile へ整理するまでは共有しません
+- `sksync-lock.json` - lockfile v3 は portable ですが、チーム共有方針が固まるまでは project-local state として扱います
 
 共有する基本ファイルは `sksync.config.json` です。
 

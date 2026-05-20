@@ -9,6 +9,7 @@ pub mod check;
 pub mod config;
 pub mod init;
 pub mod list;
+pub mod outdated;
 pub mod plan;
 pub mod ports;
 pub mod update;

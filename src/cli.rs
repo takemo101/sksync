@@ -7,15 +7,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
-use crate::application::config::{apply_agent_target_dirs, InstallSource, ResolvedConfig};
+use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
 use crate::application::init::init_project;
 use crate::application::list::list_skills;
+use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
 use crate::application::plan::build_link_plan;
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::update_dependencies;
 use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
-use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
+use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::scope::Scope;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
@@ -225,6 +226,8 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
     let skill_source = skill.map(|skill| skill.source.as_path().to_path_buf());
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let mut lockfile = read_lockfile(&lockfile_path).ok();
+    let (_config, removal_plan, _root_dir) =
+        build_plan_from_config(config.clone(), args.global, &current_dir)?;
 
     if args.agents.is_empty() {
         remove_entire_skill(
@@ -233,6 +236,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
             skill_source,
             &lockfile_path,
             &mut lockfile,
+            &removal_plan,
         )?;
         return Ok(());
     }
@@ -255,6 +259,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
             skill_source,
             &lockfile_path,
             &mut lockfile,
+            &removal_plan,
         )?;
         return Ok(());
     }
@@ -265,6 +270,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
         &lockfile_path,
         &mut lockfile,
         &requested_agents,
+        &removal_plan,
     )
 }
 
@@ -274,11 +280,10 @@ fn remove_entire_skill(
     skill_source: Option<PathBuf>,
     lockfile_path: &Path,
     lockfile: &mut Option<Lockfile>,
+    removal_plan: &LinkPlan,
 ) -> Result<()> {
     if !args.config_only {
-        if let Some(locked) = locked_skill(lockfile.as_ref(), &args.skill) {
-            remove_managed_symlinks(locked)?;
-        }
+        remove_managed_symlinks(removal_plan, &args.skill)?;
         if !args.keep_files {
             if let Some(source) = skill_source {
                 if source.exists() {
@@ -309,11 +314,10 @@ fn remove_skill_agents(
     lockfile_path: &Path,
     lockfile: &mut Option<Lockfile>,
     requested_agents: &[AgentKind],
+    removal_plan: &LinkPlan,
 ) -> Result<()> {
     if !args.config_only {
-        if let Some(locked) = locked_skill(lockfile.as_ref(), &args.skill) {
-            remove_managed_symlinks_for_agents(locked, requested_agents)?;
-        }
+        remove_managed_symlinks_for_agents(removal_plan, &args.skill, requested_agents)?;
     }
 
     let requested_agent_names = requested_agents
@@ -358,66 +362,53 @@ fn parse_agent_kinds(agents: &[String]) -> Result<Vec<AgentKind>> {
         .collect()
 }
 
-fn locked_skill<'a>(lockfile: Option<&'a Lockfile>, skill: &str) -> Option<&'a LockedSkill> {
-    lockfile.and_then(|lockfile| {
-        lockfile
-            .skills
-            .get(&crate::domain::skill::SkillName::new(skill.to_owned()).ok()?)
-    })
-}
-
 fn agent_kinds_contain(agents: &[AgentKind], agent: &AgentKind) -> bool {
     agents.iter().any(|candidate| candidate == agent)
 }
 
-fn remove_managed_symlinks(locked: &LockedSkill) -> Result<()> {
-    for target in &locked.targets {
-        remove_managed_symlink_target(locked, target)?;
-    }
-    Ok(())
-}
-
-fn remove_managed_symlinks_for_agents(locked: &LockedSkill, agents: &[AgentKind]) -> Result<()> {
-    for target in &locked.targets {
-        if agent_kinds_contain(agents, &target.agent) {
-            remove_managed_symlink_target(locked, target)?;
+fn remove_managed_symlinks(plan: &LinkPlan, skill: &str) -> Result<()> {
+    for item in &plan.items {
+        if item.skill.as_str() == skill {
+            remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
         }
     }
     Ok(())
 }
 
-fn remove_managed_symlink_target(locked: &LockedSkill, target: &LockedTarget) -> Result<()> {
-    match fs::symlink_metadata(target.path.as_path()) {
+fn remove_managed_symlinks_for_agents(
+    plan: &LinkPlan,
+    skill: &str,
+    agents: &[AgentKind],
+) -> Result<()> {
+    for item in &plan.items {
+        if item.skill.as_str() == skill && agent_kinds_contain(agents, &item.agent) {
+            remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_managed_symlink_target(source: &Path, target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            if symlink_points_to_locked_source(target.path.as_path(), locked.source.as_path())? {
-                fs::remove_file(target.path.as_path()).with_context(|| {
-                    format!(
-                        "failed to remove symlink {}",
-                        target.path.as_path().display()
-                    )
-                })?;
-                println!("Removed symlink {}", target.path.as_path().display());
+            if symlink_points_to_locked_source(target, source)? {
+                fs::remove_file(target)
+                    .with_context(|| format!("failed to remove symlink {}", target.display()))?;
+                println!("Removed symlink {}", target.display());
             } else {
                 println!(
                     "Skipped symlink not pointing to locked source {}",
-                    target.path.as_path().display()
+                    target.display()
                 );
             }
         }
         Ok(_) => {
-            println!(
-                "Skipped non-symlink target {}",
-                target.path.as_path().display()
-            );
+            println!("Skipped non-symlink target {}", target.display());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to inspect target {}",
-                    target.path.as_path().display()
-                )
-            })
+            return Err(error)
+                .with_context(|| format!("failed to inspect target {}", target.display()))
         }
     }
     Ok(())
@@ -455,7 +446,8 @@ fn run_outdated(args: OutdatedArgs) -> Result<()> {
     let config = load_config_for_scope(args.global, &current_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let lockfile = read_lockfile(&lockfile_path)?;
-    let rows = collect_outdated(&config, &lockfile);
+    let report = collect_outdated(&config, &lockfile, &GitRemoteRefResolver);
+    let rows = report.rows;
     if args.json {
         let json_rows = rows
             .iter()
@@ -485,87 +477,31 @@ fn run_outdated(args: OutdatedArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-struct OutdatedRow {
-    skill: String,
-    current: String,
-    wanted: String,
-    latest: String,
-    source: String,
-    status: String,
-}
+struct GitRemoteRefResolver;
 
-fn collect_outdated(config: &ResolvedConfig, lockfile: &Lockfile) -> Vec<OutdatedRow> {
-    config
-        .skills
-        .iter()
-        .filter_map(|skill| {
-            let locked = lockfile.skills.get(&skill.name)?;
-            match (&skill.install_source, &locked.install_source) {
-                (Some(InstallSource::Git(config_git)), Some(InstallSource::Git(locked_git))) => {
-                    let wanted_ref = config_git.reference.as_deref().unwrap_or("HEAD");
-                    let latest = git_remote_rev(&config_git.url, wanted_ref)
-                        .unwrap_or_else(|error| format!("error: {error}"));
-                    let current = locked_git
-                        .reference
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    if latest == current {
-                        None
-                    } else {
-                        Some(OutdatedRow {
-                            skill: skill.name.as_str().to_owned(),
-                            current,
-                            wanted: wanted_ref.to_owned(),
-                            latest,
-                            source: config_git.url.clone(),
-                            status: "outdated".to_owned(),
-                        })
-                    }
-                }
-                (
-                    Some(InstallSource::Registry(config_registry)),
-                    Some(InstallSource::Registry(locked_registry)),
-                ) => Some(OutdatedRow {
-                    skill: skill.name.as_str().to_owned(),
-                    current: locked_registry
-                        .reference
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_owned()),
-                    wanted: config_registry
-                        .reference
-                        .clone()
-                        .unwrap_or_else(|| "latest".to_owned()),
-                    latest: "unsupported".to_owned(),
-                    source: format!(
-                        "registry:{}/{}",
-                        config_registry.registry, config_registry.package
-                    ),
-                    status: "registry-provider-missing".to_owned(),
-                }),
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-fn git_remote_rev(repo: &str, reference: &str) -> Result<String> {
-    let output = GitCommand::new("git")
-        .arg("ls-remote")
-        .arg(repo)
-        .arg(reference)
-        .output()
-        .with_context(|| format!("failed to query remote {repo}"))?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+impl RemoteRefResolver for GitRemoteRefResolver {
+    fn git_remote_rev(&self, repo: &str, reference: &str) -> Result<String, RemoteRefError> {
+        let output = GitCommand::new("git")
+            .arg("ls-remote")
+            .arg(repo)
+            .arg(reference)
+            .output()
+            .map_err(|error| RemoteRefError::Query(error.to_string()))?;
+        if !output.status.success() {
+            return Err(RemoteRefError::Query(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .split_whitespace()
+            .next()
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                RemoteRefError::Query(format!("no revision found for {repo} {reference}"))
+            })
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .filter(|value| !value.is_empty())
-        .with_context(|| format!("no revision found for {repo} {reference}"))
 }
 
 fn run_plan(args: PlanArgs) -> Result<()> {
@@ -774,24 +710,19 @@ fn print_plan(plan: &LinkPlan) {
 
 fn build_lockfile_from_plan(
     config: &ResolvedConfig,
-    plan: &LinkPlan,
+    _plan: &LinkPlan,
     current_dir: &std::path::Path,
 ) -> Result<Lockfile> {
     let mut skills = BTreeMap::new();
 
-    for item in &plan.items {
-        let hash = hash_directory(item.source.as_path())
-            .with_context(|| format!("failed to hash {}", item.source.as_path().display()))?;
-        let skill_config = config
-            .skills
-            .iter()
-            .find(|skill| skill.name == item.skill)
-            .context("planned skill is missing from resolved config")?;
-        let entry = skills
-            .entry(item.skill.clone())
-            .or_insert_with(|| LockedSkill {
-                source: item.source.clone(),
-                install_source: skill_config.install_source.clone(),
+    for skill in &config.skills {
+        let hash = hash_directory(skill.source.as_path())
+            .with_context(|| format!("failed to hash {}", skill.source.as_path().display()))?;
+        skills.insert(
+            skill.name.clone(),
+            LockedSkill {
+                source: skill.source.clone(),
+                install_source: skill.install_source.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files
@@ -802,18 +733,8 @@ fn build_lockfile_from_plan(
                     })
                     .collect(),
                 targets: Vec::new(),
-            });
-        let scope = config
-            .agents
-            .get(item.agent.as_str())
-            .map(|agent| agent.scope)
-            .context("planned agent is missing from resolved config")?;
-        entry.targets.push(LockedTarget {
-            agent: item.agent.clone(),
-            scope,
-            path: item.target.clone(),
-            link_type: LinkType::Symlink,
-        });
+            },
+        );
     }
 
     Ok(Lockfile {

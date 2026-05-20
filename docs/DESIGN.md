@@ -137,11 +137,11 @@ registry:example.com/owner/repo/skill#version
 
 ファイル名: `sksync-lock.json`
 
-現状の lockfile は resolved target path を含むため、project では `.gitignore` する。将来的に portable lockfile へ整理する場合は、target path を runtime 再計算または local state へ分離する。
+lockfile v3 は portable な情報だけを保持する。agent target path は machine-local なので保存せず、`apply` / `check` / `list` 実行時に config と agent mapping から再計算する。
 
 ```json
 {
-  "lockfileVersion": 1,
+  "lockfileVersion": 3,
   "generatedBy": "sksync@0.1.0",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
@@ -153,14 +153,6 @@ registry:example.com/owner/repo/skill#version
         {
           "path": "SKILL.md",
           "hash": "sha256-..."
-        }
-      ],
-      "targets": [
-        {
-          "agent": "pi",
-          "scope": "user",
-          "path": "~/.pi/agent/skills/reviewer",
-          "linkType": "symlink"
         }
       ]
     }
@@ -174,8 +166,8 @@ registry:example.com/owner/repo/skill#version
 - source path
 - skill ディレクトリ全体の hash
 - ファイルごとの hash
-- 同期した agent / scope / target path（現状は machine-local なため共有対象外）
-- symlink か copy か
+- install source の resolved ref / version
+- target path や symlink 状態は入れない
 - sksync のバージョン
 
 ## 7. CLI / TUI コマンド案
@@ -277,57 +269,62 @@ agent 単位削除。
 
 ### `sksync tui`
 
-- TUI を起動する
-- config / lockfile / symlink 状態を一覧表示する
-- dry-run 結果を確認してから apply できる
-- agent ごと、skill ごとに同期対象を一時的に切り替えられる
-- 衝突・壊れた symlink・hash 差分を画面上で確認できる
+- SkillKit のような質問形式の対話フローを起動する
+- ユーザーに「追加 / 削除 / agent 変更 / 状態確認」などの intent を選ばせる
+- intent ごとに必要な source / skill / agent / scope を順番に質問する
+- 最後に dry-run plan を要約表示し、確認後に `add` / `remove` / `apply` 相当の usecase を実行する
+- 画面分割型 dashboard ではなく、wizard / prompt 型の操作体験にする
 
 ## 8. TUI 設計
 
-初期 TUI は `ratatui` + `crossterm` を想定する。
+`sksync tui` はフルスクリーンの一覧 dashboard ではなく、質問形式の interactive wizard とする。目的は「コマンド引数を覚えなくても安全に skill を追加・削除できること」。
 
-### 画面案
+### 対話フロー案
 
 ```text
-┌ sksync ───────────────────────────────────────────────┐
-│ Project: ~/workspace/my-project                       │
-│ Config : sksync.config.json                           │
-│ Lock   : sksync-lock.json                             │
-├ Agents ───────────────┬ Skills ───────────────────────┤
-│ [x] pi                │ reviewer      synced          │
-│ [x] claude-code       │ browser       drifted         │
-│ [ ] codex             │ planner       missing target  │
-│ [x] gemini            │                               │
-│ [x] opencode          │                               │
-├ Details ───────────────────────────────────────────────┤
-│ reviewer -> ~/.pi/agent/skills/reviewer               │
-│ status: symlink ok                                    │
-├ Actions ───────────────────────────────────────────────┤
-│ [d] dry-run  [a] apply  [c] check  [l] lock  [q] quit │
-└────────────────────────────────────────────────────────┘
+? 何をしますか?
+  > skill を追加する
+    skill を削除する
+    特定 agent から skill を外す
+    状態を確認する
+    apply する
+
+? skill source を入力してください
+  github:owner/repo/path/to/skill#main
+
+? どの agent に追加しますか? (複数選択)
+  [x] pi
+  [x] claude-code
+  [ ] codex
+  [ ] gemini
+
+予定される変更:
+  add dependency: cuekit-dogfood
+  install source -> .sksync/skills/cuekit-dogfood
+  create symlink: .pi/agent/skills/cuekit-dogfood
+  create symlink: .claude/skills/cuekit-dogfood
+
+? この変更を適用しますか? (y/N)
 ```
 
-### TUI 操作
+### TUI 操作モデル
 
-| key     | action                    |
-| ------- | ------------------------- |
-| `↑/↓`   | skill / agent の移動      |
-| `tab`   | pane 切り替え             |
-| `space` | 一時的な enabled 切り替え |
-| `d`     | dry-run                   |
-| `a`     | apply                     |
-| `c`     | check                     |
-| `l`     | lockfile 再生成           |
-| `q`     | quit                      |
+| intent | 質問する内容 | 実行する usecase |
+| ------ | ------------ | ---------------- |
+| skill 追加 | source, name override, agent, global scope | `add` |
+| skill 削除 | skill, keep files, config only, global scope | `remove` |
+| agent から外す | skill, agent, global scope | `remove --agent` |
+| 状態確認 | global scope, 出力詳細 | `list` / `check` |
+| apply | global scope, force, 確認 | `plan` -> `apply` |
 
 ### TUI の原則
 
-- デフォルトは必ず dry-run 表示
-- 破壊的・上書き系操作は確認モーダルを出す
-- CLI と同じ core logic を呼び出す
-- TUI 独自の状態は一時的な selection のみにする
-- 実際の永続状態は config / lockfile にだけ保存する
+- TUI は質問と確認に徹し、core logic を持たない
+- 各フローは CLI と同じ application usecase を呼ぶ
+- 破壊的操作は必ず plan / summary を表示してから確認する
+- TUI state は回答途中の一時入力だけにする
+- 永続状態は config / lockfile / local state にだけ保存する
+- dashboard が必要になった場合も、質問フローとは別 mode として扱う
 
 ## 9. 安全ルール
 

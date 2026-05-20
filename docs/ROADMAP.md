@@ -17,12 +17,13 @@
 - Implement `check`
 - Implement safe symlink `apply`
 
-## Phase 2: TUI MVP
+## Phase 2: Prompt-style TUI MVP
 
-- Add `sksync tui`
-- Show agents, skills, and plan results
-- Run dry-run/check/apply from TUI
-- Add confirmation modal before apply
+- Add `sksync tui` as a SkillKit-like question flow
+- Ask for add/remove/remove-agent intents and required source / skill / agent values
+- Show dry-run summary before mutation
+- Run add/remove/check/apply usecases from TUI
+- Keep dashboard-style screens out of the MVP unless a separate mode is needed
 
 ## Phase 3: npm-like dependency workflow
 

@@ -22,7 +22,7 @@ use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::ConfigStore;
 use crate::domain::link_plan::LinkPlan;
-use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
+use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
@@ -182,24 +182,19 @@ fn load_config_and_resolver(
 
 fn build_lockfile_from_plan(
     config: &crate::application::config::ResolvedConfig,
-    plan: &LinkPlan,
+    _plan: &LinkPlan,
     project_root: &Path,
 ) -> Result<Lockfile> {
     let mut skills = BTreeMap::new();
 
-    for item in &plan.items {
-        let hash = hash_directory(item.source.as_path())
-            .with_context(|| format!("failed to hash {}", item.source.as_path().display()))?;
-        let skill_config = config
-            .skills
-            .iter()
-            .find(|skill| skill.name == item.skill)
-            .context("planned skill is missing from resolved config")?;
-        let entry = skills
-            .entry(item.skill.clone())
-            .or_insert_with(|| LockedSkill {
-                source: item.source.clone(),
-                install_source: skill_config.install_source.clone(),
+    for skill in &config.skills {
+        let hash = hash_directory(skill.source.as_path())
+            .with_context(|| format!("failed to hash {}", skill.source.as_path().display()))?;
+        skills.insert(
+            skill.name.clone(),
+            LockedSkill {
+                source: skill.source.clone(),
+                install_source: skill.install_source.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files
@@ -210,18 +205,8 @@ fn build_lockfile_from_plan(
                     })
                     .collect(),
                 targets: Vec::new(),
-            });
-        let scope = config
-            .agents
-            .get(item.agent.as_str())
-            .map(|agent| agent.scope)
-            .context("planned agent is missing from resolved config")?;
-        entry.targets.push(LockedTarget {
-            agent: item.agent.clone(),
-            scope,
-            path: item.target.clone(),
-            link_type: LinkType::Symlink,
-        });
+            },
+        );
     }
 
     Ok(Lockfile {
