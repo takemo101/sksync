@@ -310,14 +310,14 @@ trait LinkStore {
 
 ## 14. TUI 設計原則
 
-TUI は application の thin adapter とする。ここでの TUI は画面分割 dashboard ではなく、質問形式の wizard / prompt UI を第一候補にする。
+TUI は application の thin adapter とする。ここでの TUI は質問形式の wizard / prompt UI とする。
 
 - TUI は `AddUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
 - TUI は filesystem を直接触らない
 - TUI state は質問途中の回答、選択中 option、確認待ちだけにする
 - 追加・削除・agent 変更は質問フローで必要情報を集める
 - 破壊的操作は dry-run summary を表示し、明示確認後に実行する
-- dashboard / 一覧画面が必要になった場合も prompt flow とは別 mode として扱う
+- 常駐型の一覧画面は持たず、必要な状態確認は `list` / `check` の summary として表示する
 
 ## 15. 設計チェックリスト
 

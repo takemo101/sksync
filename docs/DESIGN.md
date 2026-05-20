@@ -273,11 +273,11 @@ agent 単位削除。
 - ユーザーに「追加 / 削除 / agent 変更 / 状態確認」などの intent を選ばせる
 - intent ごとに必要な source / skill / agent / scope を順番に質問する
 - 最後に dry-run plan を要約表示し、確認後に `add` / `remove` / `apply` 相当の usecase を実行する
-- 画面分割型 dashboard ではなく、wizard / prompt 型の操作体験にする
+- wizard / prompt 型の操作体験にする
 
 ## 8. TUI 設計
 
-`sksync tui` はフルスクリーンの一覧 dashboard ではなく、質問形式の interactive wizard とする。目的は「コマンド引数を覚えなくても安全に skill を追加・削除できること」。
+`sksync tui` は質問形式の interactive wizard とする。目的は「コマンド引数を覚えなくても安全に skill を追加・削除できること」。
 
 ### 対話フロー案
 
@@ -324,7 +324,7 @@ agent 単位削除。
 - 破壊的操作は必ず plan / summary を表示してから確認する
 - TUI state は回答途中の一時入力だけにする
 - 永続状態は config / lockfile / local state にだけ保存する
-- dashboard が必要になった場合も、質問フローとは別 mode として扱う
+- 一覧確認は `list` / `check` の summary として表示し、常駐型画面は持たない
 
 ## 9. 安全ルール
 
@@ -349,7 +349,7 @@ agent 単位削除。
 | hash                        | `sha2`, `hex`          |
 | glob / walk                 | `walkdir`, `ignore`    |
 | error handling              | `anyhow`, `thiserror`  |
-| TUI                         | `ratatui`, `crossterm` |
+| Prompt TUI                  | 標準入出力（必要に応じて `dialoguer` 等） |
 | snapshot / temp tests       | `insta`, `tempfile`    |
 
 ### モジュール構成案
@@ -366,10 +366,7 @@ src/
   apply.rs         # symlink create/update
   check.rs         # drift / broken link detection
   tui/
-    mod.rs         # TUI app entry
-    app.rs         # state machine
-    ui.rs          # ratatui rendering
-    events.rs      # key handling
+    mod.rs         # prompt / wizard entry
 ```
 
 ### アーキテクチャ方針

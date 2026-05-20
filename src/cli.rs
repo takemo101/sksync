@@ -795,12 +795,7 @@ fn run_list(args: ListArgs) -> Result<()> {
 
 fn run_tui() -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let app = crate::tui::app::TuiApp::new(
-        current_dir.clone(),
-        current_dir.join("sksync.config.json").exists(),
-        current_dir.join("sksync-lock.json").exists(),
-    );
-    crate::tui::run(app)
+    crate::tui::run(current_dir)
 }
 
 #[cfg(test)]
