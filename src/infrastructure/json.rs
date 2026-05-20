@@ -140,7 +140,7 @@ fn default_scope() -> String {
 }
 
 fn default_skill_dir() -> PathBuf {
-    PathBuf::from("./skills")
+    PathBuf::from("./.sksync/skills")
 }
 
 impl RawConfig {
@@ -1042,7 +1042,7 @@ mod tests {
                 .expect("example config parses");
         let config = raw.resolve().expect("example config resolves");
 
-        assert_eq!(config.skill_dir.as_path(), Path::new("./skills"));
+        assert_eq!(config.skill_dir.as_path(), Path::new("./.sksync/skills"));
         assert_eq!(config.agents.len(), 5);
         assert_eq!(config.skills.len(), 2);
         assert_eq!(config.skills[0].name.as_str(), "example-skill");
@@ -1056,7 +1056,7 @@ mod tests {
     fn rejects_missing_agent_reference() {
         let raw = serde_json::from_str::<RawConfig>(
             r#"{
-              "skillDir": "./skills",
+              "skillDir": "./.sksync/skills",
               "agents": { "pi": { "enabled": true, "scope": "user" } },
               "skills": { "review": { "agents": ["missing"] } }
             }"#,
@@ -1076,7 +1076,7 @@ mod tests {
     fn fills_missing_skill_source_from_skill_dir_and_name() {
         let raw = serde_json::from_str::<RawConfig>(
             r#"{
-              "skillDir": "./skills",
+              "skillDir": "./.sksync/skills",
               "agents": { "pi": { "enabled": true, "scope": "project" } },
               "skills": { "review": { "agents": ["pi"] } }
             }"#,
@@ -1086,7 +1086,7 @@ mod tests {
 
         assert_eq!(
             config.skills[0].source.as_path(),
-            Path::new("./skills/review")
+            Path::new("./.sksync/skills/review")
         );
     }
 
@@ -1111,7 +1111,7 @@ mod tests {
     fn dependency_config_store_merges_agents_for_existing_dependency() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("sksync.config.json");
-        let store = FileDependencyConfigStore::new(&config_path, "./skills");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
 
         store
             .add_dependency("review", "./review", &["pi".to_owned()])
@@ -1138,7 +1138,7 @@ mod tests {
     fn dependency_config_store_removes_selected_agents() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("sksync.config.json");
-        let store = FileDependencyConfigStore::new(&config_path, "./skills");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
 
         store
             .add_dependency(

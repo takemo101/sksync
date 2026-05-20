@@ -35,6 +35,7 @@
 ## Phase 4: Portability and install workflow
 
 - Add lockfile migration support
+- Split portable lockfile data from machine-local target path state
 - Add custom agent mappings
 - Add cross-platform symlink/junction behavior
 - Preserve lockfile reproducibility across machines
