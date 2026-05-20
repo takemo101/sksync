@@ -235,7 +235,7 @@ registry:example.com/owner/repo/skill#version
 
 ### `sksync remove <skill> --agent <agent>`
 
-将来追加予定の agent 単位削除。
+agent 単位削除。
 
 - `--agent` は複数指定できる
 - 指定 agent の managed symlink のみ削除する

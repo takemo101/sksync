@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as GitCommand;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
@@ -12,6 +13,7 @@ use crate::application::list::list_skills;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::update_dependencies;
+use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile};
 use crate::domain::scope::Scope;
@@ -89,6 +91,9 @@ struct RemoveArgs {
     /// Remove only from config and lockfile, leaving installed files and symlinks untouched.
     #[arg(long)]
     config_only: bool,
+    /// Remove the skill only from the specified agent. Can be passed multiple times.
+    #[arg(long = "agent")]
+    agents: Vec<String>,
     /// Keep the installed skill directory under skillDir.
     #[arg(long)]
     keep_files: bool,
@@ -221,12 +226,57 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let mut lockfile = read_lockfile(&lockfile_path).ok();
 
+    if args.agents.is_empty() {
+        remove_entire_skill(
+            &args,
+            &config_path,
+            skill_source,
+            &lockfile_path,
+            &mut lockfile,
+        )?;
+        return Ok(());
+    }
+
+    let requested_agents = parse_agent_kinds(&args.agents)?;
+    let removes_all_agents = skill
+        .map(|skill| {
+            !skill.agents.is_empty()
+                && skill
+                    .agents
+                    .iter()
+                    .all(|agent| requested_agents.iter().any(|requested| requested == agent))
+        })
+        .unwrap_or(false);
+
+    if removes_all_agents {
+        remove_entire_skill(
+            &args,
+            &config_path,
+            skill_source,
+            &lockfile_path,
+            &mut lockfile,
+        )?;
+        return Ok(());
+    }
+
+    remove_skill_agents(
+        &args,
+        &config_path,
+        &lockfile_path,
+        &mut lockfile,
+        &requested_agents,
+    )
+}
+
+fn remove_entire_skill(
+    args: &RemoveArgs,
+    config_path: &Path,
+    skill_source: Option<PathBuf>,
+    lockfile_path: &Path,
+    lockfile: &mut Option<Lockfile>,
+) -> Result<()> {
     if !args.config_only {
-        if let Some(locked) = lockfile.as_ref().and_then(|lockfile| {
-            lockfile
-                .skills
-                .get(&crate::domain::skill::SkillName::new(args.skill.clone()).ok()?)
-        }) {
+        if let Some(locked) = locked_skill(lockfile.as_ref(), &args.skill) {
             remove_managed_symlinks(locked)?;
         }
         if !args.keep_files {
@@ -241,9 +291,9 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
         }
     }
 
-    FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
+    FileDependencyConfigStore::new(config_path, default_skill_dir_for(args.global)?)
         .remove_dependency(&args.skill)?;
-    if let Some(lockfile) = &mut lockfile {
+    if let Some(lockfile) = lockfile {
         if let Ok(skill_name) = crate::domain::skill::SkillName::new(args.skill.clone()) {
             lockfile.skills.remove(&skill_name);
             FileLockfileStore::new(lockfile_path).write(lockfile)?;
@@ -253,41 +303,121 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
     Ok(())
 }
 
+fn remove_skill_agents(
+    args: &RemoveArgs,
+    config_path: &Path,
+    lockfile_path: &Path,
+    lockfile: &mut Option<Lockfile>,
+    requested_agents: &[AgentKind],
+) -> Result<()> {
+    if !args.config_only {
+        if let Some(locked) = locked_skill(lockfile.as_ref(), &args.skill) {
+            remove_managed_symlinks_for_agents(locked, requested_agents)?;
+        }
+    }
+
+    let requested_agent_names = requested_agents
+        .iter()
+        .map(|agent| agent.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let remaining_agents =
+        FileDependencyConfigStore::new(config_path, default_skill_dir_for(args.global)?)
+            .remove_dependency_agents(&args.skill, &requested_agent_names)?;
+
+    if let Some(lockfile) = lockfile {
+        if let Ok(skill_name) = crate::domain::skill::SkillName::new(args.skill.clone()) {
+            if let Some(locked) = lockfile.skills.get_mut(&skill_name) {
+                locked
+                    .targets
+                    .retain(|target| !agent_kinds_contain(requested_agents, &target.agent));
+            }
+            FileLockfileStore::new(lockfile_path).write(lockfile)?;
+        }
+    }
+
+    println!(
+        "Removed {} from agent(s): {}",
+        args.skill,
+        requested_agent_names.join(", ")
+    );
+    if remaining_agents.is_empty() {
+        println!(
+            "No agents remain for {}; removed dependency entry",
+            args.skill
+        );
+    }
+    Ok(())
+}
+
+fn parse_agent_kinds(agents: &[String]) -> Result<Vec<AgentKind>> {
+    agents
+        .iter()
+        .map(|agent| {
+            AgentKind::from_str(agent).with_context(|| format!("invalid agent name {agent:?}"))
+        })
+        .collect()
+}
+
+fn locked_skill<'a>(lockfile: Option<&'a Lockfile>, skill: &str) -> Option<&'a LockedSkill> {
+    lockfile.and_then(|lockfile| {
+        lockfile
+            .skills
+            .get(&crate::domain::skill::SkillName::new(skill.to_owned()).ok()?)
+    })
+}
+
+fn agent_kinds_contain(agents: &[AgentKind], agent: &AgentKind) -> bool {
+    agents.iter().any(|candidate| candidate == agent)
+}
+
 fn remove_managed_symlinks(locked: &LockedSkill) -> Result<()> {
     for target in &locked.targets {
-        match fs::symlink_metadata(target.path.as_path()) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                if symlink_points_to_locked_source(target.path.as_path(), locked.source.as_path())?
-                {
-                    fs::remove_file(target.path.as_path()).with_context(|| {
-                        format!(
-                            "failed to remove symlink {}",
-                            target.path.as_path().display()
-                        )
-                    })?;
-                    println!("Removed symlink {}", target.path.as_path().display());
-                } else {
-                    println!(
-                        "Skipped symlink not pointing to locked source {}",
+        remove_managed_symlink_target(locked, target)?;
+    }
+    Ok(())
+}
+
+fn remove_managed_symlinks_for_agents(locked: &LockedSkill, agents: &[AgentKind]) -> Result<()> {
+    for target in &locked.targets {
+        if agent_kinds_contain(agents, &target.agent) {
+            remove_managed_symlink_target(locked, target)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_managed_symlink_target(locked: &LockedSkill, target: &LockedTarget) -> Result<()> {
+    match fs::symlink_metadata(target.path.as_path()) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if symlink_points_to_locked_source(target.path.as_path(), locked.source.as_path())? {
+                fs::remove_file(target.path.as_path()).with_context(|| {
+                    format!(
+                        "failed to remove symlink {}",
                         target.path.as_path().display()
-                    );
-                }
-            }
-            Ok(_) => {
+                    )
+                })?;
+                println!("Removed symlink {}", target.path.as_path().display());
+            } else {
                 println!(
-                    "Skipped non-symlink target {}",
+                    "Skipped symlink not pointing to locked source {}",
                     target.path.as_path().display()
                 );
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to inspect target {}",
-                        target.path.as_path().display()
-                    )
-                })
-            }
+        }
+        Ok(_) => {
+            println!(
+                "Skipped non-symlink target {}",
+                target.path.as_path().display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect target {}",
+                    target.path.as_path().display()
+                )
+            })
         }
     }
     Ok(())

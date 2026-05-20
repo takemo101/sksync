@@ -535,6 +535,43 @@ impl DependencyConfigStore for FileDependencyConfigStore {
         dependencies_object_mut(&mut value)?.remove(skill_name);
         self.write_value(&value)
     }
+
+    fn remove_dependency_agents(
+        &self,
+        skill_name: &str,
+        agents: &[String],
+    ) -> Result<Vec<String>, DependencyConfigStoreError> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut value = self.load_or_default()?;
+        let dependencies = dependencies_object_mut(&mut value)?;
+        let mut remaining_agents = dependency_agents(dependencies.get(skill_name), skill_name)?;
+        let normalized_removed_agents = agents
+            .iter()
+            .map(|agent| normalize_agent_name(agent))
+            .collect::<Vec<_>>();
+        remaining_agents.retain(|agent| {
+            let normalized_agent = normalize_agent_name(agent);
+            !normalized_removed_agents
+                .iter()
+                .any(|removed| removed == &normalized_agent)
+        });
+        if remaining_agents.is_empty() {
+            dependencies.remove(skill_name);
+        } else if let Some(dependency) = dependencies.get_mut(skill_name) {
+            dependency
+                .as_object_mut()
+                .ok_or_else(|| {
+                    DependencyConfigStoreError::InvalidField(format!(
+                        "dependencies.{skill_name} must be an object"
+                    ))
+                })?
+                .insert("agents".to_owned(), json!(remaining_agents.clone()));
+        }
+        self.write_value(&value)?;
+        Ok(remaining_agents)
+    }
 }
 
 impl FileDependencyConfigStore {
@@ -593,6 +630,12 @@ fn dependencies_object_mut(
     dependencies.as_object_mut().ok_or_else(|| {
         DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
     })
+}
+
+fn normalize_agent_name(agent: &str) -> String {
+    AgentKind::from_str(agent)
+        .map(|agent| agent.as_str().to_owned())
+        .unwrap_or_else(|_| agent.trim().to_ascii_lowercase())
 }
 
 fn dependency_agents(
@@ -1088,6 +1131,34 @@ mod tests {
         assert_eq!(
             value["dependencies"]["review"]["agents"],
             serde_json::json!(["pi", "claude-code"])
+        );
+    }
+
+    #[test]
+    fn dependency_config_store_removes_selected_agents() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        let store = FileDependencyConfigStore::new(&config_path, "./skills");
+
+        store
+            .add_dependency(
+                "review",
+                "./review",
+                &["pi".to_owned(), "claude".to_owned(), "gemini".to_owned()],
+            )
+            .expect("add dependency");
+        let remaining = store
+            .remove_dependency_agents("review", &["claude-code".to_owned()])
+            .expect("remove selected agent");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(remaining, vec!["pi".to_owned(), "gemini".to_owned()]);
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi", "gemini"])
         );
     }
 
