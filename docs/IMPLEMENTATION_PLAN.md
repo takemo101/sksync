@@ -109,19 +109,20 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 - example configを使って `plan/check/list` が動く
 - temp directory上で `apply` の安全ルールがテストされている
 
-## Phase 2: TUI MVP
+## Phase 2: Prompt TUI MVP
 
-目的: CLIと同じcore logicを利用して、状態確認と安全なapplyをTUI化する。
+目的: CLIと同じcore logicを利用して、質問形式で skill の追加・削除・確認を実行できるようにする。
 
-1. `ratatui` / `crossterm` を導入
-2. TUI state / ViewModel を作る
-3. agents / skills / plan result を表示
-4. `d` dry-run、`c` check、`a` apply confirmation、`q` quit を実装
+1. prompt / wizard の intent 選択を実装
+2. add / remove / remove-agent / check / apply に必要な値を順番に質問する
+3. 破壊的操作前に summary / dry-run を表示する
+4. 明示確認後に CLI と同じ application usecase を呼ぶ
 
 完了条件:
 
 - TUIがfilesystemを直接触らない
-- apply前に確認モーダルを出す
+- pane / keybinding 中心の常駐型 UI を持たない
+- apply / remove 前に確認が必要
 - CLIとTUIでplan結果が一致する
 
 ## Phase 3: Portability / install workflow
@@ -141,7 +142,7 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 
 ## 実装上の注意
 
-- `domain` から `clap`, `serde_json`, `std::fs`, `ratatui` に依存しない
+- `domain` から `clap`, `serde_json`, `std::fs`, prompt UI crate に依存しない
 - `SourcePath` と `TargetPath` を同じ `PathBuf` として扱わない
 - `ConfigSkill` と `LockedSkill` を安易に共通化しない
 - testでは `tempfile` を使い、実ユーザーディレクトリを触らない

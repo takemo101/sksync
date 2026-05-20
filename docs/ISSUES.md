@@ -370,47 +370,47 @@ lockfileと現在状態の差分を検出する。
 
 ---
 
-## Milestone 6: TUI MVP
+## Milestone 6: Prompt TUI MVP
 
-### Issue 15: TUI shellを追加する
+### Issue 15: Prompt TUI shellを追加する
 
 **目的**  
-`ratatui` + `crossterm` で最小TUIを起動できるようにする。
+SkillKit のような質問形式で操作できる `sksync tui` を起動できるようにする。
 
 **作業内容**
 
-- `src/tui/mod.rs`, `app.rs`, `ui.rs`, `events.rs` を作る
+- `src/tui/mod.rs` に prompt / wizard flow を作る
 - `sksync tui` から起動する
-- `q` で終了する
-- project/config/lockfileの基本情報を表示する
+- 最初に add / remove / remove-agent / check / apply / quit の intent を選ばせる
+- pane / keybinding 中心の常駐型 UI は作らない
 
 **受け入れ条件**
 
 - `sksync tui` が起動する
-- `q` で終了できる
+- intent を選んで終了できる
 - filesystem操作はapplication経由のみ
 
 **依存**: Issue 12
 
 ---
 
-### Issue 16: TUIにplan/check/apply操作を接続する
+### Issue 16: Prompt TUIにadd/remove/check/apply操作を接続する
 
 **目的**  
-CLI MVPで作ったcore logicをTUIから実行できるようにする。
+CLI MVPで作ったcore logicを質問形式TUIから実行できるようにする。
 
 **作業内容**
 
-- agents pane / skills pane / details paneを表示する
-- `d` でdry-run planを再計算する
-- `c` でcheck結果を表示する
-- `a` でconfirmation modalを出してapplyする
-- apply後に状態を再読込する
+- add: source / name override / agent / global scope を質問する
+- remove: skill / keep-files / config-only / global scope を質問する
+- remove-agent: skill / agent / global scope を質問する
+- check/list: scope と表示詳細を質問する
+- apply: plan summary を表示し、確認後に apply する
 
 **受け入れ条件**
 
-- TUIからdry-run結果を確認できる
-- apply前に確認が必要
+- TUIから安全に add/remove/remove-agent を実行できる
+- 破壊的操作前に確認が必要
 - TUIが直接symlinkやlockfileを書かない
 
 **依存**: Issue 15

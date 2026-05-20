@@ -1,270 +1,221 @@
-pub mod app;
-pub mod events;
-pub mod ui;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command;
 
-use std::collections::BTreeMap;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use anyhow::{bail, Context, Result};
 
-use anyhow::{Context, Result};
-use crossterm::event;
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+pub fn run(project_root: PathBuf) -> Result<()> {
+    println!("sksync prompt TUI");
+    println!("Project: {}", project_root.display());
 
-use crate::application::apply::{apply_link_plan, ApplyOptions};
-use crate::application::check::check_lockfile;
-use crate::application::list::list_skills;
-use crate::application::plan::build_link_plan;
-use crate::application::ports::ConfigStore;
-use crate::domain::link_plan::LinkPlan;
-use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
-use crate::infrastructure::builtin_agents::TargetPathResolver;
-use crate::infrastructure::fs::FileSystemLinkStore;
-use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
-use crate::infrastructure::json::{read_lockfile, FileConfigStore, FileLockfileStore};
+    loop {
+        println!();
+        println!("何をしますか?");
+        println!("  1) skill を追加する");
+        println!("  2) skill を削除する");
+        println!("  3) 特定 agent から skill を外す");
+        println!("  4) 状態を確認する");
+        println!("  5) apply する");
+        println!("  q) 終了する");
 
-use app::TuiApp;
-use events::TuiCommand;
-
-pub fn run(mut app: TuiApp) -> Result<()> {
-    refresh_inventory(&mut app);
-    let mut guard = TerminalGuard::default();
-
-    enable_raw_mode()?;
-    guard.raw_mode = true;
-
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    guard.alternate_screen = true;
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let result = run_loop(&mut terminal, &mut app);
-    terminal.show_cursor()?;
-
-    result
-}
-
-#[derive(Debug, Default)]
-struct TerminalGuard {
-    raw_mode: bool,
-    alternate_screen: bool,
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        if self.alternate_screen {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        }
-        if self.raw_mode {
-            let _ = disable_raw_mode();
+        match prompt("選択")?.trim() {
+            "1" => run_add_flow(&project_root)?,
+            "2" => run_remove_flow(&project_root)?,
+            "3" => run_remove_agent_flow(&project_root)?,
+            "4" => run_status_flow(&project_root)?,
+            "5" => run_apply_flow(&project_root)?,
+            "q" | "Q" | "quit" | "exit" => return Ok(()),
+            value => println!("Unknown selection: {value}"),
         }
     }
 }
 
-fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut TuiApp) -> Result<()> {
-    while !app.should_quit() {
-        terminal.draw(|frame| ui::render(frame, app))?;
-        if event::poll(Duration::from_millis(250))? {
-            let event = event::read()?;
-            if let Some(command) = events::handle_event(app, event) {
-                handle_command(app, command);
-            }
-        }
+fn run_add_flow(project_root: &PathBuf) -> Result<()> {
+    let source = prompt_required("skill source")?;
+    let name = prompt("name override (optional)")?;
+    let agents = prompt_agents()?;
+    let global = prompt_yes_no("global config に追加しますか?", false)?;
+
+    let mut args = vec!["add".to_owned(), source];
+    for agent in agents {
+        args.push("--agent".to_owned());
+        args.push(agent);
+    }
+    if !name.trim().is_empty() {
+        args.push("--name".to_owned());
+        args.push(name.trim().to_owned());
+    }
+    if global {
+        args.push("--global".to_owned());
     }
 
+    println!("予定: sksync {}", args.join(" "));
+    if prompt_yes_no("実行しますか?", false)? {
+        run_sksync(project_root, &args)?;
+    }
     Ok(())
 }
 
-fn handle_command(app: &mut TuiApp, command: TuiCommand) {
-    match command {
-        TuiCommand::DryRun => app.set_details(run_dry_plan(&app.project_root)),
-        TuiCommand::Check => app.set_details(run_check(&app.project_root)),
-        TuiCommand::RequestApply => app.request_apply_confirmation(),
-        TuiCommand::ConfirmApply => {
-            app.clear_apply_confirmation();
-            app.set_details(run_apply(&app.project_root));
-            app.lockfile_exists = app.project_root.join("sksync-lock.json").exists();
-            refresh_inventory(app);
+fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
+    let skill = prompt_required("skill name")?;
+    let global = prompt_yes_no("global config から削除しますか?", false)?;
+    let keep_files = prompt_yes_no("skill 本体を残しますか?", false)?;
+    let config_only = prompt_yes_no("config / lockfile だけ変更しますか?", false)?;
+
+    let mut args = vec!["remove".to_owned(), skill];
+    if global {
+        args.push("--global".to_owned());
+    }
+    if keep_files {
+        args.push("--keep-files".to_owned());
+    }
+    if config_only {
+        args.push("--config-only".to_owned());
+    }
+
+    println!("予定: sksync {}", args.join(" "));
+    if prompt_yes_no("削除を実行しますか?", false)? {
+        run_sksync(project_root, &args)?;
+    }
+    Ok(())
+}
+
+fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
+    let skill = prompt_required("skill name")?;
+    let agents = prompt_agents()?;
+    let global = prompt_yes_no("global config を対象にしますか?", false)?;
+
+    let mut args = vec!["remove".to_owned(), skill];
+    for agent in agents {
+        args.push("--agent".to_owned());
+        args.push(agent);
+    }
+    if global {
+        args.push("--global".to_owned());
+    }
+
+    println!("予定: sksync {}", args.join(" "));
+    if prompt_yes_no("指定 agent から外しますか?", false)? {
+        run_sksync(project_root, &args)?;
+    }
+    Ok(())
+}
+
+fn run_status_flow(project_root: &PathBuf) -> Result<()> {
+    let global = prompt_yes_no("global config を対象にしますか?", false)?;
+    let check = prompt_yes_no("check も実行しますか?", true)?;
+
+    let mut list_args = vec!["list".to_owned()];
+    if global {
+        list_args.push("--global".to_owned());
+    }
+    run_sksync(project_root, &list_args)?;
+
+    if check {
+        let mut check_args = vec!["check".to_owned()];
+        if global {
+            check_args.push("--global".to_owned());
         }
-        TuiCommand::CancelApply => {
-            app.clear_apply_confirmation();
-            app.set_details(vec!["Apply cancelled.".to_owned()]);
-        }
+        run_sksync(project_root, &check_args)?;
+    }
+    Ok(())
+}
+
+fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
+    let global = prompt_yes_no("global config を対象にしますか?", false)?;
+    let force = prompt_yes_no("safe な managed link の置き換えを許可しますか?", false)?;
+
+    let mut plan_args = vec!["plan".to_owned()];
+    if global {
+        plan_args.push("--global".to_owned());
+    }
+    println!("dry-run plan:");
+    run_sksync(project_root, &plan_args)?;
+
+    let mut apply_args = vec!["apply".to_owned()];
+    if global {
+        apply_args.push("--global".to_owned());
+    }
+    if force {
+        apply_args.push("--force".to_owned());
+    }
+
+    println!("予定: sksync {}", apply_args.join(" "));
+    if prompt_yes_no("apply を実行しますか?", false)? {
+        run_sksync(project_root, &apply_args)?;
+    }
+    Ok(())
+}
+
+fn prompt_agents() -> Result<Vec<String>> {
+    let input = prompt_required("agents (comma separated, e.g. pi,claude-code)")?;
+    let agents = input
+        .split(',')
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if agents.is_empty() {
+        bail!("at least one agent is required");
+    }
+    Ok(agents)
+}
+
+fn prompt_required(label: &str) -> Result<String> {
+    let value = prompt(label)?;
+    if value.trim().is_empty() {
+        bail!("{label} is required");
+    }
+    Ok(value.trim().to_owned())
+}
+
+fn prompt(label: &str) -> Result<String> {
+    print!("{label}: ");
+    io::stdout().flush().context("failed to flush stdout")?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read stdin")?;
+    Ok(input.trim_end().to_owned())
+}
+
+fn prompt_yes_no(question: &str, default: bool) -> Result<bool> {
+    let suffix = if default { "Y/n" } else { "y/N" };
+    let answer = prompt(&format!("{question} ({suffix})"))?;
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(default),
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        value => bail!("expected yes/no answer, got {value:?}"),
     }
 }
 
-fn refresh_inventory(app: &mut TuiApp) {
-    match load_config_and_resolver(&app.project_root) {
-        Ok((config, resolver)) => {
-            let lockfile = read_lockfile(app.project_root.join("sksync-lock.json")).ok();
-            let report = list_skills(&config, lockfile.as_ref(), &FileSystemLinkStore, &resolver);
-            app.set_inventory(
-                config.agents.keys().cloned().collect(),
-                report
-                    .skills
-                    .iter()
-                    .map(|skill| skill.name.clone())
-                    .collect(),
-            );
-        }
-        Err(error) => app.set_details(vec![format!("Failed to load config: {error}")]),
+fn run_sksync(project_root: &PathBuf, args: &[String]) -> Result<()> {
+    let exe = std::env::current_exe().context("failed to determine current executable")?;
+    let status = Command::new(exe)
+        .args(args)
+        .current_dir(project_root)
+        .status()
+        .with_context(|| format!("failed to run sksync {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("sksync {} failed with {status}", args.join(" "));
     }
-}
-
-fn run_dry_plan(project_root: &Path) -> Vec<String> {
-    match load_plan(project_root) {
-        Ok((_config, plan)) => plan.display_lines(),
-        Err(error) => vec![format!("dry-run failed: {error}")],
-    }
-}
-
-fn run_check(project_root: &Path) -> Vec<String> {
-    match read_lockfile(project_root.join("sksync-lock.json")) {
-        Ok(lockfile) => {
-            let report = check_lockfile(&lockfile, &Sha256SourceHashStore, &FileSystemLinkStore);
-            report.display_lines()
-        }
-        Err(error) => vec![format!("check failed: {error}")],
-    }
-}
-
-fn run_apply(project_root: &Path) -> Vec<String> {
-    let result = (|| -> Result<Vec<String>> {
-        let (config, plan) = load_plan(project_root)?;
-        let lockfile = build_lockfile_from_plan(&config, &plan, project_root)?;
-        apply_link_plan(
-            &plan,
-            &lockfile,
-            &FileSystemLinkStore,
-            &FileLockfileStore::new(project_root.join("sksync-lock.json")),
-            ApplyOptions { force: false },
-        )?;
-        let mut lines = plan.display_lines();
-        lines.push("Apply complete.".to_owned());
-        Ok(lines)
-    })();
-
-    match result {
-        Ok(lines) => lines,
-        Err(error) => vec![format!("apply failed: {error}")],
-    }
-}
-
-fn load_plan(
-    project_root: &Path,
-) -> Result<(crate::application::config::ResolvedConfig, LinkPlan)> {
-    let (config, resolver) = load_config_and_resolver(project_root)?;
-    let plan = build_link_plan(
-        &config,
-        &FileSystemLinkStore,
-        &FileSystemLinkStore,
-        &resolver,
-    )?;
-    Ok((config, plan))
-}
-
-fn load_config_and_resolver(
-    project_root: &Path,
-) -> Result<(
-    crate::application::config::ResolvedConfig,
-    TargetPathResolver,
-)> {
-    let config = FileConfigStore::new(project_root.join("sksync.config.json")).load()?;
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    Ok((config, TargetPathResolver::new(project_root, home_dir)))
-}
-
-fn build_lockfile_from_plan(
-    config: &crate::application::config::ResolvedConfig,
-    _plan: &LinkPlan,
-    project_root: &Path,
-) -> Result<Lockfile> {
-    let mut skills = BTreeMap::new();
-
-    for skill in &config.skills {
-        let hash = hash_directory(skill.source.as_path())
-            .with_context(|| format!("failed to hash {}", skill.source.as_path().display()))?;
-        skills.insert(
-            skill.name.clone(),
-            LockedSkill {
-                source: skill.source.clone(),
-                install_source: skill.install_source.clone(),
-                hash: hash.hash.clone(),
-                files: hash
-                    .files
-                    .iter()
-                    .map(|file| LockedFile {
-                        path: file.path.clone(),
-                        hash: file.hash.clone(),
-                    })
-                    .collect(),
-                targets: Vec::new(),
-            },
-        );
-    }
-
-    Ok(Lockfile {
-        generated_by: format!("sksync@{}", env!("CARGO_PKG_VERSION")),
-        generated_at: generated_at(),
-        root: project_root.to_path_buf(),
-        skills,
-    })
-}
-
-fn generated_at() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| format!("unix:{}", duration.as_secs()))
-        .unwrap_or_else(|_| "unix:0".to_owned())
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{events, handle_command};
-    use crate::tui::app::TuiApp;
-    use crate::tui::events::TuiCommand;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use std::path::PathBuf;
+    use super::prompt_yes_no;
 
     #[test]
-    fn tui_app_can_quit_from_q_event() {
-        let mut app = TuiApp::new(PathBuf::from("."), true, true);
-        events::handle_event(
-            &mut app,
-            Event::Key(KeyEvent::new_with_kind(
-                KeyCode::Char('q'),
-                KeyModifiers::NONE,
-                KeyEventKind::Press,
-            )),
-        );
-
-        assert!(app.should_quit());
+    fn prompt_tui_module_is_available() {
+        let run_fn: fn(std::path::PathBuf) -> anyhow::Result<()> = super::run;
+        let _ = run_fn;
     }
 
     #[test]
-    fn request_apply_command_opens_confirmation() {
-        let mut app = TuiApp::new(PathBuf::from("."), true, false);
-
-        handle_command(&mut app, TuiCommand::RequestApply);
-
-        assert!(app.confirm_apply);
-        assert!(app.details[0].contains("Apply changes?"));
-    }
-
-    #[test]
-    fn cancel_apply_command_closes_confirmation() {
-        let mut app = TuiApp::new(PathBuf::from("."), true, false);
-        app.request_apply_confirmation();
-
-        handle_command(&mut app, TuiCommand::CancelApply);
-
-        assert!(!app.confirm_apply);
-        assert_eq!(app.details, vec!["Apply cancelled."]);
+    fn yes_no_defaults_are_documented_by_type() {
+        let fn_ptr: fn(&str, bool) -> anyhow::Result<bool> = prompt_yes_no;
+        let _ = fn_ptr;
     }
 }
