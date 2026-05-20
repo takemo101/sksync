@@ -16,7 +16,8 @@ use crate::application::ports::{
 };
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
-    Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, SUPPORTED_LOCKFILE_VERSION,
+    Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
+    LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
 use crate::domain::scope::Scope;
 use crate::domain::skill::{SkillName, SourcePath};
@@ -734,6 +735,7 @@ struct RawLockedSkill {
     install_source: Option<RawLockedInstallSource>,
     hash: String,
     files: Vec<RawLockedFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     targets: Vec<RawLockedTarget>,
 }
 
@@ -847,7 +849,7 @@ fn reject_unsupported_lockfile_version(value: &serde_json::Value) -> Result<(), 
         return Ok(());
     };
 
-    if found != SUPPORTED_LOCKFILE_VERSION {
+    if found != SUPPORTED_LOCKFILE_VERSION && found != LEGACY_LOCKFILE_VERSION_WITH_TARGETS {
         return Err(LockfileJsonError::UnsupportedVersion {
             found,
             supported: SUPPORTED_LOCKFILE_VERSION,
@@ -890,7 +892,9 @@ impl LockfileStore for FileLockfileStore {
 
 impl RawLockfile {
     fn try_into_domain(self) -> Result<Lockfile, LockfileJsonError> {
-        if self.lockfile_version != SUPPORTED_LOCKFILE_VERSION {
+        if self.lockfile_version != SUPPORTED_LOCKFILE_VERSION
+            && self.lockfile_version != LEGACY_LOCKFILE_VERSION_WITH_TARGETS
+        {
             return Err(LockfileJsonError::UnsupportedVersion {
                 found: self.lockfile_version,
                 supported: SUPPORTED_LOCKFILE_VERSION,
@@ -997,16 +1001,7 @@ impl RawLockfile {
                                 hash: file.hash.as_str().to_owned(),
                             })
                             .collect(),
-                        targets: skill
-                            .targets
-                            .iter()
-                            .map(|target| RawLockedTarget {
-                                agent: target.agent.as_str().to_owned(),
-                                scope: target.scope.as_str().to_owned(),
-                                path: target.path.as_path().to_path_buf(),
-                                link_type: target.link_type.as_str().to_owned(),
-                            })
-                            .collect(),
+                        targets: Vec::new(),
                     },
                 )
             })
@@ -1180,8 +1175,7 @@ mod tests {
         assert_eq!(name.as_str(), "example-skill");
         assert_eq!(skill.hash.as_str(), "sha256-placeholder");
         assert!(skill.install_source.is_some());
-        assert_eq!(skill.targets[0].agent, AgentKind::Pi);
-        assert_eq!(skill.targets[0].scope, Scope::User);
+        assert!(skill.targets.is_empty());
     }
 
     #[test]
@@ -1206,7 +1200,7 @@ mod tests {
         std::fs::write(
             &lockfile_path,
             include_str!("../../sksync-lock.example.json")
-                .replace("\"lockfileVersion\": 2", "\"lockfileVersion\": 999"),
+                .replace("\"lockfileVersion\": 3", "\"lockfileVersion\": 999"),
         )
         .expect("write lockfile fixture");
 

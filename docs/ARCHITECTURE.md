@@ -24,7 +24,7 @@ CLI/TUI/ファイルシステム操作は入口・出口として扱い、同期
 ┌─────────────────────────────────────────────┐
 │ Interface Layer                              │
 │  - CLI: clap                                 │
-│  - TUI: ratatui + crossterm                  │
+│  - TUI: prompt/wizard adapter                │
 └───────────────────────┬─────────────────────┘
                         │
 ┌───────────────────────▼─────────────────────┐
@@ -90,10 +90,16 @@ src/
   application/
     mod.rs
     init.rs
+    add.rs
+    install.rs
+    update.rs
+    remove.rs
+    outdated.rs
     plan.rs
     apply.rs
     check.rs
     list.rs
+    lockfile_build.rs
     ports.rs
   domain/
     mod.rs
@@ -107,7 +113,11 @@ src/
   infrastructure/
     mod.rs
     fs.rs
-    json.rs
+    json/
+      config.rs
+      dependency_config.rs
+      lockfile.rs
+      agents.rs
     hash.rs
     builtin_agents.rs
 ```
@@ -269,12 +279,13 @@ Rust 実装では以下を使い分ける。
 ## 12. Backward Compatibility Governance
 
 `sksync.config.json` と `sksync-lock.json` は公開 API とみなす。
-ただし現状の `sksync-lock.json` は resolved target path を含む machine-local state なので、project では `.gitignore` し、portable lockfile 化まではチーム共有しない。
+lockfile v3 は portable な source / hash / resolved install source だけを保存し、machine-local な target path は runtime に config から再計算する。
 破壊的変更を避けるため、以下を守る。
 
 - `lockfileVersion` を必ず持つ
 - config schema の version 導入を検討する
 - 古い lockfile は migrate できるようにする
+- v2 lockfile の `targets` は読み込み互換のみ維持し、新規書き込みでは出力しない
 - 互換層は `infrastructure::json` または専用 migration module に閉じ込める
 - domain model 内に過去形式の都合を持ち込まない
 
@@ -299,13 +310,14 @@ trait LinkStore {
 
 ## 14. TUI 設計原則
 
-TUI は application の thin adapter とする。
+TUI は application の thin adapter とする。ここでの TUI は画面分割 dashboard ではなく、質問形式の wizard / prompt UI を第一候補にする。
 
-- TUI は `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
+- TUI は `AddUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
 - TUI は filesystem を直接触らない
-- TUI state は選択中 row、filter、modal 表示などの UI 状態だけにする
-- dry-run を先に表示し、apply は明示操作にする
-- apply 前には確認 modal を出す
+- TUI state は質問途中の回答、選択中 option、確認待ちだけにする
+- 追加・削除・agent 変更は質問フローで必要情報を集める
+- 破壊的操作は dry-run summary を表示し、明示確認後に実行する
+- dashboard / 一覧画面が必要になった場合も prompt flow とは別 mode として扱う
 
 ## 15. 設計チェックリスト
 
