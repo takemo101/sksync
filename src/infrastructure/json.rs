@@ -511,11 +511,17 @@ impl DependencyConfigStore for FileDependencyConfigStore {
     ) -> Result<(), DependencyConfigStoreError> {
         let mut value = self.load_or_default()?;
         let dependencies = dependencies_object_mut(&mut value)?;
+        let mut merged_agents = dependency_agents(dependencies.get(skill_name), skill_name)?;
+        for agent in agents {
+            if !merged_agents.iter().any(|existing| existing == agent) {
+                merged_agents.push(agent.to_owned());
+            }
+        }
         dependencies.insert(
             skill_name.to_owned(),
             json!({
                 "source": source,
-                "agents": agents,
+                "agents": merged_agents,
             }),
         );
         self.write_value(&value)
@@ -587,6 +593,38 @@ fn dependencies_object_mut(
     dependencies.as_object_mut().ok_or_else(|| {
         DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
     })
+}
+
+fn dependency_agents(
+    dependency: Option<&serde_json::Value>,
+    skill_name: &str,
+) -> Result<Vec<String>, DependencyConfigStoreError> {
+    let Some(dependency) = dependency else {
+        return Ok(Vec::new());
+    };
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let Some(agents) = dependency.get("agents") else {
+        return Ok(Vec::new());
+    };
+    let agents = agents.as_array().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.agents must be an array"
+        ))
+    })?;
+    agents
+        .iter()
+        .map(|agent| {
+            agent.as_str().map(str::to_owned).ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField(format!(
+                    "dependencies.{skill_name}.agents must contain only strings"
+                ))
+            })
+        })
+        .collect()
 }
 
 impl ConfigStore for FileConfigStore {
@@ -943,9 +981,12 @@ impl RawLockfile {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_lockfile, write_lockfile, FileConfigStore, LockfileJsonError, RawConfig};
+    use super::{
+        read_lockfile, write_lockfile, FileConfigStore, FileDependencyConfigStore,
+        LockfileJsonError, RawConfig,
+    };
     use crate::application::config::ConfigResolveError;
-    use crate::application::ports::ConfigStore;
+    use crate::application::ports::{ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::SUPPORTED_LOCKFILE_VERSION;
     use crate::domain::scope::Scope;
@@ -1021,6 +1062,33 @@ mod tests {
 
         assert_eq!(store.path(), config_path.as_path());
         assert_eq!(config.skills[0].name.as_str(), "example-skill");
+    }
+
+    #[test]
+    fn dependency_config_store_merges_agents_for_existing_dependency() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        let store = FileDependencyConfigStore::new(&config_path, "./skills");
+
+        store
+            .add_dependency("review", "./review", &["pi".to_owned()])
+            .expect("add pi dependency");
+        store
+            .add_dependency(
+                "review",
+                "./review",
+                &["claude-code".to_owned(), "pi".to_owned()],
+            )
+            .expect("merge claude-code dependency");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi", "claude-code"])
+        );
     }
 
     #[test]
