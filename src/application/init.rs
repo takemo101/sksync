@@ -30,7 +30,7 @@ pub enum InitError {
 pub fn init_project(root: impl AsRef<Path>) -> Result<InitResult, InitError> {
     let root = root.as_ref();
     let config_path = root.join("sksync.config.json");
-    let skills_dir = root.join("skills");
+    let skills_dir = root.join(".sksync/skills");
 
     if config_path.exists() {
         return Err(InitError::ConfigExists(config_path.display().to_string()));
@@ -68,7 +68,7 @@ mod tests {
         assert!(result.config_path.is_file());
         assert!(result.skills_dir.is_dir());
         let config = std::fs::read_to_string(result.config_path).expect("read config");
-        assert!(config.contains("\"skillDir\": \"./skills\""));
+        assert!(config.contains("\"skillDir\": \"./.sksync/skills\""));
     }
 
     #[test]

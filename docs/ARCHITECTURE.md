@@ -269,6 +269,7 @@ Rust 実装では以下を使い分ける。
 ## 12. Backward Compatibility Governance
 
 `sksync.config.json` と `sksync-lock.json` は公開 API とみなす。
+ただし現状の `sksync-lock.json` は resolved target path を含む machine-local state なので、project では `.gitignore` し、portable lockfile 化まではチーム共有しない。
 破壊的変更を避けるため、以下を守る。
 
 - `lockfileVersion` を必ず持つ

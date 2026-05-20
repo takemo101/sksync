@@ -747,7 +747,7 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     if global {
         Ok(config_root_for_global()?.join("skills"))
     } else {
-        Ok(PathBuf::from("./skills"))
+        Ok(PathBuf::from("./.sksync/skills"))
     }
 }
 

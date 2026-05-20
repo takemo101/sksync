@@ -5,7 +5,7 @@
 ## 目的
 
 - エージェントごとに異なる skills ディレクトリへ、共通の skill 実体からシンボリックリンクを作成する
-- `package-lock.json` のような lockfile を残し、別PC・別プロジェクトでも同じ skill セットを再現できるようにする
+- skill の元データを `.sksync/skills/` に集約し、agent 側へ安全に symlink する
 - ビルトインで以下のエージェントに対応する
   - claude-code
   - codex
@@ -52,7 +52,7 @@ cargo run -- init
 作成されるもの:
 
 - `sksync.config.json`
-- `skills/`
+- `.sksync/skills/`
 
 既に `sksync.config.json` が存在する場合は上書きせず失敗します。
 
@@ -91,7 +91,7 @@ cargo run -- remove cuekit-dogfood --agent pi
 cargo run -- remove cuekit-dogfood --agent pi --agent claude-code
 ```
 
-この場合は `dependencies.<skill>.agents` と lockfile targets から指定 agent だけを外し、他 agent の link と `skills/<skill>` 本体は残します。最後の agent を外した場合は skill 全体の削除と同じ扱いにします。
+この場合は `dependencies.<skill>.agents` と lockfile targets から指定 agent だけを外し、他 agent の link と `.sksync/skills/<skill>` 本体は残します。最後の agent を外した場合は skill 全体の削除と同じ扱いにします。
 
 ### `sksync outdated`
 
@@ -180,6 +180,16 @@ cargo run -- list --global
 - conflict / drift / source missing がある場合、`apply` は失敗します。
 - target path の親ディレクトリは必要に応じて作成します。
 - テスト・実行例では一時ディレクトリを使うと安全です。
+
+### Generated files and gitignore
+
+project-local の生成物は `.gitignore` します。
+
+- `.sksync/` - downloaded/copied skill bodies (`.sksync/skills/<skill>`)
+- `skills/` - legacy generated skill store from older defaults
+- `sksync-lock.json` - 現状は machine-local target path を含むため、portable lockfile へ整理するまでは共有しません
+
+共有する基本ファイルは `sksync.config.json` です。
 
 ### Config / lockfile examples
 

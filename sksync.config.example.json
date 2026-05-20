@@ -1,6 +1,6 @@
 {
   "$schema": "https://example.com/sksync.schema.json",
-  "skillDir": "./skills",
+  "skillDir": "./.sksync/skills",
   "dependencies": {
     "example-skill": {
       "source": "github:owner/repo/path/to/skills/example-skill#main",

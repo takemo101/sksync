@@ -5,7 +5,7 @@
   "root": ".",
   "skills": {
     "example-skill": {
-      "source": "skills/example-skill",
+      "source": ".sksync/skills/example-skill",
       "installSource": {
         "type": "git",
         "url": "https://github.com/owner/repo.git",
