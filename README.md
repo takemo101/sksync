@@ -84,7 +84,7 @@ cargo run -- remove cuekit-dogfood --keep-files
 cargo run -- remove cuekit-dogfood --config-only
 ```
 
-将来予定の agent 単位削除では、`--agent` を指定して対象 agent の link だけを外せるようにします。
+`--agent` を指定すると対象 agent の link だけを外します。
 
 ```bash
 cargo run -- remove cuekit-dogfood --agent pi

@@ -72,6 +72,12 @@ pub trait DependencyConfigStore {
     ) -> Result<(), DependencyConfigStoreError>;
 
     fn remove_dependency(&self, skill_name: &str) -> Result<(), DependencyConfigStoreError>;
+
+    fn remove_dependency_agents(
+        &self,
+        skill_name: &str,
+        agents: &[String],
+    ) -> Result<Vec<String>, DependencyConfigStoreError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
