@@ -63,6 +63,31 @@ pub fn collect_outdated(
                     }
                 }
                 (
+                    Some(InstallSource::Git(config_git)),
+                    Some(InstallSource::Registry(locked_registry)),
+                ) => {
+                    let wanted_ref = config_git.reference.as_deref().unwrap_or("HEAD");
+                    let latest = resolver
+                        .git_remote_rev(&config_git.url, wanted_ref)
+                        .unwrap_or_else(|error| format!("error: {error}"));
+                    let current = locked_registry
+                        .reference
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    if latest == current {
+                        None
+                    } else {
+                        Some(OutdatedRow {
+                            skill: skill.name.as_str().to_owned(),
+                            current,
+                            wanted: wanted_ref.to_owned(),
+                            latest,
+                            source: config_git.url.clone(),
+                            status: "outdated".to_owned(),
+                        })
+                    }
+                }
+                (
                     Some(InstallSource::Registry(config_registry)),
                     Some(InstallSource::Registry(locked_registry)),
                 ) => {
@@ -189,6 +214,31 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
         assert_eq!(report.rows[0].current, "old");
         assert_eq!(report.rows[0].latest, "new");
+    }
+
+    #[test]
+    fn reports_git_config_with_legacy_registry_lock_ref_drift() {
+        let name = SkillName::new("review").unwrap();
+        let config_source = InstallSource::Git(GitInstallSource {
+            url: "https://github.com/owner/repo.git".to_owned(),
+            reference: Some("main".to_owned()),
+            path: "skills/review".into(),
+        });
+        let locked_source = InstallSource::Registry(RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package: "owner/repo/skills/review".to_owned(),
+            reference: Some("old".to_owned()),
+        });
+        let config = config_with_source(&name, config_source);
+        let lockfile = lockfile_with_source(name, locked_source);
+
+        let report = collect_outdated(&config, &lockfile, &FakeResolver);
+
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].current, "old");
+        assert_eq!(report.rows[0].wanted, "main");
+        assert_eq!(report.rows[0].latest, "new");
+        assert_eq!(report.rows[0].status, "outdated");
     }
 
     #[test]

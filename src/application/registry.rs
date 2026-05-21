@@ -3,6 +3,7 @@ use crate::application::ports::SkillInstallError;
 
 pub trait RegistryProvider {
     fn supports(&self, registry: &str) -> bool;
+    fn transform_url(&self, source: &str, reference: Option<&str>) -> Option<GitInstallSource>;
     fn resolve_git_source(
         &self,
         source: &RegistryInstallSource,
@@ -18,12 +19,29 @@ impl SkillsShProvider {
             .map(|package| package.repo_url)
     }
 
+    fn resolve_url_source(&self, source: &str) -> Option<SkillsShPackage> {
+        let body = source
+            .strip_prefix("https://www.skills.sh/")
+            .or_else(|| source.strip_prefix("http://www.skills.sh/"))
+            .or_else(|| source.strip_prefix("https://skills.sh/"))
+            .or_else(|| source.strip_prefix("http://skills.sh/"))
+            .or_else(|| source.strip_prefix("www.skills.sh/"))
+            .or_else(|| source.strip_prefix("skills.sh/"))?;
+
+        self.package_from_path(body)
+    }
+
     fn resolve_package(&self, registry: &str, package: &str) -> Option<SkillsShPackage> {
         if !self.supports(registry) {
             return None;
         }
 
-        let parts = package
+        self.package_from_path(package)
+    }
+
+    fn package_from_path(&self, value: &str) -> Option<SkillsShPackage> {
+        let parts = value
+            .trim_matches('/')
             .split('/')
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>();
@@ -49,8 +67,17 @@ impl RegistryProvider for SkillsShProvider {
     fn supports(&self, registry: &str) -> bool {
         matches!(
             registry.trim().to_ascii_lowercase().as_str(),
-            "skills.sh" | "skills-sh"
+            "skills.sh" | "skills-sh" | "www.skills.sh"
         )
+    }
+
+    fn transform_url(&self, source: &str, reference: Option<&str>) -> Option<GitInstallSource> {
+        let package = self.resolve_url_source(source)?;
+        Some(GitInstallSource {
+            url: package.repo_url,
+            reference: reference.map(str::to_owned),
+            path: package.path.into(),
+        })
     }
 
     fn resolve_git_source(
@@ -94,6 +121,10 @@ pub struct RegistryProviders {
 }
 
 impl RegistryProviders {
+    pub fn transform_url(&self, source: &str, reference: Option<&str>) -> Option<GitInstallSource> {
+        self.skills_sh.transform_url(source, reference)
+    }
+
     pub fn resolve_git_source(
         &self,
         source: &RegistryInstallSource,
@@ -122,6 +153,31 @@ mod tests {
     use crate::application::config::RegistryInstallSource;
     use crate::application::ports::SkillInstallError;
     use std::path::Path;
+
+    #[test]
+    fn skills_sh_provider_maps_url_to_github_git_source() {
+        let git = SkillsShProvider
+            .transform_url(
+                "https://www.skills.sh/vercel-labs/skills/find-skills",
+                Some("main"),
+            )
+            .expect("skills.sh url maps to git");
+
+        assert_eq!(git.url, "https://github.com/vercel-labs/skills.git");
+        assert_eq!(git.reference.as_deref(), Some("main"));
+        assert_eq!(git.path, Path::new("find-skills"));
+    }
+
+    #[test]
+    fn skills_sh_provider_maps_shorthand_url_to_github_git_source() {
+        let git = SkillsShProvider
+            .transform_url("skills.sh/owner/repo/path/to/skill", None)
+            .expect("skills.sh shorthand maps to git");
+
+        assert_eq!(git.url, "https://github.com/owner/repo.git");
+        assert_eq!(git.reference, None);
+        assert_eq!(git.path, Path::new("path/to/skill"));
+    }
 
     #[test]
     fn skills_sh_provider_maps_registry_source_to_github_git_source() {

@@ -95,14 +95,14 @@ SkillKit と同様に source は短い文字列を基本にする。`sksync add 
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
-owner/repo/path/to/skill#version + `--provider skills.sh`
 skills.sh/owner/repo/path/to/skill#version
-registry:skills.sh/owner/repo/path/to/skill#version
-registry:example.com/owner/repo/skill#version
+https://www.skills.sh/owner/repo/path/to/skill#version
+registry:skills.sh/owner/repo/path/to/skill#version (legacy)
+registry:example.com/owner/repo/skill#version (legacy)
 ./local-skill
 ```
 
-内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
+内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。`registry:<host>/<package>#version` は legacy 互換として残す。
 
 ### agent target mapping
 
@@ -262,7 +262,7 @@ agent 単位削除。
 
 - config と lockfile を読み込む
 - Git source は lockfile の commit と remote ref の HEAD を比較する
-- registry source は `skills.sh` を除き provider 未実装時に `registry-provider-missing` として表示する
+- legacy registry source は provider 未実装時に `registry-provider-missing` として表示する
 - 更新可能な skill を `current / wanted / latest / source / status` 形式で表示する
 - `--global` と `--json` をサポートする
 
