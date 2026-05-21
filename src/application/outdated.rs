@@ -1,7 +1,6 @@
 use thiserror::Error;
 
 use super::config::{InstallSource, ResolvedConfig};
-use crate::application::registry::RegistryProviders;
 use crate::domain::lockfile::Lockfile;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,77 +61,6 @@ pub fn collect_outdated(
                         })
                     }
                 }
-                (
-                    Some(InstallSource::Git(config_git)),
-                    Some(InstallSource::Registry(locked_registry)),
-                ) => {
-                    let wanted_ref = config_git.reference.as_deref().unwrap_or("HEAD");
-                    let latest = resolver
-                        .git_remote_rev(&config_git.url, wanted_ref)
-                        .unwrap_or_else(|error| format!("error: {error}"));
-                    let current = locked_registry
-                        .reference
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    if latest == current {
-                        None
-                    } else {
-                        Some(OutdatedRow {
-                            skill: skill.name.as_str().to_owned(),
-                            current,
-                            wanted: wanted_ref.to_owned(),
-                            latest,
-                            source: config_git.url.clone(),
-                            status: "outdated".to_owned(),
-                        })
-                    }
-                }
-                (
-                    Some(InstallSource::Registry(config_registry)),
-                    Some(InstallSource::Registry(locked_registry)),
-                ) => {
-                    let source = format!(
-                        "registry:{}/{}",
-                        config_registry.registry, config_registry.package
-                    );
-                    if let Some(repo) = RegistryProviders::default().git_repo_url(config_registry) {
-                        let wanted_ref = config_registry.reference.as_deref().unwrap_or("HEAD");
-                        let latest = resolver
-                            .git_remote_rev(&repo, wanted_ref)
-                            .unwrap_or_else(|error| format!("error: {error}"));
-                        let current = locked_registry
-                            .reference
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_owned());
-                        if latest == current {
-                            None
-                        } else {
-                            Some(OutdatedRow {
-                                skill: skill.name.as_str().to_owned(),
-                                current,
-                                wanted: wanted_ref.to_owned(),
-                                latest,
-                                source,
-                                status: "outdated".to_owned(),
-                            })
-                        }
-                    } else {
-                        Some(OutdatedRow {
-                            skill: skill.name.as_str().to_owned(),
-                            current: locked_registry
-                                .reference
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_owned()),
-                            wanted: config_registry
-                                .reference
-                                .clone()
-                                .unwrap_or_else(|| "latest".to_owned()),
-                            latest: "unsupported".to_owned(),
-                            source,
-                            status: "registry-provider-missing".to_owned(),
-                        })
-                    }
-                }
                 _ => None,
             }
         })
@@ -145,7 +73,7 @@ pub fn collect_outdated(
 mod tests {
     use super::{collect_outdated, RemoteRefError, RemoteRefResolver};
     use crate::application::config::{
-        GitInstallSource, InstallSource, RegistryInstallSource, ResolvedConfig, ResolvedSkill,
+        GitInstallSource, InstallSource, ResolvedConfig, ResolvedSkill,
     };
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::skill::{SkillName, SourcePath};
@@ -214,72 +142,5 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
         assert_eq!(report.rows[0].current, "old");
         assert_eq!(report.rows[0].latest, "new");
-    }
-
-    #[test]
-    fn reports_git_config_with_legacy_registry_lock_ref_drift() {
-        let name = SkillName::new("review").unwrap();
-        let config_source = InstallSource::Git(GitInstallSource {
-            url: "https://github.com/owner/repo.git".to_owned(),
-            reference: Some("main".to_owned()),
-            path: "skills/review".into(),
-        });
-        let locked_source = InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
-            package: "owner/repo/skills/review".to_owned(),
-            reference: Some("old".to_owned()),
-        });
-        let config = config_with_source(&name, config_source);
-        let lockfile = lockfile_with_source(name, locked_source);
-
-        let report = collect_outdated(&config, &lockfile, &FakeResolver);
-
-        assert_eq!(report.rows.len(), 1);
-        assert_eq!(report.rows[0].current, "old");
-        assert_eq!(report.rows[0].wanted, "main");
-        assert_eq!(report.rows[0].latest, "new");
-        assert_eq!(report.rows[0].status, "outdated");
-    }
-
-    #[test]
-    fn reports_skills_sh_registry_ref_drift() {
-        let name = SkillName::new("review").unwrap();
-        let config_source = InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
-            package: "owner/repo/skills/review".to_owned(),
-            reference: Some("main".to_owned()),
-        });
-        let locked_source = InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
-            package: "owner/repo/skills/review".to_owned(),
-            reference: Some("old".to_owned()),
-        });
-        let config = config_with_source(&name, config_source);
-        let lockfile = lockfile_with_source(name, locked_source);
-
-        let report = collect_outdated(&config, &lockfile, &FakeResolver);
-
-        assert_eq!(report.rows.len(), 1);
-        assert_eq!(report.rows[0].current, "old");
-        assert_eq!(report.rows[0].wanted, "main");
-        assert_eq!(report.rows[0].latest, "new");
-        assert_eq!(report.rows[0].status, "outdated");
-    }
-
-    #[test]
-    fn unsupported_registry_reports_provider_missing() {
-        let name = SkillName::new("review").unwrap();
-        let source = InstallSource::Registry(RegistryInstallSource {
-            registry: "example.com".to_owned(),
-            package: "owner/repo/skills/review".to_owned(),
-            reference: Some("1.0.0".to_owned()),
-        });
-        let config = config_with_source(&name, source.clone());
-        let lockfile = lockfile_with_source(name, source);
-
-        let report = collect_outdated(&config, &lockfile, &FakeResolver);
-
-        assert_eq!(report.rows.len(), 1);
-        assert_eq!(report.rows[0].status, "registry-provider-missing");
     }
 }

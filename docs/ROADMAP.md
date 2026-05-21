@@ -30,7 +30,7 @@
 - Stabilize `add` / `install` / `update` semantics
 - Implement `remove <skill>` for dependency, installed skill, lockfile entry, and managed symlink removal
 - Add `remove <skill> --agent <agent>` for agent-scoped symlink / target removal
-- Implement `outdated` for Git drift reporting and registry provider placeholder reporting
+- Implement `outdated` for Git drift reporting
 - Do not add a `ci` command for now; lockfile-first `install` covers the current reproducibility need
 
 ## Phase 4: Portability and install workflow
@@ -44,5 +44,4 @@
 ## Phase 5: Source integrations
 
 - Support additional source URL transformers beyond `skills.sh`
-- Keep `registry:<host>/<package>#version` as a legacy compatibility path where useful
 - Explore GitLab / gist sources after GitHub/local/source URL transforms are stable

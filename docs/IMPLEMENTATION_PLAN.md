@@ -13,7 +13,7 @@
 - `sksync.config.example.json`: config例
 - `sksync-lock.example.json`: lockfile例
 
-したがって、最初の実装対象は「Rust CLI MVP」です。TUIやinstall/registryは、coreが安定した後に分離して進めます。
+したがって、最初の実装対象は「Rust CLI MVP」です。TUIやinstall/source URL integrationsは、coreが安定した後に分離して進めます。
 
 ## 実装方針
 
@@ -139,7 +139,7 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 
 1. **最優先**: config parse、domain model、planner、safe apply
 2. **次点**: check/list、lockfile drift検出
-3. **後続**: TUI、install、registry、Windows特殊対応
+3. **後続**: TUI、install、source URL integrations、Windows特殊対応
 
 ## 実装上の注意
 

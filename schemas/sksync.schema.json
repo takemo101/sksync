@@ -106,7 +106,7 @@
         {
           "type": "string",
           "minLength": 1,
-          "description": "SkillKit-style source string: GitHub shorthand, URL, registry source, or local path."
+          "description": "SkillKit-style source string: GitHub shorthand, provider URL, GitHub URL, or local path."
         },
         {
           "$ref": "#/$defs/structuredInstallSource"
@@ -119,7 +119,7 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["git", "github", "local", "registry"]
+          "enum": ["git", "github", "local"]
         },
         "url": {
           "type": "string",
