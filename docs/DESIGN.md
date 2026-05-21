@@ -95,8 +95,8 @@ SkillKit と同様に source は短い文字列を基本にする。`sksync add 
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
-skills.sh/owner/repo/path/to/skill#version
-https://www.skills.sh/owner/repo/path/to/skill#version
+skills.sh/owner/repo/skill-name#version
+https://www.skills.sh/owner/repo/skill-name#version
 ./local-skill
 ```
 

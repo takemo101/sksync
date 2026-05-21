@@ -430,7 +430,7 @@ fn parse_structured_install_source(
         }
         Some("registry") => Err(ConfigResolveError::InvalidInstallSource {
             skill: skill.to_owned(),
-            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path".to_owned(),
+            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/skill-name".to_owned(),
         }),
         _ => {
             let repo = source.repo.or(source.url).ok_or_else(|| {
@@ -473,7 +473,7 @@ fn parse_install_source_string(
     if body.starts_with("registry:") {
         return Err(ConfigResolveError::InvalidInstallSource {
             skill: skill.to_owned(),
-            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path".to_owned(),
+            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/skill-name".to_owned(),
         });
     }
     let body = body.strip_prefix("github:").unwrap_or(body);
@@ -1297,7 +1297,7 @@ mod tests {
               "skillDir": "./.sksync/skills",
               "dependencies": {
                 "review": {
-                  "source": "skills.sh/owner/repo/skills/review#main",
+                  "source": "skills.sh/owner/repo/review#main",
                   "agents": ["pi"]
                 }
               }
@@ -1340,7 +1340,7 @@ mod tests {
         };
 
         assert_eq!(git.url, "https://github.com/vercel-labs/skills.git");
-        assert_eq!(git.path, Path::new("find-skills"));
+        assert_eq!(git.path, Path::new("skills/find-skills"));
         assert_eq!(git.reference.as_deref(), Some("main"));
     }
 

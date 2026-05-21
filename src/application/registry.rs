@@ -32,7 +32,7 @@ impl SkillsShProvider {
 
         let repo = format!("{}/{}", parts[0], parts[1]);
         let path = if parts.len() > 2 {
-            parts[2..].join("/")
+            format!("skills/{}", parts[2..].join("/"))
         } else {
             ".".to_owned()
         };
@@ -88,17 +88,17 @@ mod tests {
 
         assert_eq!(git.url, "https://github.com/vercel-labs/skills.git");
         assert_eq!(git.reference.as_deref(), Some("main"));
-        assert_eq!(git.path, Path::new("find-skills"));
+        assert_eq!(git.path, Path::new("skills/find-skills"));
     }
 
     #[test]
     fn skills_sh_provider_maps_shorthand_url_to_github_git_source() {
         let git = SkillsShProvider
-            .transform_url("skills.sh/owner/repo/path/to/skill", None)
+            .transform_url("skills.sh/owner/repo/my-skill", None)
             .expect("skills.sh shorthand maps to git");
 
         assert_eq!(git.url, "https://github.com/owner/repo.git");
         assert_eq!(git.reference, None);
-        assert_eq!(git.path, Path::new("path/to/skill"));
+        assert_eq!(git.path, Path::new("skills/my-skill"));
     }
 }
