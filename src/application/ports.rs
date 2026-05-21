@@ -161,6 +161,8 @@ pub enum SkillInstallError {
     Prepare { path: String, message: String },
     #[error("install source path does not exist: {path}")]
     MissingSourcePath { path: String },
+    #[error("invalid skill package at {path}: {message}")]
+    InvalidSkillPackage { path: String, message: String },
     #[error("git command failed for {repo}: {message}")]
     Git { repo: String, message: String },
     #[error("failed to copy {from} to {to}: {message}")]

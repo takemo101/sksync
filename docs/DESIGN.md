@@ -100,7 +100,7 @@ https://www.skills.sh/owner/repo/skill-name#version
 ./local-skill
 ```
 
-内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。
+内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証する。
 
 ### agent target mapping
 

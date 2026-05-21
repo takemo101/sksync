@@ -111,7 +111,7 @@ global mode (`--global`) で作成されるもの:
 
 ### `sksync add`
 
-SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。
+SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
 
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
@@ -177,7 +177,7 @@ cargo run -- install --global
 
 ### `sksync update`
 
-`dependencies` に書かれた SkillKit-style source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。
+`dependencies` に書かれた SkillKit-style source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
 
 ```bash
 cargo run -- update
