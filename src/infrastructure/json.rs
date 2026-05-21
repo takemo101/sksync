@@ -82,11 +82,26 @@ pub struct RawStructuredInstallSource {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMappingConfig {
+    pub agents: BTreeMap<String, PathBuf>,
+    pub project_agents: BTreeMap<String, PathBuf>,
+}
+
+impl AgentMappingConfig {
+    pub fn merge(&mut self, other: Self) {
+        self.agents.extend(other.agents);
+        self.project_agents.extend(other.project_agents);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawAgentMappings {
     #[serde(default)]
     agents: BTreeMap<String, RawAgentTargetMapping>,
+    #[serde(default)]
+    project_agents: BTreeMap<String, RawAgentTargetMapping>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,25 +126,52 @@ pub enum AgentMappingJsonError {
     },
 }
 
-pub fn read_agent_mappings(
+pub fn default_agent_mapping_config() -> Result<AgentMappingConfig, AgentMappingJsonError> {
+    parse_agent_mapping_config(
+        include_str!("../../sksync.agents.example.json"),
+        "sksync.agents.example.json",
+    )
+}
+
+pub fn read_agent_mapping_config(
     path: impl AsRef<Path>,
-) -> Result<BTreeMap<String, PathBuf>, AgentMappingJsonError> {
+) -> Result<AgentMappingConfig, AgentMappingJsonError> {
     let path = path.as_ref();
     let content = std::fs::read_to_string(path).map_err(|source| AgentMappingJsonError::Read {
         path: display_path(path),
         source,
     })?;
-    let raw = serde_json::from_str::<RawAgentMappings>(&content).map_err(|source| {
+    parse_agent_mapping_config(&content, &display_path(path))
+}
+
+pub fn read_agent_mappings(
+    path: impl AsRef<Path>,
+) -> Result<BTreeMap<String, PathBuf>, AgentMappingJsonError> {
+    read_agent_mapping_config(path).map(|config| config.agents)
+}
+
+fn parse_agent_mapping_config(
+    content: &str,
+    path: &str,
+) -> Result<AgentMappingConfig, AgentMappingJsonError> {
+    let raw = serde_json::from_str::<RawAgentMappings>(content).map_err(|source| {
         AgentMappingJsonError::Parse {
-            path: display_path(path),
+            path: path.to_owned(),
             source,
         }
     })?;
-    Ok(raw
-        .agents
-        .into_iter()
-        .map(|(name, mapping)| (name, mapping.target_dir))
-        .collect())
+    Ok(AgentMappingConfig {
+        agents: raw
+            .agents
+            .into_iter()
+            .map(|(name, mapping)| (name, mapping.target_dir))
+            .collect(),
+        project_agents: raw
+            .project_agents
+            .into_iter()
+            .map(|(name, mapping)| (name, mapping.target_dir))
+            .collect(),
+    })
 }
 
 fn default_enabled() -> bool {

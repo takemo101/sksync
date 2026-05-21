@@ -60,6 +60,12 @@ pub struct ResolvedAgent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTargetDir {
+    pub target_dir: PathBuf,
+    pub scope: Scope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSkill {
     pub name: SkillName,
     pub source: SourcePath,
@@ -92,7 +98,28 @@ pub fn apply_agent_target_dirs(
     config: &mut ResolvedConfig,
     target_dirs: BTreeMap<String, PathBuf>,
 ) -> Result<(), ConfigResolveError> {
-    for (name, target_dir) in target_dirs {
+    apply_agent_target_mappings(
+        config,
+        target_dirs
+            .into_iter()
+            .map(|(name, target_dir)| {
+                (
+                    name,
+                    AgentTargetDir {
+                        target_dir,
+                        scope: Scope::User,
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+pub fn apply_agent_target_mappings(
+    config: &mut ResolvedConfig,
+    target_dirs: BTreeMap<String, AgentTargetDir>,
+) -> Result<(), ConfigResolveError> {
+    for (name, mapping) in target_dirs {
         let kind =
             AgentKind::from_str(&name).map_err(|source| ConfigResolveError::InvalidAgentName {
                 name: name.clone(),
@@ -102,12 +129,17 @@ pub fn apply_agent_target_dirs(
         config
             .agents
             .entry(key)
-            .and_modify(|agent| agent.target_dir = Some(target_dir.clone()))
+            .and_modify(|agent| {
+                if agent.target_dir.is_none() {
+                    agent.target_dir = Some(mapping.target_dir.clone());
+                    agent.scope = mapping.scope;
+                }
+            })
             .or_insert(ResolvedAgent {
                 kind,
                 enabled: true,
-                scope: Scope::User,
-                target_dir: Some(target_dir),
+                scope: mapping.scope,
+                target_dir: Some(mapping.target_dir),
             });
     }
     Ok(())

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "title": "sksync agent target mapping",
-  "description": "Global-only agent target directory overrides for sksync.",
+  "description": "Global and project-scope agent target directory overrides for sksync.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -12,13 +12,23 @@
     },
     "agents": {
       "type": "object",
-      "description": "Agent target directory mappings keyed by agent name.",
+      "description": "Global/user-scope agent target directory mappings keyed by agent name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentTargetMapping"
+      }
+    },
+    "projectAgents": {
+      "type": "object",
+      "description": "Project-scope agent target directory mappings shared by all projects.",
       "additionalProperties": {
         "$ref": "#/$defs/agentTargetMapping"
       }
     }
   },
-  "required": ["agents"],
+  "anyOf": [
+    { "required": ["agents"] },
+    { "required": ["projectAgents"] }
+  ],
   "$defs": {
     "agentTargetMapping": {
       "type": "object",
@@ -28,7 +38,7 @@
         "targetDir": {
           "type": "string",
           "minLength": 1,
-          "description": "Directory where the agent reads skills. Tilde-prefixed paths are supported by sksync."
+          "description": "Directory where the agent reads skills. Tilde-prefixed paths are supported by sksync. Relative project-scope paths resolve from the project root."
         }
       }
     }

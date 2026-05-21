@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,7 +8,9 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::ConfigStore;
-use crate::infrastructure::json::FileConfigStore;
+use crate::infrastructure::json::{
+    default_agent_mapping_config, read_agent_mapping_config, AgentMappingConfig, FileConfigStore,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -119,8 +122,9 @@ fn run_add_flow(project_root: &PathBuf) -> Result<()> {
         .with_help_message("Optional; leave blank to infer from source")
         .prompt()
         .context("failed to read name override")?;
-    let agents = prompt_agents()?;
-    let global = prompt_config_scope("Where should this dependency be added?")?.is_global();
+    let scope = prompt_config_scope("Where should this dependency be added?")?;
+    let agents = prompt_agents(scope)?;
+    let global = scope.is_global();
 
     let mut args = vec!["add".to_owned(), source];
     for agent in agents {
@@ -292,27 +296,22 @@ fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<Reso
 fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<PathBuf> {
     match scope {
         ConfigScope::Project => Ok(project_root.join("sksync.config.json")),
-        ConfigScope::Global => dirs::home_dir()
-            .map(|dir| dir.join(".sksync/config.json"))
-            .context("failed to determine home directory for global sksync directory"),
+        ConfigScope::Global => Ok(global_config_root()?.join("config.json")),
     }
 }
 
-fn prompt_agents() -> Result<Vec<String>> {
-    let selected = MultiSelect::new(
-        "Select agent(s)",
-        vec!["pi", "claude-code", "codex", "gemini", "opencode", "custom"],
-    )
-    .with_help_message("Use space to select, enter to confirm")
-    .prompt()
-    .context("failed to read agent selection")?;
+fn prompt_agents(scope: ConfigScope) -> Result<Vec<String>> {
+    let selected = MultiSelect::new("Select agent(s)", agent_options_for_scope(scope)?)
+        .with_help_message("Use space to select, enter to confirm")
+        .prompt()
+        .context("failed to read agent selection")?;
 
     let mut agents = Vec::new();
     for agent in selected {
         if agent == "custom" {
             agents.extend(prompt_custom_agents()?);
         } else {
-            agents.push(agent.to_owned());
+            agents.push(agent);
         }
     }
 
@@ -322,6 +321,32 @@ fn prompt_agents() -> Result<Vec<String>> {
     agents.sort();
     agents.dedup();
     Ok(agents)
+}
+
+fn agent_options_for_scope(scope: ConfigScope) -> Result<Vec<String>> {
+    let mappings = merged_agent_mapping_config()?;
+    let mut agents = BTreeSet::new();
+    agents.extend(mappings.agents.keys().cloned());
+    if scope == ConfigScope::Project {
+        agents.extend(mappings.project_agents.keys().cloned());
+    }
+    agents.insert("custom".to_owned());
+    Ok(agents.into_iter().collect())
+}
+
+fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
+    let mut mappings = default_agent_mapping_config()?;
+    let mapping_path = global_config_root()?.join("agents.json");
+    if mapping_path.exists() {
+        mappings.merge(read_agent_mapping_config(&mapping_path)?);
+    }
+    Ok(mappings)
+}
+
+fn global_config_root() -> Result<PathBuf> {
+    dirs::home_dir()
+        .map(|dir| dir.join(".sksync"))
+        .context("failed to determine home directory for global sksync directory")
 }
 
 fn prompt_custom_agents() -> Result<Vec<String>> {

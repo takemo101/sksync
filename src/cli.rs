@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
-use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
+use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::init::{init_global, init_project};
 use crate::application::list::list_skills;
 use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
@@ -23,8 +23,8 @@ use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
-    read_agent_mappings, read_lockfile, FileConfigStore, FileDependencyConfigStore,
-    FileLockfileStore,
+    default_agent_mapping_config, read_agent_mapping_config, read_lockfile, FileConfigStore,
+    FileDependencyConfigStore, FileLockfileStore,
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -654,12 +654,47 @@ fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedCon
 
 fn load_config_from_path(config_path: &Path, default_scope: Scope) -> Result<ResolvedConfig> {
     let mut config = FileConfigStore::new(config_path).load_with_default_scope(default_scope)?;
+    let mappings = agent_target_mappings_for_scope(default_scope)?;
+    apply_agent_target_mappings(&mut config, mappings)?;
+    Ok(config)
+}
+
+fn agent_target_mappings_for_scope(scope: Scope) -> Result<BTreeMap<String, AgentTargetDir>> {
+    let mapping_config = merged_agent_mapping_config()?;
+    let mut mappings = BTreeMap::new();
+
+    for (name, target_dir) in mapping_config.agents {
+        mappings.insert(
+            name,
+            AgentTargetDir {
+                target_dir,
+                scope: Scope::User,
+            },
+        );
+    }
+
+    if scope == Scope::Project {
+        for (name, target_dir) in mapping_config.project_agents {
+            mappings.insert(
+                name,
+                AgentTargetDir {
+                    target_dir,
+                    scope: Scope::Project,
+                },
+            );
+        }
+    }
+
+    Ok(mappings)
+}
+
+fn merged_agent_mapping_config() -> Result<crate::infrastructure::json::AgentMappingConfig> {
+    let mut mappings = default_agent_mapping_config()?;
     let mapping_path = config_root_for_global()?.join("agents.json");
     if mapping_path.exists() {
-        let mappings = read_agent_mappings(&mapping_path)?;
-        apply_agent_target_dirs(&mut config, mappings)?;
+        mappings.merge(read_agent_mapping_config(&mapping_path)?);
     }
-    Ok(config)
+    Ok(mappings)
 }
 
 fn scope_for(global: bool) -> Scope {

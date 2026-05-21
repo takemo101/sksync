@@ -42,7 +42,13 @@ fn config_schema_covers_supported_top_level_fields() {
 #[test]
 fn agents_schema_requires_agent_targets() {
     let schema = parse_json(include_str!("../schemas/sksync.agents.schema.json"));
-    assert_eq!(schema["required"], serde_json::json!(["agents"]));
+    assert_eq!(
+        schema["anyOf"],
+        serde_json::json!([
+            { "required": ["agents"] },
+            { "required": ["projectAgents"] }
+        ])
+    );
     assert_eq!(
         schema["$defs"]["agentTargetMapping"]["required"],
         serde_json::json!(["targetDir"])
@@ -53,6 +59,9 @@ fn agents_schema_requires_agent_targets() {
 fn agents_example_includes_skillkit_compatible_mappings() {
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
     let mappings = agents["agents"].as_object().expect("agents object");
+    let project_mappings = agents["projectAgents"]
+        .as_object()
+        .expect("projectAgents object");
 
     for agent in [
         "claude-code",
@@ -67,11 +76,19 @@ fn agents_example_includes_skillkit_compatible_mappings() {
         "hermes",
     ] {
         assert!(mappings.contains_key(agent), "missing mapping for {agent}");
+        assert!(
+            project_mappings.contains_key(agent),
+            "missing project mapping for {agent}"
+        );
     }
 
     assert!(
         mappings.len() >= 46,
         "expected SkillKit-compatible agent coverage"
+    );
+    assert!(
+        project_mappings.len() >= 46,
+        "expected SkillKit-compatible project agent coverage"
     );
 }
 
