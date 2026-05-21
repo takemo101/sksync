@@ -306,14 +306,7 @@ fn prompt_agents(scope: ConfigScope) -> Result<Vec<String>> {
         .prompt()
         .context("failed to read agent selection")?;
 
-    let mut agents = Vec::new();
-    for agent in selected {
-        if agent == "custom" {
-            agents.extend(prompt_custom_agents()?);
-        } else {
-            agents.push(agent);
-        }
-    }
+    let mut agents = selected;
 
     if agents.is_empty() {
         bail!("at least one agent is required");
@@ -330,7 +323,6 @@ fn agent_options_for_scope(scope: ConfigScope) -> Result<Vec<String>> {
     if scope == ConfigScope::Project {
         agents.extend(mappings.project.keys().cloned());
     }
-    agents.insert("custom".to_owned());
     Ok(agents.into_iter().collect())
 }
 
@@ -347,19 +339,6 @@ fn global_config_root() -> Result<PathBuf> {
     dirs::home_dir()
         .map(|dir| dir.join(".sksync"))
         .context("failed to determine home directory for global sksync directory")
-}
-
-fn prompt_custom_agents() -> Result<Vec<String>> {
-    let input = Text::new("Custom agents")
-        .with_help_message("Comma separated, e.g. cursor,qwen")
-        .prompt()
-        .context("failed to read custom agents")?;
-    Ok(input
-        .split(',')
-        .map(str::trim)
-        .filter(|agent| !agent.is_empty())
-        .map(str::to_owned)
-        .collect())
 }
 
 fn prompt_required(label: &str) -> Result<String> {

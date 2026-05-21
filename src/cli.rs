@@ -23,8 +23,8 @@ use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
-    default_agent_mapping_config, read_agent_mapping_config, read_lockfile, FileConfigStore,
-    FileDependencyConfigStore, FileLockfileStore,
+    default_agent_mapping_config, read_agent_mapping_config, read_lockfile, AgentMappingConfig,
+    FileConfigStore, FileDependencyConfigStore, FileLockfileStore,
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -660,7 +660,16 @@ fn load_config_from_path(config_path: &Path, default_scope: Scope) -> Result<Res
 }
 
 fn agent_target_mappings_for_scope(scope: Scope) -> Result<BTreeMap<String, AgentTargetDir>> {
-    let mapping_config = merged_agent_mapping_config()?;
+    Ok(agent_target_mappings_from_config(
+        merged_agent_mapping_config()?,
+        scope,
+    ))
+}
+
+fn agent_target_mappings_from_config(
+    mapping_config: AgentMappingConfig,
+    scope: Scope,
+) -> BTreeMap<String, AgentTargetDir> {
     let mut mappings = BTreeMap::new();
 
     for (name, target_dir) in mapping_config.global {
@@ -685,7 +694,7 @@ fn agent_target_mappings_for_scope(scope: Scope) -> Result<BTreeMap<String, Agen
         }
     }
 
-    Ok(mappings)
+    mappings
 }
 
 fn merged_agent_mapping_config() -> Result<crate::infrastructure::json::AgentMappingConfig> {
@@ -852,9 +861,12 @@ fn run_wizard() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{global_config_root_from_home, Cli};
+    use super::{agent_target_mappings_from_config, global_config_root_from_home, Cli};
+    use crate::domain::scope::Scope;
+    use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
-    use std::path::Path;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn cli_definition_is_valid() {
@@ -902,6 +914,34 @@ mod tests {
             global_config_root_from_home(Path::new("/tmp/home")),
             Path::new("/tmp/home/.sksync")
         );
+    }
+
+    #[test]
+    fn project_agent_mappings_override_global_mappings() {
+        let mappings = agent_target_mappings_from_config(
+            AgentMappingConfig {
+                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/skills"))]),
+                project: BTreeMap::from([("pi".to_owned(), PathBuf::from(".pi/skills"))]),
+            },
+            Scope::Project,
+        );
+
+        assert_eq!(mappings["pi"].scope, Scope::Project);
+        assert_eq!(mappings["pi"].target_dir, Path::new(".pi/skills"));
+    }
+
+    #[test]
+    fn global_agent_mappings_ignore_project_mappings() {
+        let mappings = agent_target_mappings_from_config(
+            AgentMappingConfig {
+                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/skills"))]),
+                project: BTreeMap::from([("pi".to_owned(), PathBuf::from(".pi/skills"))]),
+            },
+            Scope::User,
+        );
+
+        assert_eq!(mappings["pi"].scope, Scope::User);
+        assert_eq!(mappings["pi"].target_dir, Path::new("~/.pi/skills"));
     }
 
     #[test]
