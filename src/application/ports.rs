@@ -165,6 +165,12 @@ pub enum SkillInstallError {
     Git { repo: String, message: String },
     #[error("registry source is not supported yet: {registry}/{package}")]
     UnsupportedRegistry { registry: String, package: String },
+    #[error("invalid registry package {registry}/{package}: {message}")]
+    InvalidRegistryPackage {
+        registry: String,
+        package: String,
+        message: String,
+    },
     #[error("failed to copy {from} to {to}: {message}")]
     Copy {
         from: String,

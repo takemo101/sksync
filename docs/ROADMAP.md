@@ -43,6 +43,6 @@
 
 ## Phase 5: Registry or source integrations
 
-- Implement `registry:skills.sh/<package>` provider
+- Support additional registry providers beyond `skills.sh`
 - Support additional `registry:<host>/<package>#version` providers
 - Explore GitLab / gist sources after GitHub/local/registry are stable

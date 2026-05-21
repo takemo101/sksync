@@ -77,7 +77,7 @@ struct InitArgs {
 
 #[derive(Debug, Args)]
 struct AddArgs {
-    /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, registry:skills.sh/owner/skill, or ./local-skill.
+    /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, skills.sh/owner/repo/path#ref, or ./local-skill.
     source: String,
     /// Agent to link into. Can be passed multiple times.
     #[arg(short, long = "agent", required = true)]
