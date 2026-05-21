@@ -24,6 +24,7 @@ use crate::domain::scope::Scope;
 use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
+use crate::infrastructure::git::GitClient;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
@@ -937,7 +938,7 @@ fn discover_git_source_skills(
 ) -> Result<DiscoveredSkills> {
     let clone_dir = temporary_clone_dir();
     let result = (|| {
-        clone_git_for_discovery(source, &clone_dir)?;
+        GitClient.clone_checkout(source, &clone_dir)?;
         let search_dir = clone_dir.join(&source.path);
         if search_dir.exists() {
             return Ok(DiscoveredSkills {
@@ -968,59 +969,6 @@ fn discover_git_source_skills(
     }
 
     result
-}
-
-fn clone_git_for_discovery(source: &GitInstallSource, clone_dir: &Path) -> Result<()> {
-    let output = GitCommand::new("git")
-        .arg("clone")
-        .arg("--filter=blob:none")
-        .arg("--no-checkout")
-        .arg(&source.url)
-        .arg(clone_dir)
-        .output()
-        .with_context(|| format!("failed to run git clone for {}", source.url))?;
-    if !output.status.success() {
-        bail!(
-            "git command failed for {}: {}",
-            source.url,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    checkout_git_for_discovery(
-        clone_dir,
-        &source.url,
-        source.reference.as_deref().unwrap_or("HEAD"),
-    )
-}
-
-fn checkout_git_for_discovery(clone_dir: &Path, repo: &str, reference: &str) -> Result<()> {
-    if run_git_for_discovery(clone_dir, repo, &["checkout", "--detach", reference]).is_ok() {
-        return Ok(());
-    }
-
-    run_git_for_discovery(
-        clone_dir,
-        repo,
-        &["fetch", "--depth", "1", "origin", reference],
-    )?;
-    run_git_for_discovery(clone_dir, repo, &["checkout", "--detach", "FETCH_HEAD"])
-}
-
-fn run_git_for_discovery(clone_dir: &Path, repo: &str, args: &[&str]) -> Result<()> {
-    let output = GitCommand::new("git")
-        .arg("-C")
-        .arg(clone_dir)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run git for {repo}"))?;
-    if !output.status.success() {
-        bail!(
-            "git command failed for {repo}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
 }
 
 fn temporary_clone_dir() -> PathBuf {
