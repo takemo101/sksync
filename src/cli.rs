@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
 use crate::application::config::{apply_agent_target_dirs, ResolvedConfig};
-use crate::application::init::init_project;
+use crate::application::init::{init_global, init_project};
 use crate::application::list::list_skills;
 use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
 use crate::application::plan::build_link_plan;
@@ -43,8 +43,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create a starter sksync.config.json and skills directory.
-    Init,
+    /// Create a starter sksync config and skills directory.
+    Init(InitArgs),
     /// Add a dependency, update it, and apply symlinks.
     Add(AddArgs),
     /// Remove a dependency, installed skill, managed symlinks, and lock entry.
@@ -66,6 +66,13 @@ enum Command {
     /// Launch the interactive prompt wizard.
     #[command(visible_aliases = ["ask", "tui"])]
     Wizard,
+}
+
+#[derive(Debug, Args)]
+struct InitArgs {
+    /// Initialize ~/.config/sksync/config.json instead of ./sksync.config.json.
+    #[arg(long)]
+    global: bool,
 }
 
 #[derive(Debug, Args)]
@@ -166,7 +173,7 @@ pub fn run() -> Result<()> {
 
 fn dispatch(command: Command) -> Result<()> {
     match command {
-        Command::Init => run_init(),
+        Command::Init(args) => run_init(args),
         Command::Add(args) => run_add(args),
         Command::Remove(args) => run_remove(args),
         Command::Outdated(args) => run_outdated(args),
@@ -180,9 +187,13 @@ fn dispatch(command: Command) -> Result<()> {
     }
 }
 
-fn run_init() -> Result<()> {
+fn run_init(args: InitArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let result = init_project(&current_dir)?;
+    let result = if args.global {
+        init_global(config_root_for_global()?)?
+    } else {
+        init_project(&current_dir)?
+    };
     println!("Created {}", result.config_path.display());
     println!("Created {}", result.skills_dir.display());
     Ok(())
@@ -837,6 +848,11 @@ mod tests {
         Cli::command()
             .try_get_matches_from(["sksync", "init", "--help"])
             .expect_err("--help should short-circuit as a clap display error");
+    }
+
+    #[test]
+    fn init_global_is_registered() {
+        Cli::try_parse_from(["sksync", "init", "--global"]).expect("init --global should parse");
     }
 
     #[test]

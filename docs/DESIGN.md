@@ -193,8 +193,11 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 
 ### `sksync init`
 
-- `sksync.config.json` を作成
-- `.sksync/skills/` ディレクトリを作成
+- project mode では `sksync.config.json` を作成
+- project mode では `.sksync/skills/` ディレクトリを作成
+- `--global` では `~/.config/sksync/config.json` を作成
+- `--global` では `~/.config/sksync/skills/` ディレクトリを作成
+- 既存 config は上書きしない
 - built-in agent mapping のコメント付き例を出す
 
 ### `sksync add <source> --agent <agent>`

@@ -334,14 +334,17 @@ lockfileと現在状態の差分を検出する。
 **作業内容**
 
 - `src/application/init.rs` を実装する
-- `sksync.config.json` を作る
-- `skills/` directoryを作る
+- project mode では `sksync.config.json` を作る
+- project mode では `.sksync/skills/` directoryを作る
+- `--global` では `~/.config/sksync/config.json` を作る
+- `--global` では `~/.config/sksync/skills/` directoryを作る
 - 既存configがある場合は上書きしない
 - `--force` は別issueに回してよい
 
 **受け入れ条件**
 
 - 空ディレクトリで `sksync init` が成功する
+- temp HOME / XDG_CONFIG_HOME 配下で `sksync init --global` が成功する
 - configとskills directoryが作られる
 - 既存configがある場合は失敗する
 
