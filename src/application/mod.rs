@@ -7,6 +7,7 @@
 pub mod apply;
 pub mod check;
 pub mod config;
+pub mod discovery;
 pub mod init;
 pub mod list;
 pub mod outdated;
