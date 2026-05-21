@@ -111,16 +111,87 @@ global mode (`--global`) で作成されるもの:
 
 ### `sksync add`
 
-SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。source が repo root や親ディレクトリを指していて直接 `SKILL.md` を持たない場合は、配下の `SKILL.md` を探索し、1件なら自動選択、複数なら複数選択プロンプトを表示します。`--name` を指定すると一致する discovered skill を自動選択します。`skills.sh` の direct URL が実際の repo path と一致しない場合も repo root discovery で slug に一致する skill を探します。プロンプトの候補では skill 名を太字・シアンで表示します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
+SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。
 
 ```bash
+cargo run -- add <source> --agent pi [--agent claude-code]
+```
+
+よく使う例:
+
+```bash
+# GitHub shorthand / prefix / tree URL
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- add github:owner/repo/path/to/skill#main --agent pi
+cargo run -- add https://github.com/owner/repo/tree/main/path/to/skill --agent pi
+
+# repo root から SKILL.md を discovery して選択
+cargo run -- add owner/repo --agent pi
 cargo run -- add owner/repo --name skill-name --agent pi
+
+# skills.sh URL / shorthand
 cargo run -- add skills.sh/owner/repo --agent pi
 cargo run -- add https://www.skills.sh/owner/repo --agent pi
+cargo run -- add https://www.skills.sh/owner/repo/skill-name --agent pi
+
+# local directory
 cargo run -- add ./local-skill --agent pi --agent gemini
 ```
+
+#### Source formats
+
+| Format | Meaning |
+| --- | --- |
+| `owner/repo/path/to/skill#ref` | GitHub shorthand. `owner/repo` を clone し、`path/to/skill` を skill directory として使います。 |
+| `github:owner/repo/path/to/skill#ref` | GitHub shorthand を明示します。 |
+| `https://github.com/owner/repo/tree/ref/path/to/skill` | GitHub tree URL。`ref` と path をそのまま使います。 |
+| `owner/repo#ref` | repo root / 親ディレクトリとして扱い、配下の `SKILL.md` を discovery します。 |
+| `skills.sh/owner/repo[/skill-or-path]#ref` | skills.sh source。内部的には GitHub repo に変換します。 |
+| `https://www.skills.sh/owner/repo[/skill-or-path]#ref` | skills.sh URL。direct URL の推測 path が外れた場合も repo root discovery で探します。 |
+| `./local-skill`, `../skills/foo`, `/abs/path` | local directory。相対 path は config file のある directory から解決します。 |
+
+`registry:<host>/<package>` と `--provider` はサポートしていません。source URL transformer は source 文字列から自動判定します。
+
+#### Discovery behavior
+
+source が直接 `SKILL.md` を持たない repo root / 親ディレクトリを指す場合、配下の `SKILL.md` を最大 depth 5 で探索します。
+
+- 1件だけ見つかった場合: 自動選択します。
+- 複数見つかった場合: 対話環境では複数選択プロンプトを表示します。
+- 非対話環境で複数見つかった場合: エラーにして `--name <skill>` またはより具体的な source を案内します。
+- `--name` 指定時: frontmatter `name` または directory name に一致する discovered skill を1件だけ自動選択します。
+- `.git` / `node_modules` / `.sksync` は探索対象から除外します。
+
+複数選択プロンプトでは skill 名を太字・シアンで表示します。
+
+#### skills.sh mapping
+
+`skills.sh` は registry としてではなく、GitHub source への URL transformer として扱います。
+
+```text
+https://www.skills.sh/vercel-labs/skills/find-skills
+→ https://github.com/vercel-labs/skills.git
+→ skills/find-skills
+```
+
+ただし `skills.sh` の URL slug と GitHub repo 内 path が一致しない場合があります。その場合は repo root を discovery し、slug に一致する skill を探して、実際の path を config に保存します。
+
+```text
+https://www.skills.sh/mattpocock/skills/grill-me
+→ discovers skills/productivity/grill-me
+→ source saved as https://www.skills.sh/mattpocock/skills/productivity/grill-me
+```
+
+#### Skill validation
+
+取得した skill は install 前に検証します。
+
+- `SKILL.md` が存在する
+- `SKILL.md` がファイルである
+- YAML frontmatter が存在する
+- frontmatter に non-empty string の `name` / `description` がある
+
+検証に失敗した場合は destination を置き換えず、staging directory を削除してエラーにします。
 
 `--global` を付けると `~/.sksync/config.json` に追加し、グローバル設定として扱います。
 
@@ -185,16 +256,7 @@ cargo run -- update
 cargo run -- update --global
 ```
 
-対応する source 例:
-
-```text
-github:owner/repo/path/to/skill#main
-owner/repo/path/to/skill#main
-https://github.com/owner/repo/tree/main/path/to/skill
-skills.sh/owner/repo/skill-name#version
-https://www.skills.sh/owner/repo/skill-name#version
-./local-skill
-```
+対応する source は `sksync add` と同じです。repo root / 親ディレクトリの discovery は `add` 時に選択済み path として config に保存されるため、`update` / `install` は保存済み source を再取得します。
 
 ### `sksync apply`
 
@@ -256,13 +318,12 @@ project-local の生成物は `.gitignore` します。
 
 ## 今後の予定
 
-npm-like な依存管理コマンド体系に寄せていきます。
+npm-like な依存管理コマンド体系をベースに、source integration と portability を広げていきます。
 
-- `sksync remove <skill> --agent <agent>` - 指定 agent の managed symlink だけを外す
-- `sksync outdated` - lockfile と upstream/latest を比較して更新可能な skill を表示
-- `sksync wizard` の追加UX（`ask` / `tui` aliases）
 - Additional source URL transformers beyond `skills.sh`
 - GitLab / gist support
+- Lockfile sharing policy の確定
+- Cross-platform symlink / junction behavior の強化
 
 `ci` 相当の専用コマンドは現時点では追加しません。lockfile 再現は `sksync install` に集約します。
 

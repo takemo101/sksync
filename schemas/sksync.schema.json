@@ -106,7 +106,7 @@
         {
           "type": "string",
           "minLength": 1,
-          "description": "SkillKit-style source string: GitHub shorthand, provider URL, GitHub URL, or local path."
+          "description": "SkillKit-style source string: GitHub shorthand, GitHub URL, skills.sh URL/shorthand, add-time discovery result, or local path."
         },
         {
           "$ref": "#/$defs/structuredInstallSource"
