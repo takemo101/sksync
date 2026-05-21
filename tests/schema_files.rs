@@ -40,6 +40,31 @@ fn config_schema_covers_supported_top_level_fields() {
 }
 
 #[test]
+fn config_schema_structured_sources_match_runtime_requirements() {
+    let schema = parse_json(include_str!("../schemas/sksync.schema.json"));
+    let structured_source = &schema["$defs"]["structuredInstallSource"];
+    let git_source = &schema["$defs"]["structuredGitInstallSource"];
+    let local_source = &schema["$defs"]["structuredLocalInstallSource"];
+
+    assert_eq!(
+        structured_source["oneOf"],
+        serde_json::json!([
+            { "$ref": "#/$defs/structuredGitInstallSource" },
+            { "$ref": "#/$defs/structuredLocalInstallSource" }
+        ])
+    );
+    assert_eq!(
+        git_source["anyOf"],
+        serde_json::json!([{ "required": ["url"] }, { "required": ["repo"] }])
+    );
+    assert_eq!(
+        local_source["required"],
+        serde_json::json!(["provider", "path"])
+    );
+    assert_eq!(local_source["properties"]["provider"]["const"], "local");
+}
+
+#[test]
 fn agents_schema_requires_agent_targets() {
     let schema = parse_json(include_str!("../schemas/sksync.agents.schema.json"));
     assert_eq!(
