@@ -79,6 +79,9 @@ struct InitArgs {
 struct AddArgs {
     /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, skills.sh/owner/repo/path#ref, or ./local-skill.
     source: String,
+    /// Interpret a provider-relative source, e.g. --provider skills.sh owner/repo/path#ref.
+    #[arg(long)]
+    provider: Option<String>,
     /// Agent to link into. Can be passed multiple times.
     #[arg(short, long = "agent", required = true)]
     agents: Vec<String>,
@@ -205,10 +208,11 @@ fn run_init(args: InitArgs) -> Result<()> {
 fn run_add(args: AddArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
+    let source = source_for_provider(&args.source, args.provider.as_deref())?;
     let skill_name = args.name.unwrap_or_else(|| infer_skill_name(&args.source));
 
     FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
-        .add_dependency(&skill_name, &args.source, &args.agents)?;
+        .add_dependency(&skill_name, &source, &args.agents)?;
     println!("Added {skill_name} to {}", config_path.display());
 
     let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
@@ -748,6 +752,35 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     }
 }
 
+fn source_for_provider(source: &str, provider: Option<&str>) -> Result<String> {
+    let Some(provider) = provider else {
+        return Ok(source.to_owned());
+    };
+
+    if has_explicit_source_provider(source) {
+        bail!("--provider expects a provider-relative source like owner/repo/path#ref, got '{source}'");
+    }
+
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "github" => Ok(format!("github:{source}")),
+        "skills.sh" | "skills-sh" => Ok(format!("registry:skills.sh/{source}")),
+        other => {
+            bail!("unsupported provider '{other}'; supported providers are github and skills.sh")
+        }
+    }
+}
+
+fn has_explicit_source_provider(source: &str) -> bool {
+    source.starts_with("./")
+        || source.starts_with("../")
+        || source.starts_with('/')
+        || source.starts_with("~/")
+        || source.contains("://")
+        || source.starts_with("github:")
+        || source.starts_with("registry:")
+        || source.starts_with("skills.sh/")
+}
+
 fn infer_skill_name(source: &str) -> String {
     let without_ref = source.split('#').next().unwrap_or(source);
     let trimmed = without_ref.trim_end_matches('/');
@@ -861,7 +894,10 @@ fn run_wizard() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_target_mappings_from_config, global_config_root_from_home, Cli};
+    use super::{
+        agent_target_mappings_from_config, global_config_root_from_home, source_for_provider, Cli,
+        Command,
+    };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
@@ -906,6 +942,46 @@ mod tests {
     #[test]
     fn init_global_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--global"]).expect("init --global should parse");
+    }
+
+    #[test]
+    fn add_provider_option_is_registered() {
+        let cli = Cli::try_parse_from([
+            "sksync",
+            "add",
+            "owner/repo/skills/review#main",
+            "--provider",
+            "skills.sh",
+            "--agent",
+            "pi",
+        ])
+        .expect("add --provider should parse");
+
+        let Command::Add(args) = cli.command else {
+            panic!("expected add command");
+        };
+        assert_eq!(args.provider.as_deref(), Some("skills.sh"));
+    }
+
+    #[test]
+    fn provider_wraps_source_as_skills_sh_registry_source() {
+        assert_eq!(
+            source_for_provider("owner/repo/skills/review#main", Some("skills.sh")).unwrap(),
+            "registry:skills.sh/owner/repo/skills/review#main"
+        );
+    }
+
+    #[test]
+    fn provider_wraps_source_as_github_source() {
+        assert_eq!(
+            source_for_provider("owner/repo/skills/review#main", Some("github")).unwrap(),
+            "github:owner/repo/skills/review#main"
+        );
+    }
+
+    #[test]
+    fn provider_rejects_already_qualified_source() {
+        assert!(source_for_provider("skills.sh/owner/repo/review", Some("skills.sh")).is_err());
     }
 
     #[test]
