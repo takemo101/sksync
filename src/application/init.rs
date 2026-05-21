@@ -8,6 +8,7 @@ use thiserror::Error;
 pub struct InitResult {
     pub config_path: PathBuf,
     pub skills_dir: PathBuf,
+    pub agent_mapping_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -34,6 +35,7 @@ pub fn init_project(root: impl AsRef<Path>) -> Result<InitResult, InitError> {
         root.join("sksync.config.json"),
         root.join(".sksync/skills"),
         default_config().to_owned(),
+        None,
     )
 }
 
@@ -44,6 +46,7 @@ pub fn init_global(config_root: impl AsRef<Path>) -> Result<InitResult, InitErro
         config_root.join("config.json"),
         skills_dir.clone(),
         global_config(&skills_dir),
+        Some(config_root.join("agents.json")),
     )
 }
 
@@ -51,6 +54,7 @@ fn init_with_config(
     config_path: PathBuf,
     skills_dir: PathBuf,
     config: String,
+    agent_mapping_path: Option<PathBuf>,
 ) -> Result<InitResult, InitError> {
     if config_path.exists() {
         return Err(InitError::ConfigExists(config_path.display().to_string()));
@@ -71,14 +75,41 @@ fn init_with_config(
         source,
     })?;
 
+    let agent_mapping_path = match agent_mapping_path {
+        Some(path) if write_agent_mapping_if_missing(&path)? => Some(path),
+        _ => None,
+    };
+
     Ok(InitResult {
         config_path,
         skills_dir,
+        agent_mapping_path,
     })
+}
+
+fn write_agent_mapping_if_missing(path: &Path) -> Result<bool, InitError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| InitError::CreateSkillsDir {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    fs::write(path, default_agent_mapping()).map_err(|source| InitError::WriteConfig {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(true)
 }
 
 fn default_config() -> &'static str {
     include_str!("../../sksync.config.example.json")
+}
+
+fn default_agent_mapping() -> &'static str {
+    include_str!("../../sksync.agents.example.json")
 }
 
 fn global_config(skills_dir: &Path) -> String {
@@ -105,24 +136,46 @@ mod tests {
 
         assert!(result.config_path.is_file());
         assert!(result.skills_dir.is_dir());
+        assert_eq!(result.agent_mapping_path, None);
         let config = std::fs::read_to_string(result.config_path).expect("read config");
         assert!(config.contains("\"skillDir\": \"./.sksync/skills\""));
     }
 
     #[test]
-    fn init_global_creates_config_and_skills_directory() {
+    fn init_global_creates_config_agents_and_skills_directory() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
         let result = init_global(temp_dir.path()).expect("init global succeeds");
 
+        let agent_mapping_path = temp_dir.path().join("agents.json");
         assert_eq!(result.config_path, temp_dir.path().join("config.json"));
         assert_eq!(result.skills_dir, temp_dir.path().join("skills"));
+        assert_eq!(result.agent_mapping_path, Some(agent_mapping_path.clone()));
         assert!(result.config_path.is_file());
         assert!(result.skills_dir.is_dir());
+        assert!(agent_mapping_path.is_file());
         let config = std::fs::read_to_string(result.config_path).expect("read config");
         assert!(config.contains("\"skillDir\""));
         assert!(config.contains("skills"));
         assert!(config.contains("\"dependencies\": {}"));
+        let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
+        assert!(agents.contains("\"agents\""));
+        assert!(agents.contains("~/.pi/agent/skills"));
+    }
+
+    #[test]
+    fn init_global_does_not_overwrite_existing_agent_mapping() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let agent_mapping_path = temp_dir.path().join("agents.json");
+        std::fs::write(&agent_mapping_path, "custom").expect("write agents");
+
+        let result = init_global(temp_dir.path()).expect("init global succeeds");
+
+        assert_eq!(result.agent_mapping_path, None);
+        assert_eq!(
+            std::fs::read_to_string(agent_mapping_path).expect("read agents"),
+            "custom"
+        );
     }
 
     #[test]
