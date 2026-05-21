@@ -6,6 +6,7 @@ use std::process::Command as GitCommand;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile_with_plan;
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -17,7 +18,7 @@ use crate::application::list::list_skills;
 use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
-use crate::application::update::update_dependencies;
+use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
@@ -216,31 +217,33 @@ fn run_add(args: AddArgs) -> Result<()> {
     let add_result = (|| -> Result<()> {
         let store =
             FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
-        for selection in selections {
-            store.add_dependency(&selection.skill_name, &selection.source, &args.agents)?;
-            println!(
-                "Added {} to {}",
-                selection.skill_name,
-                config_path.display()
-            );
-        }
-
-        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
-        let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
-        apply_update_report_sources(&mut config, &report);
-        print_update_report(report);
-        let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
-        let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
         let fs_store = FileSystemLinkStore;
         let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
-        apply_link_plan(
-            &plan,
-            &lockfile,
-            &fs_store,
-            &lockfile_store,
-            ApplyOptions { force: false },
+        let root_dir = if args.global {
+            config_root_for_global()?
+        } else {
+            current_dir.clone()
+        };
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+        let report = run_add_workflow(
+            selections,
+            &args.agents,
+            || load_config_from_path(&config_path, scope_for(args.global)),
+            |config, plan| build_lockfile_from_plan(config, plan, &root_dir),
+            AddWorkflow {
+                dependency_store: &store,
+                installer: &FileSystemSkillInstaller,
+                fs_store: &fs_store,
+                lockfile_store: &lockfile_store,
+                target_resolver: &target_resolver,
+            },
         )?;
-        print_plan(&plan);
+        for added in &report.added {
+            println!("Added {} to {}", added.skill_name, config_path.display());
+        }
+        print_update_report(report.update_report);
+        print_plan(&report.plan);
         Ok(())
     })();
 
@@ -685,21 +688,6 @@ fn run_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-fn apply_update_report_sources(
-    config: &mut ResolvedConfig,
-    report: &crate::application::update::UpdateReport,
-) {
-    for updated in &report.updated {
-        if let Some(skill) = config
-            .skills
-            .iter_mut()
-            .find(|skill| skill.name.as_str() == updated.name)
-        {
-            skill.install_source = Some(updated.resolved_source.clone());
-        }
-    }
-}
-
 fn print_update_report(report: crate::application::update::UpdateReport) {
     for updated in report.updated {
         println!(
@@ -847,12 +835,6 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     } else {
         Ok(PathBuf::from("./.sksync/skills"))
     }
-}
-
-#[derive(Debug, Clone)]
-struct AddSelection {
-    skill_name: String,
-    source: String,
 }
 
 #[derive(Debug, Clone)]
