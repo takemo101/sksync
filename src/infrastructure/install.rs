@@ -30,8 +30,10 @@ impl SkillInstaller for FileSystemSkillInstaller {
             message: error.to_string(),
         })?;
 
-        let result = install_to_staging(source, &staging)
-            .and_then(|installed| replace_destination(&staging, destination).map(|()| installed));
+        let result = install_to_staging(source, &staging).and_then(|installed| {
+            validate_skill_package(&staging)?;
+            replace_destination(&staging, destination).map(|()| installed)
+        });
         if result.is_err() && staging.exists() {
             let _ = fs::remove_dir_all(&staging);
         }
@@ -171,6 +173,81 @@ fn resolve_git_head(clone_dir: &Path, repo: &str) -> Result<String, SkillInstall
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn validate_skill_package(path: &Path) -> Result<(), SkillInstallError> {
+    let skill_md = path.join("SKILL.md");
+    if !skill_md.exists() {
+        return Err(SkillInstallError::InvalidSkillPackage {
+            path: path.display().to_string(),
+            message: "SKILL.md is missing".to_owned(),
+        });
+    }
+    if !skill_md.is_file() {
+        return Err(SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: "SKILL.md must be a file".to_owned(),
+        });
+    }
+
+    let content = fs::read_to_string(&skill_md).map_err(|error| SkillInstallError::Prepare {
+        path: skill_md.display().to_string(),
+        message: error.to_string(),
+    })?;
+    let frontmatter = extract_yaml_frontmatter(&content).ok_or_else(|| {
+        SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: "SKILL.md YAML frontmatter is missing".to_owned(),
+        }
+    })?;
+    let frontmatter = serde_yaml::from_str::<serde_yaml::Value>(frontmatter).map_err(|error| {
+        SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: format!("SKILL.md YAML frontmatter is invalid: {error}"),
+        }
+    })?;
+
+    validate_required_frontmatter_string(&frontmatter, &skill_md, "name")?;
+    validate_required_frontmatter_string(&frontmatter, &skill_md, "description")?;
+    Ok(())
+}
+
+fn extract_yaml_frontmatter(content: &str) -> Option<&str> {
+    let content = content
+        .strip_prefix("---\r\n")
+        .or_else(|| content.strip_prefix("---\n"))?;
+    let end = content
+        .find("\n---\n")
+        .or_else(|| content.find("\n---\r\n"))?;
+    Some(&content[..end])
+}
+
+fn validate_required_frontmatter_string(
+    frontmatter: &serde_yaml::Value,
+    skill_md: &Path,
+    field: &str,
+) -> Result<(), SkillInstallError> {
+    let value = frontmatter
+        .get(field)
+        .ok_or_else(|| SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: format!("SKILL.md frontmatter field '{field}' is required"),
+        })?;
+
+    let Some(value) = value.as_str() else {
+        return Err(SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: format!("SKILL.md frontmatter field '{field}' must be a string"),
+        });
+    };
+    if value.trim().is_empty() {
+        return Err(SkillInstallError::InvalidSkillPackage {
+            path: skill_md.display().to_string(),
+            message: format!("SKILL.md frontmatter field '{field}' must not be empty"),
+        });
+    }
+
+    Ok(())
+}
+
 fn replace_destination(staging: &Path, destination: &Path) -> Result<(), SkillInstallError> {
     if destination.exists() {
         remove_dir(destination)?;
@@ -243,7 +320,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let remote = temp.path().join("remote/review");
         std::fs::create_dir_all(&remote).unwrap();
-        std::fs::write(remote.join("SKILL.md"), "# Review").unwrap();
+        std::fs::write(remote.join("SKILL.md"), skill_md("review", "Review helper")).unwrap();
         let destination = temp.path().join("skills/review");
 
         FileSystemSkillInstaller
@@ -252,7 +329,7 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
-            "# Review"
+            skill_md("review", "Review helper")
         );
     }
 
@@ -260,9 +337,13 @@ mod tests {
     fn git_dependency_can_install_exact_commit_reference() {
         let temp = tempfile::tempdir().unwrap();
         let remote = temp.path().join("remote");
-        create_git_skill_repo(&remote, "# Review v1");
+        create_git_skill_repo(&remote, &skill_md("review", "Review v1"));
         let rev = git_output(&remote, &["rev-parse", "HEAD"]);
-        std::fs::write(remote.join("skills/review/SKILL.md"), "# Review v2").unwrap();
+        std::fs::write(
+            remote.join("skills/review/SKILL.md"),
+            skill_md("review", "Review v2"),
+        )
+        .unwrap();
         git(&remote, &["add", "."]);
         git(&remote, &["commit", "-m", "update review"]);
         let destination = temp.path().join("skills/review");
@@ -281,8 +362,126 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
-            "# Review v1"
+            skill_md("review", "Review v1")
         );
+    }
+
+    #[test]
+    fn install_fails_when_skill_md_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(&InstallSource::Local(remote), &destination, "review")
+            .expect_err("missing SKILL.md should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidSkillPackage { message, .. }
+                if message == "SKILL.md is missing"
+        ));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn install_fails_when_frontmatter_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(remote.join("SKILL.md"), "# Review\n").unwrap();
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(&InstallSource::Local(remote), &destination, "review")
+            .expect_err("missing frontmatter should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidSkillPackage { message, .. }
+                if message == "SKILL.md YAML frontmatter is missing"
+        ));
+        assert!(!destination.exists());
+        assert!(!temp
+            .path()
+            .join(format!(
+                "skills/.sksync-update-review-{}",
+                std::process::id()
+            ))
+            .exists());
+    }
+
+    #[test]
+    fn install_fails_when_required_frontmatter_field_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(
+            remote.join("SKILL.md"),
+            "---\ndescription: Review helper\n---\n# Review\n",
+        )
+        .unwrap();
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(&InstallSource::Local(remote), &destination, "review")
+            .expect_err("missing name should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidSkillPackage { message, .. }
+                if message == "SKILL.md frontmatter field 'name' is required"
+        ));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn install_fails_when_required_frontmatter_field_is_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(
+            remote.join("SKILL.md"),
+            "---\nname: review\ndescription: '   '\n---\n# Review\n",
+        )
+        .unwrap();
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(&InstallSource::Local(remote), &destination, "review")
+            .expect_err("empty description should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidSkillPackage { message, .. }
+                if message == "SKILL.md frontmatter field 'description' must not be empty"
+        ));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn install_fails_when_required_frontmatter_field_is_not_a_string() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(
+            remote.join("SKILL.md"),
+            "---\nname: review\ndescription: 123\n---\n# Review\n",
+        )
+        .unwrap();
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(&InstallSource::Local(remote), &destination, "review")
+            .expect_err("non-string description should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidSkillPackage { message, .. }
+                if message == "SKILL.md frontmatter field 'description' must be a string"
+        ));
+        assert!(!destination.exists());
     }
 
     #[test]
@@ -305,6 +504,10 @@ mod tests {
                 std::process::id()
             ))
             .exists());
+    }
+
+    fn skill_md(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\ndescription: {description}\n---\n# {name}\n")
     }
 
     fn create_git_skill_repo(path: &Path, skill_content: &str) {
