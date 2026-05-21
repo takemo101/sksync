@@ -81,6 +81,20 @@ fn agents_schema_requires_agent_targets() {
 }
 
 #[test]
+fn agents_example_uses_antigravity_documented_skill_directories() {
+    let agents = parse_json(include_str!("../sksync.agents.example.json"));
+
+    assert_eq!(
+        agents["global"]["antigravity"]["targetDir"],
+        "~/.gemini/antigravity/skills"
+    );
+    assert_eq!(
+        agents["project"]["antigravity"]["targetDir"],
+        ".agents/skills"
+    );
+}
+
+#[test]
 fn agents_example_includes_skillkit_compatible_mappings() {
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
     let mappings = agents["global"].as_object().expect("global object");
