@@ -72,6 +72,46 @@ pub fn build_link_plan(
     Ok(LinkPlan::new(items))
 }
 
+pub fn build_desired_link_plan(
+    config: &ResolvedConfig,
+    target_resolver: &impl TargetResolver,
+) -> Result<LinkPlan, PlanError> {
+    let mut items = Vec::new();
+
+    for skill in &config.skills {
+        for agent in &skill.agents {
+            let agent_config =
+                config
+                    .agents
+                    .get(agent.as_str())
+                    .ok_or_else(|| PlanError::MissingAgent {
+                        skill: skill.name.as_str().to_owned(),
+                        agent: agent.as_str().to_owned(),
+                    })?;
+
+            if !agent_config.enabled {
+                continue;
+            }
+
+            let target_dir = target_resolver.resolve_agent_target(
+                agent,
+                agent_config.scope,
+                agent_config.target_dir.as_deref(),
+            )?;
+            let target = TargetPath::new(target_dir.as_path().join(skill.name.as_str()))?;
+            items.push(LinkPlanItem {
+                skill: skill.name.clone(),
+                agent: agent.clone(),
+                source: skill.source.clone(),
+                target,
+                action: PlanAction::CreateSymlink,
+            });
+        }
+    }
+
+    Ok(LinkPlan::new(items))
+}
+
 fn inspect_action(
     link_store: &impl LinkStore,
     target: &TargetPath,
