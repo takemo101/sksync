@@ -163,6 +163,8 @@ pub enum SkillInstallError {
     MissingSourcePath { path: String },
     #[error("invalid skill package at {path}: {message}")]
     InvalidSkillPackage { path: String, message: String },
+    #[error("invalid git source path {path}: {message}")]
+    InvalidGitSubpath { path: String, message: String },
     #[error("git command failed for {repo}: {message}")]
     Git { repo: String, message: String },
     #[error("failed to copy {from} to {to}: {message}")]
