@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
@@ -13,6 +13,8 @@ pub enum BuiltinAgentMappingError {
     MissingCustomTarget(String),
     #[error("target path is invalid: {0}")]
     InvalidTarget(#[from] TargetPathError),
+    #[error("project targetDir '{target}' must be a relative path inside the project root")]
+    ProjectTargetEscapesRoot { target: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,22 +41,45 @@ impl TargetPathResolver {
             Some(path) => path.to_path_buf(),
             None => default_target_dir(agent, scope)?,
         };
-        let resolved = self.resolve_path(scope, &raw_target);
+        let resolved = self.resolve_path(scope, &raw_target)?;
 
         TargetPath::new(resolved).map_err(BuiltinAgentMappingError::from)
     }
 
-    fn resolve_path(&self, scope: Scope, raw_target: &Path) -> PathBuf {
+    fn resolve_path(
+        &self,
+        scope: Scope,
+        raw_target: &Path,
+    ) -> Result<PathBuf, BuiltinAgentMappingError> {
+        if scope == Scope::Project {
+            return self.resolve_project_path(raw_target);
+        }
+
         if let Ok(stripped) = raw_target.strip_prefix("~") {
-            return self.home_dir.join(stripped);
+            return Ok(self.home_dir.join(stripped));
         }
 
-        if scope == Scope::Project && raw_target.is_relative() {
-            return self.project_root.join(raw_target);
-        }
-
-        raw_target.to_path_buf()
+        Ok(raw_target.to_path_buf())
     }
+
+    fn resolve_project_path(&self, raw_target: &Path) -> Result<PathBuf, BuiltinAgentMappingError> {
+        if !is_safe_project_relative_path(raw_target) {
+            return Err(BuiltinAgentMappingError::ProjectTargetEscapesRoot {
+                target: raw_target.display().to_string(),
+            });
+        }
+
+        Ok(self.project_root.join(raw_target))
+    }
+}
+
+fn is_safe_project_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path.strip_prefix("~").is_err()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
 }
 
 impl TargetResolver for TargetPathResolver {
@@ -174,6 +199,73 @@ mod tests {
             target.as_path(),
             Path::new("/workspace/project/custom/skills")
         );
+    }
+
+    #[test]
+    fn project_override_rejects_parent_directory_escape() {
+        let error = resolver()
+            .resolve(
+                &AgentKind::Codex,
+                Scope::Project,
+                Some(Path::new("../outside")),
+            )
+            .expect_err("project target escape should fail");
+
+        assert_eq!(
+            error,
+            BuiltinAgentMappingError::ProjectTargetEscapesRoot {
+                target: "../outside".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn project_override_rejects_absolute_path() {
+        let error = resolver()
+            .resolve(
+                &AgentKind::Codex,
+                Scope::Project,
+                Some(Path::new("/tmp/outside")),
+            )
+            .expect_err("absolute project target should fail");
+
+        assert_eq!(
+            error,
+            BuiltinAgentMappingError::ProjectTargetEscapesRoot {
+                target: "/tmp/outside".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn project_override_rejects_home_expansion() {
+        let error = resolver()
+            .resolve(
+                &AgentKind::Codex,
+                Scope::Project,
+                Some(Path::new("~/outside")),
+            )
+            .expect_err("home project target should fail");
+
+        assert_eq!(
+            error,
+            BuiltinAgentMappingError::ProjectTargetEscapesRoot {
+                target: "~/outside".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn user_override_can_use_absolute_path() {
+        let target = resolver()
+            .resolve(
+                &AgentKind::Gemini,
+                Scope::User,
+                Some(Path::new("/opt/gemini-skills")),
+            )
+            .expect("target resolves");
+
+        assert_eq!(target.as_path(), Path::new("/opt/gemini-skills"));
     }
 
     #[test]
