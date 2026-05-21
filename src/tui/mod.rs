@@ -326,9 +326,9 @@ fn prompt_agents(scope: ConfigScope) -> Result<Vec<String>> {
 fn agent_options_for_scope(scope: ConfigScope) -> Result<Vec<String>> {
     let mappings = merged_agent_mapping_config()?;
     let mut agents = BTreeSet::new();
-    agents.extend(mappings.agents.keys().cloned());
+    agents.extend(mappings.global.keys().cloned());
     if scope == ConfigScope::Project {
-        agents.extend(mappings.project_agents.keys().cloned());
+        agents.extend(mappings.project.keys().cloned());
     }
     agents.insert("custom".to_owned());
     Ok(agents.into_iter().collect())

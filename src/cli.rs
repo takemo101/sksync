@@ -663,7 +663,7 @@ fn agent_target_mappings_for_scope(scope: Scope) -> Result<BTreeMap<String, Agen
     let mapping_config = merged_agent_mapping_config()?;
     let mut mappings = BTreeMap::new();
 
-    for (name, target_dir) in mapping_config.agents {
+    for (name, target_dir) in mapping_config.global {
         mappings.insert(
             name,
             AgentTargetDir {
@@ -674,7 +674,7 @@ fn agent_target_mappings_for_scope(scope: Scope) -> Result<BTreeMap<String, Agen
     }
 
     if scope == Scope::Project {
-        for (name, target_dir) in mapping_config.project_agents {
+        for (name, target_dir) in mapping_config.project {
             mappings.insert(
                 name,
                 AgentTargetDir {

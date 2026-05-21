@@ -45,8 +45,8 @@ fn agents_schema_requires_agent_targets() {
     assert_eq!(
         schema["anyOf"],
         serde_json::json!([
-            { "required": ["agents"] },
-            { "required": ["projectAgents"] }
+            { "required": ["global"] },
+            { "required": ["project"] }
         ])
     );
     assert_eq!(
@@ -58,10 +58,8 @@ fn agents_schema_requires_agent_targets() {
 #[test]
 fn agents_example_includes_skillkit_compatible_mappings() {
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
-    let mappings = agents["agents"].as_object().expect("agents object");
-    let project_mappings = agents["projectAgents"]
-        .as_object()
-        .expect("projectAgents object");
+    let mappings = agents["global"].as_object().expect("global object");
+    let project_mappings = agents["project"].as_object().expect("project object");
 
     for agent in [
         "claude-code",

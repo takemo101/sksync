@@ -10,14 +10,14 @@
       "type": "string",
       "format": "uri-reference"
     },
-    "agents": {
+    "global": {
       "type": "object",
       "description": "Global/user-scope agent target directory mappings keyed by agent name.",
       "additionalProperties": {
         "$ref": "#/$defs/agentTargetMapping"
       }
     },
-    "projectAgents": {
+    "project": {
       "type": "object",
       "description": "Project-scope agent target directory mappings shared by all projects.",
       "additionalProperties": {
@@ -26,8 +26,8 @@
     }
   },
   "anyOf": [
-    { "required": ["agents"] },
-    { "required": ["projectAgents"] }
+    { "required": ["global"] },
+    { "required": ["project"] }
   ],
   "$defs": {
     "agentTargetMapping": {

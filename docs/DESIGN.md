@@ -109,18 +109,18 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
-  "agents": {
+  "global": {
     "claude-code": { "targetDir": "~/.claude/skills" },
     "cursor": { "targetDir": "~/.cursor/skills" }
   },
-  "projectAgents": {
+  "project": {
     "claude-code": { "targetDir": ".claude/skills" },
     "cursor": { "targetDir": ".cursor/skills" }
   }
 }
 ```
 
-`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。`agents` は global/user scope、`projectAgents` は全 project 共通の project scope として扱う。
+`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。`global` は global/user scope、`project` は全 project 共通の project scope として扱う。
 
 ### 設定方針
 
@@ -130,7 +130,7 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 - `sksync plan/apply/check/list/install/update` は `--global` で global config / lockfile を対象にできる
 - 既存互換として `skills.*.source` は local-only skill として扱う
 - agent ごとの実際の target path は built-in mapping または `~/.sksync/agents.json` から解決する
-- project config では全 project 共通の `projectAgents` が global `agents` より優先される
+- project config では全 project 共通の `project` が `global` より優先される
 
 ## 5. Built-in Agent Mapping 案
 
