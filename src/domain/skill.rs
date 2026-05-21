@@ -61,11 +61,23 @@ impl SourcePath {
             return Err(SourcePathError::Empty);
         }
 
-        Ok(Self(path))
+        Ok(Self(expand_tilde(path)))
     }
 
     pub fn as_path(&self) -> &Path {
         &self.0
+    }
+}
+
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let Some(path_string) = path.to_str() else {
+        return path;
+    };
+
+    if path_string == "~" || path_string.starts_with("~/") {
+        PathBuf::from(shellexpand::tilde(path_string).into_owned())
+    } else {
+        path
     }
 }
 

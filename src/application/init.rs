@@ -44,8 +44,8 @@ pub fn init_global(config_root: impl AsRef<Path>) -> Result<InitResult, InitErro
     let skills_dir = config_root.join("skills");
     init_with_config(
         config_root.join("config.json"),
-        skills_dir.clone(),
-        global_config(&skills_dir),
+        skills_dir,
+        global_config(),
         Some(config_root.join("agents.json")),
     )
 }
@@ -112,10 +112,10 @@ fn default_agent_mapping() -> &'static str {
     include_str!("../../sksync.agents.example.json")
 }
 
-fn global_config(skills_dir: &Path) -> String {
+fn global_config() -> String {
     let config = json!({
         "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
-        "skillDir": skills_dir,
+        "skillDir": "~/.sksync/skills",
         "dependencies": {}
     });
     format!(
@@ -155,8 +155,7 @@ mod tests {
         assert!(result.skills_dir.is_dir());
         assert!(agent_mapping_path.is_file());
         let config = std::fs::read_to_string(result.config_path).expect("read config");
-        assert!(config.contains("\"skillDir\""));
-        assert!(config.contains("skills"));
+        assert!(config.contains("\"skillDir\": \"~/.sksync/skills\""));
         assert!(config.contains("\"dependencies\": {}"));
         let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
         assert!(agents.contains("\"global\""));

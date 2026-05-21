@@ -733,7 +733,7 @@ fn global_config_root_from_home(home_dir: &Path) -> PathBuf {
 
 fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     if global {
-        Ok(config_root_for_global()?.join("skills"))
+        Ok(PathBuf::from("~/.sksync/skills"))
     } else {
         Ok(PathBuf::from("./.sksync/skills"))
     }
