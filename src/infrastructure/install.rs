@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::application::config::{GitInstallSource, InstallSource};
+use crate::application::config::{GitInstallSource, InstallSource, RegistryInstallSource};
 use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
 
 #[derive(Debug, Clone, Default)]
@@ -56,33 +56,88 @@ fn install_to_staging(
                 resolved_source: source.clone(),
             })
         }
-        InstallSource::Registry(registry_source) => Err(SkillInstallError::UnsupportedRegistry {
-            registry: registry_source.registry.clone(),
-            package: registry_source.package.clone(),
-        }),
-        InstallSource::Git(git_source) => {
-            let clone_dir = staging.join(".repo");
-            clone_git_source(git_source, &clone_dir)?;
-            let source_path = clone_dir.join(&git_source.path);
-            if !source_path.exists() {
-                return Err(SkillInstallError::MissingSourcePath {
-                    path: source_path.display().to_string(),
-                });
-            }
-            copy_dir_contents(&source_path, staging)?;
-            let rev = resolve_git_head(&clone_dir, &git_source.url)?;
-            remove_dir(&clone_dir)?;
-            let resolved_source = InstallSource::Git(GitInstallSource {
-                url: git_source.url.clone(),
-                reference: Some(rev.clone()),
-                path: git_source.path.clone(),
-            });
+        InstallSource::Registry(registry_source) => {
+            let git_source = skills_sh_registry_to_git(registry_source)?;
+            let installed = install_git_to_staging(&git_source, staging)?;
+            let resolved_reference = match installed.resolved_source {
+                InstallSource::Git(git) => git.reference,
+                _ => registry_source.reference.clone(),
+            };
             Ok(InstalledSkillSource {
-                label: format!("{}#{}:{}", git_source.url, rev, git_source.path.display()),
-                resolved_source,
+                label: installed.label,
+                resolved_source: InstallSource::Registry(RegistryInstallSource {
+                    registry: registry_source.registry.clone(),
+                    package: registry_source.package.clone(),
+                    reference: resolved_reference,
+                }),
             })
         }
+        InstallSource::Git(git_source) => install_git_to_staging(git_source, staging),
     }
+}
+
+fn install_git_to_staging(
+    git_source: &GitInstallSource,
+    staging: &Path,
+) -> Result<InstalledSkillSource, SkillInstallError> {
+    let clone_dir = staging.join(".repo");
+    clone_git_source(git_source, &clone_dir)?;
+    let source_path = clone_dir.join(&git_source.path);
+    if !source_path.exists() {
+        return Err(SkillInstallError::MissingSourcePath {
+            path: source_path.display().to_string(),
+        });
+    }
+    copy_dir_contents(&source_path, staging)?;
+    let rev = resolve_git_head(&clone_dir, &git_source.url)?;
+    remove_dir(&clone_dir)?;
+    let resolved_source = InstallSource::Git(GitInstallSource {
+        url: git_source.url.clone(),
+        reference: Some(rev.clone()),
+        path: git_source.path.clone(),
+    });
+    Ok(InstalledSkillSource {
+        label: format!("{}#{}:{}", git_source.url, rev, git_source.path.display()),
+        resolved_source,
+    })
+}
+
+fn skills_sh_registry_to_git(
+    registry_source: &RegistryInstallSource,
+) -> Result<GitInstallSource, SkillInstallError> {
+    let registry = registry_source.registry.trim().to_ascii_lowercase();
+    if registry != "skills.sh" && registry != "skills-sh" {
+        return Err(SkillInstallError::UnsupportedRegistry {
+            registry: registry_source.registry.clone(),
+            package: registry_source.package.clone(),
+        });
+    }
+
+    let parts = registry_source
+        .package
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err(SkillInstallError::InvalidRegistryPackage {
+            registry: registry_source.registry.clone(),
+            package: registry_source.package.clone(),
+            message: "skills.sh package must be owner/repo[/path/to/skill]".to_owned(),
+        });
+    }
+
+    let repo = format!("{}/{}", parts[0], parts[1]);
+    let path = if parts.len() > 2 {
+        PathBuf::from(parts[2..].join("/"))
+    } else {
+        PathBuf::from(".")
+    };
+
+    Ok(GitInstallSource {
+        url: format!("https://github.com/{repo}.git"),
+        reference: registry_source.reference.clone(),
+        path,
+    })
 }
 
 fn clone_git_source(
@@ -231,8 +286,8 @@ fn staging_dir(skill_dir: &Path, skill_name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::FileSystemSkillInstaller;
-    use crate::application::config::{GitInstallSource, InstallSource};
+    use super::{skills_sh_registry_to_git, FileSystemSkillInstaller};
+    use crate::application::config::{GitInstallSource, InstallSource, RegistryInstallSource};
     use crate::application::ports::{SkillInstallError, SkillInstaller};
     use std::path::Path;
     use std::process::Command;
@@ -282,6 +337,64 @@ mod tests {
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
             "# Review v1"
         );
+    }
+
+    #[test]
+    fn skills_sh_registry_source_maps_to_github_git_source() {
+        let git = skills_sh_registry_to_git(&RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package: "owner/repo/path/to/skill".to_owned(),
+            reference: Some("v1".to_owned()),
+        })
+        .expect("skills.sh source maps to git");
+
+        assert_eq!(git.url, "https://github.com/owner/repo.git");
+        assert_eq!(git.reference.as_deref(), Some("v1"));
+        assert_eq!(git.path, Path::new("path/to/skill"));
+    }
+
+    #[test]
+    fn skills_sh_registry_accepts_repo_only_package() {
+        let git = skills_sh_registry_to_git(&RegistryInstallSource {
+            registry: "skills-sh".to_owned(),
+            package: "owner/repo".to_owned(),
+            reference: None,
+        })
+        .expect("skills-sh alias maps to git");
+
+        assert_eq!(git.url, "https://github.com/owner/repo.git");
+        assert_eq!(git.reference, None);
+        assert_eq!(git.path, Path::new("."));
+    }
+
+    #[test]
+    fn non_skills_sh_registry_stays_unsupported() {
+        let error = skills_sh_registry_to_git(&RegistryInstallSource {
+            registry: "example.com".to_owned(),
+            package: "owner/repo/skill".to_owned(),
+            reference: None,
+        })
+        .expect_err("other registries remain unsupported");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::UnsupportedRegistry { .. }
+        ));
+    }
+
+    #[test]
+    fn skills_sh_registry_rejects_package_without_repo() {
+        let error = skills_sh_registry_to_git(&RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package: "owner-only".to_owned(),
+            reference: None,
+        })
+        .expect_err("owner-only package is invalid");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidRegistryPackage { .. }
+        ));
     }
 
     #[test]

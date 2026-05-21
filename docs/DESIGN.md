@@ -95,7 +95,8 @@ SkillKit と同様に source は短い文字列を基本にする。`sksync add 
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
-registry:skills.sh/owner/repo/skill#version
+skills.sh/owner/repo/path/to/skill#version
+registry:skills.sh/owner/repo/path/to/skill#version
 registry:example.com/owner/repo/skill#version
 ./local-skill
 ```
@@ -260,7 +261,7 @@ agent 単位削除。
 
 - config と lockfile を読み込む
 - Git source は lockfile の commit と remote ref の HEAD を比較する
-- registry source は provider 未実装時に `registry-provider-missing` として表示する
+- registry source は `skills.sh` を除き provider 未実装時に `registry-provider-missing` として表示する
 - 更新可能な skill を `current / wanted / latest / source / status` 形式で表示する
 - `--global` と `--json` をサポートする
 

@@ -470,11 +470,19 @@ fn parse_install_source_string(
         )));
     }
 
+    let (body, reference) = split_ref(value);
+    if let Some(package) = parse_skills_sh_package(body) {
+        return Ok(InstallSource::Registry(RegistryInstallSource {
+            registry: "skills.sh".to_owned(),
+            package,
+            reference: reference.map(str::to_owned),
+        }));
+    }
+
     if let Some(parsed) = parse_github_tree_url(value) {
         return Ok(InstallSource::Git(parsed));
     }
 
-    let (body, reference) = split_ref(value);
     if let Some(registry_source) = body.strip_prefix("registry:") {
         let (registry, package) = registry_source.split_once('/').ok_or_else(|| {
             ConfigResolveError::InvalidInstallSource {
@@ -508,6 +516,19 @@ fn parse_install_source_string(
         skill: skill.to_owned(),
         message: format!("unsupported source '{value}'"),
     })
+}
+
+fn parse_skills_sh_package(value: &str) -> Option<String> {
+    let body = value
+        .strip_prefix("https://skills.sh/")
+        .or_else(|| value.strip_prefix("http://skills.sh/"))
+        .or_else(|| value.strip_prefix("skills.sh/"))?;
+    let package = body.trim_matches('/');
+    if package.split('/').filter(|part| !part.is_empty()).count() >= 2 {
+        Some(package.to_owned())
+    } else {
+        None
+    }
 }
 
 fn split_ref(value: &str) -> (&str, Option<&str>) {
@@ -1132,7 +1153,7 @@ mod tests {
         parse_agent_mapping_config, read_lockfile, write_lockfile, FileConfigStore,
         FileDependencyConfigStore, LockfileJsonError, RawConfig,
     };
-    use crate::application::config::ConfigResolveError;
+    use crate::application::config::{ConfigResolveError, InstallSource};
     use crate::application::ports::{ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::SUPPORTED_LOCKFILE_VERSION;
@@ -1320,6 +1341,33 @@ mod tests {
             .expect("config resolves");
 
         assert_eq!(config.skills[0].agents, vec![AgentKind::ClaudeCode]);
+    }
+
+    #[test]
+    fn skills_sh_shorthand_source_parses_as_registry_source() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "skills.sh/owner/repo/skills/review#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect("config resolves");
+        let Some(InstallSource::Registry(registry)) = &config.skills[0].install_source else {
+            panic!("expected registry install source");
+        };
+
+        assert_eq!(registry.registry, "skills.sh");
+        assert_eq!(registry.package, "owner/repo/skills/review");
+        assert_eq!(registry.reference.as_deref(), Some("main"));
     }
 
     #[test]
