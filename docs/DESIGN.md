@@ -89,7 +89,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 }
 ```
 
-SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。source が repo root や親ディレクトリを指す場合は配下の `SKILL.md` を探索し、1件なら自動選択、複数なら prompt で選択する。`--name` 指定時は一致する discovered skill を自動選択する。`--global` 付きなら `~/.sksync/config.json` を更新する。
+SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。source が repo root や親ディレクトリを指す場合は配下の `SKILL.md` を探索し、1件なら自動選択、複数なら prompt で選択する。`--name` 指定時は一致する discovered skill を自動選択する。`skills.sh` の direct URL が実際の repo path と一致しない場合も repo root discovery で slug に一致する skill を探す。`--global` 付きなら `~/.sksync/config.json` を更新する。
 
 ```text
 github:owner/repo/path/to/skill#ref
