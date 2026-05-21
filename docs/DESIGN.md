@@ -110,11 +110,16 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "agents": {
-    "pi": { "targetDir": "~/.pi/agent/skills" },
-    "claude-code": { "targetDir": "~/.claude/skills" }
+    "claude-code": { "targetDir": "~/.claude/skills" },
+    "cursor": { "targetDir": "~/.cursor/skills" },
+    "codex": { "targetDir": "~/.codex/skills" },
+    "gemini-cli": { "targetDir": "~/.gemini/skills" },
+    "opencode": { "targetDir": "~/.config/opencode/skills" }
   }
 }
 ```
+
+`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。
 
 ### 設定方針
 

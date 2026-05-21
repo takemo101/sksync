@@ -49,6 +49,32 @@ fn agents_schema_requires_agent_targets() {
     );
 }
 
+#[test]
+fn agents_example_includes_skillkit_compatible_mappings() {
+    let agents = parse_json(include_str!("../sksync.agents.example.json"));
+    let mappings = agents["agents"].as_object().expect("agents object");
+
+    for agent in [
+        "claude-code",
+        "cursor",
+        "codex",
+        "gemini-cli",
+        "opencode",
+        "github-copilot",
+        "windsurf",
+        "roo",
+        "aider",
+        "hermes",
+    ] {
+        assert!(mappings.contains_key(agent), "missing mapping for {agent}");
+    }
+
+    assert!(
+        mappings.len() >= 46,
+        "expected SkillKit-compatible agent coverage"
+    );
+}
+
 fn parse_json(content: &str) -> Value {
     serde_json::from_str(content).expect("valid JSON")
 }
