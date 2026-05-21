@@ -11,6 +11,11 @@ pub struct InitResult {
     pub agent_mapping_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitAgentsResult {
+    pub agent_mapping_path: PathBuf,
+}
+
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error("config already exists at {0}")]
@@ -48,6 +53,14 @@ pub fn init_global(config_root: impl AsRef<Path>) -> Result<InitResult, InitErro
         global_config(),
         Some(config_root.join("agents.json")),
     )
+}
+
+pub fn init_agents(config_root: impl AsRef<Path>) -> Result<InitAgentsResult, InitError> {
+    let path = config_root.as_ref().join("agents.json");
+    write_agent_mapping(&path)?;
+    Ok(InitAgentsResult {
+        agent_mapping_path: path,
+    })
 }
 
 fn init_with_config(
@@ -91,6 +104,11 @@ fn write_agent_mapping_if_missing(path: &Path) -> Result<bool, InitError> {
     if path.exists() {
         return Ok(false);
     }
+    write_agent_mapping(path)?;
+    Ok(true)
+}
+
+fn write_agent_mapping(path: &Path) -> Result<(), InitError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| InitError::CreateSkillsDir {
             path: parent.display().to_string(),
@@ -100,8 +118,7 @@ fn write_agent_mapping_if_missing(path: &Path) -> Result<bool, InitError> {
     fs::write(path, default_agent_mapping()).map_err(|source| InitError::WriteConfig {
         path: path.display().to_string(),
         source,
-    })?;
-    Ok(true)
+    })
 }
 
 fn project_config() -> String {
@@ -183,6 +200,27 @@ mod tests {
             std::fs::read_to_string(agent_mapping_path).expect("read agents"),
             "custom"
         );
+    }
+
+    #[test]
+    fn init_agents_overwrites_existing_agent_mapping_only() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.json");
+        let agent_mapping_path = temp_dir.path().join("agents.json");
+        std::fs::write(&config_path, "custom config").expect("write config");
+        std::fs::write(&agent_mapping_path, "custom agents").expect("write agents");
+
+        let result = super::init_agents(temp_dir.path()).expect("init agents succeeds");
+
+        assert_eq!(result.agent_mapping_path, agent_mapping_path.clone());
+        assert_eq!(
+            std::fs::read_to_string(config_path).expect("read config"),
+            "custom config"
+        );
+        let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
+        assert!(agents.contains("\"global\""));
+        assert!(agents.contains("\"project\""));
+        assert!(!agents.contains("custom agents"));
     }
 
     #[test]

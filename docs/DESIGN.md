@@ -260,6 +260,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 - `--global` では `~/.sksync/skills/` ディレクトリを作成
 - 既存 config は上書きしない
 - 既存 `agents.json` は上書きしない
+- `--agents` では config / skills directory には触らず、`~/.sksync/agents.json` だけを bundled default mapping で強制上書きする
 - built-in agent mapping のコメント付き例を出す
 
 ### `sksync add <source> --agent <agent>`
