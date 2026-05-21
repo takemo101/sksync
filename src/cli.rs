@@ -63,8 +63,9 @@ enum Command {
     Check(CheckArgs),
     /// List managed skills and agent link status.
     List(ListArgs),
-    /// Launch the interactive terminal UI.
-    Tui,
+    /// Launch the interactive prompt wizard.
+    #[command(visible_aliases = ["ask", "tui"])]
+    Wizard,
 }
 
 #[derive(Debug, Args)]
@@ -175,7 +176,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Update(args) => run_update(args),
         Command::Check(args) => run_check(args),
         Command::List(args) => run_list(args),
-        Command::Tui => run_tui(),
+        Command::Wizard => run_wizard(),
     }
 }
 
@@ -793,7 +794,7 @@ fn run_list(args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_tui() -> Result<()> {
+fn run_wizard() -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     crate::tui::run(current_dir)
 }
@@ -801,7 +802,7 @@ fn run_tui() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_definition_is_valid() {
@@ -826,7 +827,7 @@ mod tests {
             names,
             [
                 "init", "add", "remove", "outdated", "plan", "apply", "install", "update", "check",
-                "list", "tui",
+                "list", "wizard",
             ]
         );
     }
@@ -843,5 +844,12 @@ mod tests {
         Cli::command()
             .try_get_matches_from(["sksync", "plan", "--help"])
             .expect_err("--help should short-circuit as a clap display error");
+    }
+
+    #[test]
+    fn wizard_aliases_are_registered() {
+        Cli::try_parse_from(["sksync", "wizard"]).expect("wizard should parse");
+        Cli::try_parse_from(["sksync", "ask"]).expect("ask alias should parse");
+        Cli::try_parse_from(["sksync", "tui"]).expect("tui alias should parse");
     }
 }

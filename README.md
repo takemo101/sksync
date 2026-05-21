@@ -203,7 +203,7 @@ npm-like な依存管理コマンド体系に寄せていきます。
 
 - `sksync remove <skill> --agent <agent>` - 指定 agent の managed symlink だけを外す
 - `sksync outdated` - lockfile と upstream/latest を比較して更新可能な skill を表示
-- `sksync tui` の追加UX
+- `sksync wizard` の追加UX（`ask` / `tui` aliases）
 - `registry:skills.sh/<package>` provider
 - GitLab / gist support
 

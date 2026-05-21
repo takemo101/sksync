@@ -109,7 +109,7 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 - example configを使って `plan/check/list` が動く
 - temp directory上で `apply` の安全ルールがテストされている
 
-## Phase 2: Prompt TUI MVP
+## Phase 2: Prompt Wizard MVP
 
 目的: CLIと同じcore logicを利用して、質問形式で skill の追加・削除・確認を実行できるようにする。
 
@@ -121,10 +121,10 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 
 完了条件:
 
-- TUIがfilesystemを直接触らない
+- wizardがfilesystemを直接触らない
 - pane / keybinding 中心の常駐型 UI を持たない
 - apply / remove 前に確認が必要
-- CLIとTUIでplan結果が一致する
+- CLIとwizardでplan結果が一致する
 
 ## Phase 3: Portability / install workflow
 

@@ -17,9 +17,9 @@
 - Implement `check`
 - Implement safe symlink `apply`
 
-## Phase 2: Prompt-style TUI MVP
+## Phase 2: Prompt-style Wizard MVP
 
-- Add `sksync tui` as a SkillKit-like question flow
+- Add `sksync wizard` as a SkillKit-like question flow (`ask` / `tui` aliases)
 - Ask for add/remove/remove-agent intents and required source / skill / agent values
 - Show dry-run summary before mutation
 - Run add/remove/check/apply usecases from TUI
