@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -174,6 +175,15 @@ struct CheckArgs {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+    dispatch(cli.command)
+}
+
+pub(crate) fn run_with_args<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = Cli::try_parse_from(args)?;
     dispatch(cli.command)
 }
 
