@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,9 @@ use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
     LockfileStore, LockfileStoreError,
 };
-use crate::application::source::SourceUrlTransformers;
+use crate::application::source::{
+    git_url_from_repo, parse_install_source_string as parse_source_string, validate_git_subpath,
+};
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
@@ -405,7 +407,7 @@ fn parse_install_source(
 ) -> Result<InstallSource, ConfigResolveError> {
     match raw {
         RawInstallSource::Shorthand(value) => {
-            parse_install_source_string(skill, &value, config_root)
+            parse_install_source_value(skill, &value, config_root)
         }
         RawInstallSource::Structured(source) => {
             parse_structured_install_source(skill, source, config_root)
@@ -440,7 +442,12 @@ fn parse_structured_install_source(
                 }
             })?;
             let path = source.path.unwrap_or_else(|| PathBuf::from("."));
-            let path = validate_git_subpath_for_config(skill, path)?;
+            let path = validate_git_subpath(path).map_err(|error| {
+                ConfigResolveError::InvalidInstallSource {
+                    skill: skill.to_owned(),
+                    message: error.to_string(),
+                }
+            })?;
             Ok(InstallSource::Git(GitInstallSource {
                 url: git_url_from_repo(&repo),
                 reference: source.reference,
@@ -455,121 +462,15 @@ pub fn parse_install_source_value(
     value: &str,
     config_root: Option<&Path>,
 ) -> Result<InstallSource, ConfigResolveError> {
-    parse_install_source_string(skill, value, config_root)
-}
-
-fn parse_install_source_string(
-    skill: &str,
-    value: &str,
-    config_root: Option<&Path>,
-) -> Result<InstallSource, ConfigResolveError> {
-    if value.starts_with("./") || value.starts_with("../") || value.starts_with('/') {
-        return Ok(InstallSource::Local(rebase_config_path(
-            PathBuf::from(value),
-            config_root,
-        )));
-    }
-
-    let (body, reference) = split_ref(value);
-    if let Some(mut transformed) = SourceUrlTransformers::default().transform_url(body, reference) {
-        transformed.path = validate_git_subpath_for_config(skill, transformed.path)?;
-        return Ok(InstallSource::Git(transformed));
-    }
-
-    if let Some(mut parsed) = parse_github_tree_url(value) {
-        parsed.path = validate_git_subpath_for_config(skill, parsed.path)?;
-        return Ok(InstallSource::Git(parsed));
-    }
-
-    if body.starts_with("registry:") {
-        return Err(ConfigResolveError::InvalidInstallSource {
+    let source =
+        parse_source_string(value).map_err(|error| ConfigResolveError::InvalidInstallSource {
             skill: skill.to_owned(),
-            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/skill-name".to_owned(),
-        });
-    }
-    let body = body.strip_prefix("github:").unwrap_or(body);
-    let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
-    if parts.len() >= 2 && !body.contains("://") {
-        let repo = format!("{}/{}", parts[0], parts[1]);
-        let path = if parts.len() > 2 {
-            parts[2..].join("/")
-        } else {
-            ".".to_owned()
-        };
-        let path = validate_git_subpath_for_config(skill, PathBuf::from(path))?;
-        return Ok(InstallSource::Git(GitInstallSource {
-            url: git_url_from_repo(&repo),
-            reference: reference.map(str::to_owned),
-            path,
-        }));
-    }
-
-    Err(ConfigResolveError::InvalidInstallSource {
-        skill: skill.to_owned(),
-        message: format!("unsupported source '{value}'"),
+            message: error.to_string(),
+        })?;
+    Ok(match source {
+        InstallSource::Local(path) => InstallSource::Local(rebase_config_path(path, config_root)),
+        InstallSource::Git(source) => InstallSource::Git(source),
     })
-}
-
-fn validate_git_subpath_for_config(
-    skill: &str,
-    path: PathBuf,
-) -> Result<PathBuf, ConfigResolveError> {
-    if !is_safe_git_subpath(&path) {
-        return Err(ConfigResolveError::InvalidInstallSource {
-            skill: skill.to_owned(),
-            message: format!(
-                "git source path '{}' must be relative and must not contain '..'",
-                path.display()
-            ),
-        });
-    }
-    Ok(path)
-}
-
-fn is_safe_git_subpath(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && !path.is_absolute()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
-}
-
-fn split_ref(value: &str) -> (&str, Option<&str>) {
-    value
-        .rsplit_once('#')
-        .map_or((value, None), |(body, reference)| (body, Some(reference)))
-}
-
-fn parse_github_tree_url(value: &str) -> Option<GitInstallSource> {
-    let prefix = "https://github.com/";
-    let rest = value.strip_prefix(prefix)?;
-    let (body, reference_override) = split_ref(rest);
-    let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let repo = format!("{}/{}", parts[0], parts[1]);
-    let mut reference = reference_override.map(str::to_owned);
-    let mut path = PathBuf::from(".");
-    if parts.get(2) == Some(&"tree") && parts.len() >= 4 {
-        reference = Some(parts[3].to_owned());
-        if parts.len() > 4 {
-            path = PathBuf::from(parts[4..].join("/"));
-        }
-    }
-    Some(GitInstallSource {
-        url: git_url_from_repo(&repo),
-        reference,
-        path,
-    })
-}
-
-fn git_url_from_repo(repo_or_url: &str) -> String {
-    if repo_or_url.contains("://") || repo_or_url.ends_with(".git") {
-        repo_or_url.to_owned()
-    } else {
-        format!("https://github.com/{repo_or_url}.git")
-    }
 }
 
 #[derive(Debug, Clone)]
