@@ -34,7 +34,7 @@ pub fn init_project(root: impl AsRef<Path>) -> Result<InitResult, InitError> {
     init_with_config(
         root.join("sksync.config.json"),
         root.join(".sksync/skills"),
-        default_config().to_owned(),
+        project_config(),
         None,
     )
 }
@@ -104,8 +104,8 @@ fn write_agent_mapping_if_missing(path: &Path) -> Result<bool, InitError> {
     Ok(true)
 }
 
-fn default_config() -> &'static str {
-    include_str!("../../sksync.config.example.json")
+fn project_config() -> String {
+    config_with_skill_dir("./.sksync/skills")
 }
 
 fn default_agent_mapping() -> &'static str {
@@ -113,9 +113,13 @@ fn default_agent_mapping() -> &'static str {
 }
 
 fn global_config() -> String {
+    config_with_skill_dir("~/.sksync/skills")
+}
+
+fn config_with_skill_dir(skill_dir: &str) -> String {
     let config = json!({
         "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
-        "skillDir": "~/.sksync/skills",
+        "skillDir": skill_dir,
         "dependencies": {}
     });
     format!(
@@ -139,6 +143,9 @@ mod tests {
         assert_eq!(result.agent_mapping_path, None);
         let config = std::fs::read_to_string(result.config_path).expect("read config");
         assert!(config.contains("\"skillDir\": \"./.sksync/skills\""));
+        assert!(config.contains("\"dependencies\": {}"));
+        assert!(!config.contains("example-skill"));
+        assert!(!config.contains("local-example"));
     }
 
     #[test]
