@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
+  "title": "sksync config",
+  "description": "Configuration for sksync project or global skill dependencies.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "skillDir": {
+      "type": "string",
+      "minLength": 1,
+      "default": "./.sksync/skills",
+      "description": "Directory where sksync installs or stores skill bodies. Relative paths resolve from the config root."
+    },
+    "agents": {
+      "type": "object",
+      "description": "Optional per-config agent declarations and target overrides.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentConfig"
+      }
+    },
+    "skills": {
+      "type": "object",
+      "description": "Legacy/local skill entries. Dependencies are preferred for installable skills.",
+      "additionalProperties": {
+        "$ref": "#/$defs/localSkillConfig"
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Installable skill dependencies keyed by skill name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/dependencyConfig"
+      }
+    }
+  },
+  "$defs": {
+    "agentName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent name such as pi, claude-code, codex, gemini, opencode, or a custom agent name."
+    },
+    "agentList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/agentName"
+      },
+      "uniqueItems": true
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["project", "user"],
+          "default": "user"
+        },
+        "targetDir": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    },
+    "localSkillConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/path"
+        },
+        "agents": {
+          "$ref": "#/$defs/agentList"
+        }
+      }
+    },
+    "dependencyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "agents"],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/installSource"
+        },
+        "agents": {
+          "allOf": [
+            { "$ref": "#/$defs/agentList" },
+            { "minItems": 1 }
+          ]
+        }
+      }
+    },
+    "installSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "SkillKit-style source string: GitHub shorthand, URL, registry source, or local path."
+        },
+        {
+          "$ref": "#/$defs/structuredInstallSource"
+        }
+      ]
+    },
+    "structuredInstallSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["git", "github", "local", "registry"]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        }
+      },
+      "anyOf": [
+        { "required": ["url"] },
+        { "required": ["repo"] },
+        { "required": ["path"] }
+      ]
+    }
+  }
+}
