@@ -1,10 +1,9 @@
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-
 use crate::application::config::{GitInstallSource, InstallSource};
 use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
 use crate::domain::skill_manifest::parse_skill_manifest;
+use crate::infrastructure::git::{GitClient, GitCommandError};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Default)]
 pub struct FileSystemSkillInstaller;
@@ -69,10 +68,14 @@ fn install_git_to_staging(
 ) -> Result<InstalledSkillSource, SkillInstallError> {
     validate_git_subpath(&git_source.path)?;
     let clone_dir = staging.join(".repo");
-    clone_git_source(git_source, &clone_dir)?;
+    let git = GitClient;
+    git.clone_checkout(git_source, &clone_dir)
+        .map_err(skill_install_git_error)?;
     let source_path = safe_git_source_path(&clone_dir, &git_source.path)?;
     copy_dir_contents(&source_path, staging)?;
-    let rev = resolve_git_head(&clone_dir, &git_source.url)?;
+    let rev = git
+        .resolve_head(&clone_dir, &git_source.url)
+        .map_err(skill_install_git_error)?;
     remove_dir(&clone_dir)?;
     let resolved_source = InstallSource::Git(GitInstallSource {
         url: git_source.url.clone(),
@@ -132,89 +135,11 @@ fn safe_git_source_path(clone_dir: &Path, subpath: &Path) -> Result<PathBuf, Ski
     Ok(canonical_source)
 }
 
-fn clone_git_source(
-    git_source: &GitInstallSource,
-    clone_dir: &Path,
-) -> Result<(), SkillInstallError> {
-    let output = Command::new("git")
-        .arg("clone")
-        .arg("--filter=blob:none")
-        .arg("--no-checkout")
-        .arg(&git_source.url)
-        .arg(clone_dir)
-        .output()
-        .map_err(|error| SkillInstallError::Git {
-            repo: git_source.url.clone(),
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(SkillInstallError::Git {
-            repo: git_source.url.clone(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+fn skill_install_git_error(error: GitCommandError) -> SkillInstallError {
+    SkillInstallError::Git {
+        repo: error.repo,
+        message: error.message,
     }
-
-    checkout_git_reference(
-        clone_dir,
-        &git_source.url,
-        git_source.reference.as_deref().unwrap_or("HEAD"),
-    )
-}
-
-fn checkout_git_reference(
-    clone_dir: &Path,
-    repo: &str,
-    reference: &str,
-) -> Result<(), SkillInstallError> {
-    if run_git(clone_dir, repo, &["checkout", "--detach", reference]).is_ok() {
-        return Ok(());
-    }
-
-    run_git(
-        clone_dir,
-        repo,
-        &["fetch", "--depth", "1", "origin", reference],
-    )?;
-    run_git(clone_dir, repo, &["checkout", "--detach", "FETCH_HEAD"])
-}
-
-fn run_git(clone_dir: &Path, repo: &str, args: &[&str]) -> Result<(), SkillInstallError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(clone_dir)
-        .args(args)
-        .output()
-        .map_err(|error| SkillInstallError::Git {
-            repo: repo.to_owned(),
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(SkillInstallError::Git {
-            repo: repo.to_owned(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    Ok(())
-}
-
-fn resolve_git_head(clone_dir: &Path, repo: &str) -> Result<String, SkillInstallError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(clone_dir)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .map_err(|error| SkillInstallError::Git {
-            repo: repo.to_owned(),
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(SkillInstallError::Git {
-            repo: repo.to_owned(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn validate_skill_package(path: &Path) -> Result<(), SkillInstallError> {
