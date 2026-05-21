@@ -14,7 +14,7 @@ use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, Re
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
 };
-use crate::application::init::{init_global, init_project};
+use crate::application::init::{init_agents, init_global, init_project};
 use crate::application::list::list_skills;
 use crate::application::outdated::{
     collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
@@ -82,6 +82,9 @@ struct InitArgs {
     /// Initialize ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(long)]
     global: bool,
+    /// Force overwrite ~/.sksync/agents.json with bundled agent mappings only.
+    #[arg(long)]
+    agents: bool,
 }
 
 #[derive(Debug, Args)]
@@ -206,6 +209,15 @@ fn dispatch(command: Command) -> Result<()> {
 }
 
 fn run_init(args: InitArgs) -> Result<()> {
+    if args.agents {
+        let result = init_agents(config_root_for_global()?)?;
+        print_success(format!(
+            "Updated agent mappings: {}",
+            result.agent_mapping_path.display()
+        ));
+        return Ok(());
+    }
+
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let result = if args.global {
         init_global(config_root_for_global()?)?
@@ -1208,6 +1220,11 @@ mod tests {
     #[test]
     fn init_global_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--global"]).expect("init --global should parse");
+    }
+
+    #[test]
+    fn init_agents_is_registered() {
+        Cli::try_parse_from(["sksync", "init", "--agents"]).expect("init --agents should parse");
     }
 
     #[test]

@@ -94,6 +94,8 @@ cargo run -- list
 cargo run -- init
 # or initialize global config
 cargo run -- init --global
+# or force-refresh only ~/.sksync/agents.json
+cargo run -- init --agents
 ```
 
 project mode で作成されるもの:
@@ -108,6 +110,8 @@ global mode (`--global`) で作成されるもの:
 - `~/.sksync/skills/`
 
 既に対象 config が存在する場合は上書きせず失敗します。global mode で `agents.json` が既にある場合は上書きしません。
+
+`init --agents` は config / skills directory には触らず、bundled default mapping で `~/.sksync/agents.json` だけを強制的に上書きします。新しい agent mapping を取り込む場合に使います。
 
 ### `sksync add`
 
