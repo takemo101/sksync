@@ -22,12 +22,12 @@ enum Intent {
 impl fmt::Display for Intent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
-            Self::AddSkill => "skill を追加する",
-            Self::RemoveSkill => "skill を削除する",
-            Self::RemoveAgent => "特定 agent から skill を外す",
-            Self::Status => "状態を確認する",
-            Self::Apply => "apply する",
-            Self::Quit => "終了する",
+            Self::AddSkill => "Add skill",
+            Self::RemoveSkill => "Remove skill",
+            Self::RemoveAgent => "Detach skill from agent",
+            Self::Status => "Show status",
+            Self::Apply => "Apply links",
+            Self::Quit => "Quit",
         };
         formatter.write_str(label)
     }
@@ -75,21 +75,21 @@ impl RemoveMode {
 impl fmt::Display for RemoveMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
-            Self::Normal => "通常削除（オプションなし・symlink も削除）",
-            Self::KeepFiles => "skill 本体を残す（--keep-files）",
-            Self::ConfigOnly => "config / lockfile だけ変更（--config-only）",
+            Self::Normal => "Normal removal (no option; removes symlinks too)",
+            Self::KeepFiles => "Keep installed skill files (--keep-files)",
+            Self::ConfigOnly => "Config and lockfile only (--config-only)",
         };
         formatter.write_str(label)
     }
 }
 
 pub fn run(project_root: PathBuf) -> Result<()> {
-    println!("sksync prompt TUI");
+    println!("sksync wizard");
     println!("Project: {}", project_root.display());
 
     loop {
         let intent = Select::new(
-            "何をしますか?",
+            "What would you like to do?",
             vec![
                 Intent::AddSkill,
                 Intent::RemoveSkill,
@@ -100,7 +100,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             ],
         )
         .prompt()
-        .context("failed to read TUI selection")?;
+        .context("failed to read wizard selection")?;
 
         match intent {
             Intent::AddSkill => run_add_flow(&project_root)?,
@@ -114,13 +114,13 @@ pub fn run(project_root: PathBuf) -> Result<()> {
 }
 
 fn run_add_flow(project_root: &PathBuf) -> Result<()> {
-    let source = prompt_required("skill source")?;
-    let name = Text::new("name override")
-        .with_help_message("optional; leave blank to infer from source")
+    let source = prompt_required("Skill source")?;
+    let name = Text::new("Name override")
+        .with_help_message("Optional; leave blank to infer from source")
         .prompt()
         .context("failed to read name override")?;
     let agents = prompt_agents()?;
-    let global = prompt_config_scope("どの config に追加しますか?")?.is_global();
+    let global = prompt_config_scope("Where should this dependency be added?")?.is_global();
 
     let mut args = vec!["add".to_owned(), source];
     for agent in agents {
@@ -135,13 +135,13 @@ fn run_add_flow(project_root: &PathBuf) -> Result<()> {
         args.push("--global".to_owned());
     }
 
-    confirm_and_run(project_root, "実行しますか?", args)
+    confirm_and_run(project_root, "Run this command?", args)
 }
 
 fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
-    let scope = prompt_config_scope("どの config から削除しますか?")?;
+    let scope = prompt_config_scope("Which config should the skill be removed from?")?;
     let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "削除する skill を選択してください")?;
+    let skill = prompt_skill_from_config(&config, "Select the skill to remove")?;
     let mode = prompt_remove_mode()?;
 
     let mut args = vec!["remove".to_owned(), skill];
@@ -150,13 +150,13 @@ fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
     }
     mode.append_args(&mut args);
 
-    confirm_and_run(project_root, "削除を実行しますか?", args)
+    confirm_and_run(project_root, "Remove this skill?", args)
 }
 
 fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
-    let scope = prompt_config_scope("どの config を対象にしますか?")?;
+    let scope = prompt_config_scope("Which config should be updated?")?;
     let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "agent から外す skill を選択してください")?;
+    let skill = prompt_skill_from_config(&config, "Select the skill to detach from an agent")?;
     let agents = prompt_agents_for_skill(&config, &skill)?;
 
     let mut args = vec!["remove".to_owned(), skill];
@@ -168,12 +168,16 @@ fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
         args.push("--global".to_owned());
     }
 
-    confirm_and_run(project_root, "指定 agent から外しますか?", args)
+    confirm_and_run(
+        project_root,
+        "Detach this skill from the selected agent(s)?",
+        args,
+    )
 }
 
 fn run_status_flow(project_root: &PathBuf) -> Result<()> {
-    let global = prompt_config_scope("どの config を確認しますか?")?.is_global();
-    let check = prompt_confirm("check も実行しますか?", true)?;
+    let global = prompt_config_scope("Which config should be inspected?")?.is_global();
+    let check = prompt_confirm("Run check after list?", true)?;
 
     let mut list_args = vec!["list".to_owned()];
     if global {
@@ -192,8 +196,8 @@ fn run_status_flow(project_root: &PathBuf) -> Result<()> {
 }
 
 fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
-    let global = prompt_config_scope("どの config を apply しますか?")?.is_global();
-    let force = prompt_confirm("safe な managed link の置き換えを許可しますか?", false)?;
+    let global = prompt_config_scope("Which config should be applied?")?.is_global();
+    let force = prompt_confirm("Allow safe replacement of managed links?", false)?;
 
     let mut plan_args = vec!["plan".to_owned()];
     if global {
@@ -210,11 +214,11 @@ fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
         apply_args.push("--force".to_owned());
     }
 
-    confirm_and_run(project_root, "apply を実行しますか?", apply_args)
+    confirm_and_run(project_root, "Apply these link changes?", apply_args)
 }
 
 fn confirm_and_run(project_root: &PathBuf, question: &str, args: Vec<String>) -> Result<()> {
-    println!("予定: sksync {}", args.join(" "));
+    println!("Planned command: sksync {}", args.join(" "));
     if prompt_confirm(question, false)? {
         run_sksync(project_root, &args)?;
     }
@@ -229,14 +233,14 @@ fn prompt_config_scope(message: &str) -> Result<ConfigScope> {
 
 fn prompt_remove_mode() -> Result<RemoveMode> {
     Select::new(
-        "削除モードを選択してください",
+        "Select remove mode",
         vec![
             RemoveMode::Normal,
             RemoveMode::KeepFiles,
             RemoveMode::ConfigOnly,
         ],
     )
-    .with_help_message("通常削除は CLI の `sksync remove <skill>` と同じです")
+    .with_help_message("Normal removal is the same as CLI `sksync remove <skill>`")
     .prompt()
     .context("failed to read remove mode")
 }
@@ -269,8 +273,8 @@ fn prompt_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Result<
     if agents.is_empty() {
         bail!("skill {skill_name} has no configured agents");
     }
-    MultiSelect::new("外す agent を選択してください", agents)
-        .with_help_message("space で選択、enter で確定")
+    MultiSelect::new("Select agent(s) to detach from", agents)
+        .with_help_message("Use space to select, enter to confirm")
         .prompt()
         .context("failed to read configured agent selection")
 }
@@ -296,10 +300,10 @@ fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<Path
 
 fn prompt_agents() -> Result<Vec<String>> {
     let selected = MultiSelect::new(
-        "agents を選択してください",
+        "Select agent(s)",
         vec!["pi", "claude-code", "codex", "gemini", "opencode", "custom"],
     )
-    .with_help_message("space で選択、enter で確定")
+    .with_help_message("Use space to select, enter to confirm")
     .prompt()
     .context("failed to read agent selection")?;
 
@@ -321,8 +325,8 @@ fn prompt_agents() -> Result<Vec<String>> {
 }
 
 fn prompt_custom_agents() -> Result<Vec<String>> {
-    let input = Text::new("custom agents")
-        .with_help_message("comma separated, e.g. cursor,qwen")
+    let input = Text::new("Custom agents")
+        .with_help_message("Comma separated, e.g. cursor,qwen")
         .prompt()
         .context("failed to read custom agents")?;
     Ok(input

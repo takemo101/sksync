@@ -173,7 +173,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 ## 7. CLI / TUI コマンド案
 
 `sksync` は Rust 製の単一バイナリとして提供する。
-通常の自動化・スクリプト用途では CLI、手元で状態を確認しながら実行したい場合は TUI を使う。
+通常の自動化・スクリプト用途では CLI、手元で質問に答えながら実行したい場合は wizard を使う。
 コマンド体系は npm に近い依存管理モデルに寄せる。ただし `ci` 相当のコマンドは現時点では設けない。
 
 ### npm-like command model
@@ -189,7 +189,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 | `sksync apply`                          | sksync specific                 | installed skill から agent target へ symlink を反映する                                   |
 | `sksync check`                          | `npm ls` / health check         | lockfile hash、source、target symlink の drift を検査する                                 |
 | `sksync list`                           | `npm ls`                        | 管理中 skill と agent ごとの link 状態を一覧表示する                                      |
-| `sksync tui`                            | n/a                             | 状態確認と操作を TUI で行う                                                               |
+| `sksync wizard`                         | n/a                             | 質問形式の wizard で状態確認と操作を行う                                                  |
 
 ### `sksync init`
 
@@ -267,60 +267,62 @@ agent 単位削除。
 - 管理中 skill 一覧
 - agent ごとの link 状態
 
-### `sksync tui`
+### `sksync wizard`
 
 - SkillKit のような質問形式の対話フローを起動する
+- `sksync ask` / `sksync tui` は互換 alias として扱う
 - ユーザーに「追加 / 削除 / agent 変更 / 状態確認」などの intent を選ばせる
 - intent ごとに必要な source / skill / agent / scope を順番に質問する
 - 最後に dry-run plan を要約表示し、確認後に `add` / `remove` / `apply` 相当の usecase を実行する
 - wizard / prompt 型の操作体験にする
 
-## 8. TUI 設計
+## 8. Wizard 設計
 
-`sksync tui` は質問形式の interactive wizard とする。目的は「コマンド引数を覚えなくても安全に skill を追加・削除できること」。
+`sksync wizard` は質問形式の interactive wizard とする。目的は「コマンド引数を覚えなくても安全に skill を追加・削除できること」。`sksync ask` / `sksync tui` は alias として残す。
 
 ### 対話フロー案
 
 ```text
-? 何をしますか?
-  > skill を追加する
-    skill を削除する
-    特定 agent から skill を外す
-    状態を確認する
-    apply する
+? What would you like to do?
+  > Add skill
+    Remove skill
+    Detach skill from agent
+    Show status
+    Apply links
 
-? skill source を入力してください
+? Skill source
   github:owner/repo/path/to/skill#main
 
-? どの agent に追加しますか? (複数選択)
+? Select agent(s)
   [x] pi
   [x] claude-code
   [ ] codex
   [ ] gemini
 
-予定される変更:
+Planned changes:
   add dependency: cuekit-dogfood
   install source -> .sksync/skills/cuekit-dogfood
   create symlink: .pi/agent/skills/cuekit-dogfood
   create symlink: .claude/skills/cuekit-dogfood
 
-? この変更を適用しますか? (y/N)
+? Apply these changes? (y/N)
 ```
 
 ### TUI 操作モデル
 
-| intent         | 質問する内容                                                         | 実行する usecase  |
-| -------------- | -------------------------------------------------------------------- | ----------------- |
-| skill 追加     | source, name override, agent, global scope                           | `add`             |
-| skill 削除     | project/global scope, configured skill list, remove mode             | `remove`          |
-| agent から外す | project/global scope, configured skill list, configured agent list   | `remove --agent`  |
-| 状態確認       | global scope, 出力詳細                                               | `list` / `check`  |
-| apply          | global scope, force, 確認                                            | `plan` -> `apply` |
+| intent            | prompts                                                            | usecase           |
+| ----------------- | ------------------------------------------------------------------ | ----------------- |
+| add skill         | source, name override, agent, global scope                         | `add`             |
+| remove skill      | project/global scope, configured skill list, remove mode           | `remove`          |
+| detach from agent | project/global scope, configured skill list, configured agent list | `remove --agent`  |
+| status            | global scope, output detail                                        | `list` / `check`  |
+| apply             | global scope, force, confirmation                                  | `plan` -> `apply` |
 
 ### TUI の原則
 
+- Runtime TUI copy is English so the prompt flow is accessible to international users.
 - TUI は質問と確認に徹し、core logic を持たない
-- 削除時は `通常削除（オプションなし）` / `--keep-files` / `--config-only` を単一選択にし、通常削除で symlink も削除する意図を明示する
+- 削除時は `Normal removal (no option)` / `--keep-files` / `--config-only` を単一選択にし、通常削除で symlink も削除する意図を明示する
 - 各フローは CLI と同じ application usecase を呼ぶ
 - 破壊的操作は必ず plan / summary を表示してから確認する
 - TUI state は回答途中の一時入力だけにする
@@ -350,7 +352,7 @@ agent 単位削除。
 | hash                        | `sha2`, `hex`         |
 | glob / walk                 | `walkdir`, `ignore`   |
 | error handling              | `anyhow`, `thiserror` |
-| Prompt TUI                  | `inquire`             |
+| Prompt wizard               | `inquire`             |
 | snapshot / temp tests       | `insta`, `tempfile`   |
 
 ### モジュール構成案

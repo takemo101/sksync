@@ -370,23 +370,23 @@ lockfileと現在状態の差分を検出する。
 
 ---
 
-## Milestone 6: Prompt TUI MVP
+## Milestone 6: Prompt Wizard MVP
 
-### Issue 15: Prompt TUI shellを追加する
+### Issue 15: Prompt wizard shellを追加する
 
 **目的**  
-SkillKit のような質問形式で操作できる `sksync tui` を起動できるようにする。
+SkillKit のような質問形式で操作できる `sksync wizard` を起動できるようにする。`ask` / `tui` は互換 alias として残す。
 
 **作業内容**
 
 - `src/tui/mod.rs` に prompt / wizard flow を作る
-- `sksync tui` から起動する
+- `sksync wizard` から起動する
 - 最初に add / remove / remove-agent / check / apply / quit の intent を選ばせる
 - pane / keybinding 中心の常駐型 UI は作らない
 
 **受け入れ条件**
 
-- `sksync tui` が起動する
+- `sksync wizard` が起動する
 - intent を選んで終了できる
 - filesystem操作はapplication経由のみ
 
@@ -394,24 +394,25 @@ SkillKit のような質問形式で操作できる `sksync tui` を起動でき
 
 ---
 
-### Issue 16: Prompt TUIにadd/remove/check/apply操作を接続する
+### Issue 16: Prompt wizardにadd/remove/check/apply操作を接続する
 
 **目的**  
 CLI MVPで作ったcore logicを質問形式TUIから実行できるようにする。
 
 **作業内容**
 
+- Runtime prompt labels / help / confirmations are English.
 - add: source / name override / agent / global scope を質問する
-- remove: project/global scope を先に選び、config 由来の skill list から skill を選ばせ、通常削除（オプションなし） / keep-files / config-only の削除モードを選ばせる
+- remove: project/global scope を先に選び、config 由来の skill list から skill を選ばせ、Normal removal / keep-files / config-only の削除モードを選ばせる
 - remove-agent: project/global scope を先に選び、config 由来の skill list と選択 skill の agent list から対象を選ばせる
 - check/list: scope と表示詳細を質問する
 - apply: plan summary を表示し、確認後に apply する
 
 **受け入れ条件**
 
-- TUIから安全に add/remove/remove-agent を実行できる
+- wizardから安全に add/remove/remove-agent を実行できる
 - 破壊的操作前に確認が必要
-- TUIが直接symlinkやlockfileを書かない
+- wizardが直接symlinkやlockfileを書かない
 
 **依存**: Issue 15
 
