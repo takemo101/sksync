@@ -125,4 +125,17 @@ mod tests {
         let path = SourcePath::new("skills/review").expect("valid source path");
         assert_eq!(path.as_path(), Path::new("skills/review"));
     }
+
+    #[test]
+    fn source_path_expands_current_user_tilde() {
+        let path = SourcePath::new("~/skills").expect("valid source path");
+        assert!(path.as_path().is_absolute());
+        assert!(path.as_path().ends_with("skills"));
+    }
+
+    #[test]
+    fn source_path_does_not_expand_named_user_tilde() {
+        let path = SourcePath::new("~other/skills").expect("valid source path");
+        assert_eq!(path.as_path(), Path::new("~other/skills"));
+    }
 }
