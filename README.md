@@ -247,7 +247,7 @@ project-local の生成物は `.gitignore` します。
 ### Config / lockfile examples
 
 - [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
-- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.sksync/agents.json`)
+- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.sksync/agents.json`) with SkillKit-compatible agent entries
 - [`sksync-lock.example.json`](sksync-lock.example.json)
 - [`schemas/sksync.schema.json`](schemas/sksync.schema.json) - JSON Schema for `config.json` / `sksync.config.json`
 - [`schemas/sksync.agents.schema.json`](schemas/sksync.agents.schema.json) - JSON Schema for `agents.json`
