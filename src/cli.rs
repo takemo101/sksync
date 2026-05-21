@@ -249,6 +249,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
         .iter()
         .find(|skill| skill.name.as_str() == args.skill);
     let skill_source = skill.map(|skill| skill.source.as_path().to_path_buf());
+    let skill_dir = config.skill_dir.as_path().to_path_buf();
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let mut lockfile = read_lockfile(&lockfile_path).ok();
     let (_config, removal_plan, _root_dir) =
@@ -259,6 +260,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
             &args,
             &config_path,
             skill_source,
+            &skill_dir,
             &lockfile_path,
             &mut lockfile,
             &removal_plan,
@@ -282,6 +284,7 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
             &args,
             &config_path,
             skill_source,
+            &skill_dir,
             &lockfile_path,
             &mut lockfile,
             &removal_plan,
@@ -303,6 +306,7 @@ fn remove_entire_skill(
     args: &RemoveArgs,
     config_path: &Path,
     skill_source: Option<PathBuf>,
+    skill_dir: &Path,
     lockfile_path: &Path,
     lockfile: &mut Option<Lockfile>,
     removal_plan: &LinkPlan,
@@ -311,12 +315,7 @@ fn remove_entire_skill(
         remove_managed_symlinks(removal_plan, &args.skill)?;
         if !args.keep_files {
             if let Some(source) = skill_source {
-                if source.exists() {
-                    fs::remove_dir_all(&source).with_context(|| {
-                        format!("failed to remove installed skill {}", source.display())
-                    })?;
-                    println!("Removed {}", source.display());
-                }
+                remove_installed_skill_dir(&source, skill_dir)?;
             }
         }
     }
@@ -331,6 +330,41 @@ fn remove_entire_skill(
     }
     println!("Removed {}", args.skill);
     Ok(())
+}
+
+fn remove_installed_skill_dir(source: &Path, skill_dir: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+
+    if !is_managed_skill_dir(source, skill_dir)? {
+        println!(
+            "Skipped removing unmanaged skill files {}",
+            source.display()
+        );
+        return Ok(());
+    }
+
+    fs::remove_dir_all(source)
+        .with_context(|| format!("failed to remove installed skill {}", source.display()))?;
+    println!("Removed {}", source.display());
+    Ok(())
+}
+
+fn is_managed_skill_dir(source: &Path, skill_dir: &Path) -> Result<bool> {
+    if !source.is_dir() || !skill_dir.is_dir() || source == skill_dir {
+        return Ok(false);
+    }
+
+    let canonical_source = source
+        .canonicalize()
+        .with_context(|| format!("failed to resolve installed skill {}", source.display()))?;
+    let canonical_skill_dir = skill_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve skillDir {}", skill_dir.display()))?;
+
+    Ok(canonical_source.starts_with(&canonical_skill_dir)
+        && canonical_source != canonical_skill_dir)
 }
 
 fn remove_skill_agents(
@@ -1357,13 +1391,14 @@ fn run_wizard() -> Result<()> {
 mod tests {
     use super::{
         agent_target_mappings_from_config, discover_skill_candidates, global_config_root_from_home,
-        reject_legacy_registry_source, select_skill_candidates, source_with_selected_subpath, Cli,
-        SourceRewriteMode,
+        is_managed_skill_dir, reject_legacy_registry_source, remove_installed_skill_dir,
+        select_skill_candidates, source_with_selected_subpath, Cli, SourceRewriteMode,
     };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1447,6 +1482,69 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "find-skills");
         assert_eq!(candidates[0].relative_path, Path::new("skills/find-skills"));
+    }
+
+    #[test]
+    fn managed_skill_dir_must_be_inside_skill_dir() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp.path().join(".sksync/skills");
+        let managed = skill_dir.join("review");
+        let outside = temp.path().join("outside/review");
+        fs::create_dir_all(&managed).expect("create managed skill");
+        fs::create_dir_all(&outside).expect("create outside skill");
+
+        assert!(is_managed_skill_dir(&managed, &skill_dir).expect("check managed"));
+        assert!(!is_managed_skill_dir(&outside, &skill_dir).expect("check outside"));
+        assert!(!is_managed_skill_dir(&skill_dir, &skill_dir).expect("check root"));
+    }
+
+    #[test]
+    fn remove_installed_skill_dir_skips_unmanaged_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp.path().join(".sksync/skills");
+        let outside = temp.path().join("outside/review");
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::create_dir_all(&outside).expect("create outside skill");
+        fs::write(
+            outside.join("SKILL.md"),
+            "---\nname: review\ndescription: Review\n---\n",
+        )
+        .expect("write outside skill");
+
+        remove_installed_skill_dir(&outside, &skill_dir).expect("remove skips unmanaged");
+
+        assert!(outside.exists());
+        assert!(outside.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn remove_installed_skill_dir_skips_when_skill_dir_is_missing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let missing_skill_dir = temp.path().join(".sksync/skills");
+        let outside = temp.path().join("outside/review");
+        fs::create_dir_all(&outside).expect("create outside skill");
+
+        remove_installed_skill_dir(&outside, &missing_skill_dir)
+            .expect("missing skillDir should not block remove");
+
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn remove_installed_skill_dir_removes_managed_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp.path().join(".sksync/skills");
+        let managed = skill_dir.join("review");
+        fs::create_dir_all(&managed).expect("create managed skill");
+        fs::write(
+            managed.join("SKILL.md"),
+            "---\nname: review\ndescription: Review\n---\n",
+        )
+        .expect("write managed skill");
+
+        remove_installed_skill_dir(&managed, &skill_dir).expect("remove managed");
+
+        assert!(!managed.exists());
     }
 
     #[test]
