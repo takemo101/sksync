@@ -600,7 +600,7 @@ impl FileDependencyConfigStore {
             })
         } else {
             Ok(json!({
-                "$schema": "https://example.com/sksync.schema.json",
+                "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
                 "skillDir": self.default_skill_dir,
                 "dependencies": {}
             }))

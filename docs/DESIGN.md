@@ -66,9 +66,11 @@ sksync apply
 
 ### install dependency config
 
+Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
+
 ```json
 {
-  "$schema": "https://example.com/sksync.schema.json",
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
   "skillDir": "./.sksync/skills",
   "dependencies": {
     "reviewer": {
@@ -102,9 +104,11 @@ registry:example.com/owner/repo/skill#version
 
 ### global-only agent target mapping
 
+Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.json)
+
 ```json
 {
-  "$schema": "https://example.com/sksync.agents.schema.json",
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "agents": {
     "pi": { "targetDir": "~/.pi/agent/skills" },
     "claude-code": { "targetDir": "~/.claude/skills" }

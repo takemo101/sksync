@@ -1,5 +1,5 @@
 {
-  "$schema": "https://example.com/sksync.schema.json",
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
   "skillDir": "./.sksync/skills",
   "dependencies": {
     "example-skill": {

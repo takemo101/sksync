@@ -114,7 +114,7 @@ fn default_agent_mapping() -> &'static str {
 
 fn global_config(skills_dir: &Path) -> String {
     let config = json!({
-        "$schema": "https://example.com/sksync.schema.json",
+        "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
         "skillDir": skills_dir,
         "dependencies": {}
     });

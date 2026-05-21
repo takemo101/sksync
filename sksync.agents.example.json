@@ -1,5 +1,5 @@
 {
-  "$schema": "https://example.com/sksync.agents.schema.json",
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "agents": {
     "pi": {
       "targetDir": "~/.pi/agent/skills"

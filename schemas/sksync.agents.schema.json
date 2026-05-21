@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
+  "title": "sksync agent target mapping",
+  "description": "Global-only agent target directory overrides for sksync.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "agents": {
+      "type": "object",
+      "description": "Agent target directory mappings keyed by agent name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentTargetMapping"
+      }
+    }
+  },
+  "required": ["agents"],
+  "$defs": {
+    "agentTargetMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetDir"],
+      "properties": {
+        "targetDir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Directory where the agent reads skills. Tilde-prefixed paths are supported by sksync."
+        }
+      }
+    }
+  }
+}
