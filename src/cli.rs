@@ -768,7 +768,19 @@ struct SkillCandidate {
     relative_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceRewriteMode {
+    Append,
+    ReplaceSkillsShPath,
+}
+
 #[derive(Debug, Clone)]
+struct DiscoveredSkills {
+    candidates: Vec<SkillCandidate>,
+    rewrite_mode: SourceRewriteMode,
+    default_selection_name: Option<String>,
+}
+
 struct SkillChoice(SkillCandidate);
 
 impl std::fmt::Display for SkillChoice {
@@ -794,9 +806,11 @@ fn resolve_add_selection(
     let install_source = parse_install_source_value(parse_skill_name, source, Some(config_root))
         .with_context(|| format!("failed to parse source '{source}'"))?;
 
-    let discovered = discover_source_skills(&install_source)?;
-    let selection = select_skill_candidate(source, requested_name, discovered)?;
-    let selected_source = source_with_selected_subpath(source, &selection.relative_path);
+    let discovered = discover_source_skills(&install_source, source)?;
+    let selection_name = requested_name.or(discovered.default_selection_name.as_deref());
+    let selection = select_skill_candidate(source, selection_name, discovered.candidates)?;
+    let selected_source =
+        source_with_selected_subpath(source, &selection.relative_path, discovered.rewrite_mode);
     let skill_name = requested_name
         .map(str::to_owned)
         .unwrap_or_else(|| selection.name.clone());
@@ -807,25 +821,47 @@ fn resolve_add_selection(
     })
 }
 
-fn discover_source_skills(source: &InstallSource) -> Result<Vec<SkillCandidate>> {
+fn discover_source_skills(source: &InstallSource, raw_source: &str) -> Result<DiscoveredSkills> {
     match source {
-        InstallSource::Local(path) => discover_skill_candidates(path, 5),
-        InstallSource::Git(git) => discover_git_source_skills(git),
+        InstallSource::Local(path) => Ok(DiscoveredSkills {
+            candidates: discover_skill_candidates(path, 5)?,
+            rewrite_mode: SourceRewriteMode::Append,
+            default_selection_name: None,
+        }),
+        InstallSource::Git(git) => discover_git_source_skills(git, raw_source),
     }
 }
 
-fn discover_git_source_skills(source: &GitInstallSource) -> Result<Vec<SkillCandidate>> {
+fn discover_git_source_skills(
+    source: &GitInstallSource,
+    raw_source: &str,
+) -> Result<DiscoveredSkills> {
     let clone_dir = temporary_clone_dir();
     let result = (|| {
         clone_git_for_discovery(source, &clone_dir)?;
         let search_dir = clone_dir.join(&source.path);
-        if !search_dir.exists() {
-            bail!(
-                "install source path does not exist: {}",
-                search_dir.display()
-            );
+        if search_dir.exists() {
+            return Ok(DiscoveredSkills {
+                candidates: discover_skill_candidates(&search_dir, 5)?,
+                rewrite_mode: SourceRewriteMode::Append,
+                default_selection_name: None,
+            });
         }
-        discover_skill_candidates(&search_dir, 5)
+
+        if is_skills_sh_source_body(split_source_reference(raw_source).0)
+            && source.path != Path::new(".")
+        {
+            return Ok(DiscoveredSkills {
+                candidates: discover_skill_candidates(&clone_dir, 5)?,
+                rewrite_mode: SourceRewriteMode::ReplaceSkillsShPath,
+                default_selection_name: Some(infer_skill_name(raw_source)),
+            });
+        }
+
+        bail!(
+            "install source path does not exist: {}",
+            search_dir.display()
+        );
     })();
 
     if clone_dir.exists() {
@@ -1054,7 +1090,11 @@ fn select_skill_candidate(
     Ok(selected.0)
 }
 
-fn source_with_selected_subpath(source: &str, relative_path: &Path) -> String {
+fn source_with_selected_subpath(
+    source: &str,
+    relative_path: &Path,
+    rewrite_mode: SourceRewriteMode,
+) -> String {
     if relative_path == Path::new(".") {
         return source.to_owned();
     }
@@ -1062,7 +1102,10 @@ fn source_with_selected_subpath(source: &str, relative_path: &Path) -> String {
     let (body, reference) = split_source_reference(source);
     let selected = relative_path.to_string_lossy().replace('\\', "/");
     let (body, reference) = if is_skills_sh_source_body(body) {
-        (append_skills_sh_selected_path(body, &selected), reference)
+        (
+            rewrite_skills_sh_selected_path(body, &selected, rewrite_mode),
+            reference,
+        )
     } else if is_plain_github_url_body(body) {
         (
             append_github_url_selected_path(body, &selected, reference),
@@ -1089,7 +1132,11 @@ fn is_skills_sh_source_body(body: &str) -> bool {
     skills_sh_prefix(body).is_some()
 }
 
-fn append_skills_sh_selected_path(body: &str, selected: &str) -> String {
+fn rewrite_skills_sh_selected_path(
+    body: &str,
+    selected: &str,
+    rewrite_mode: SourceRewriteMode,
+) -> String {
     let Some(prefix) = skills_sh_prefix(body) else {
         return append_path_to_source_body(body, selected);
     };
@@ -1101,28 +1148,37 @@ fn append_skills_sh_selected_path(body: &str, selected: &str) -> String {
     if parts.len() < 2 {
         return append_path_to_source_body(body, selected);
     }
-    let existing_path = if parts.len() > 2 {
-        Some(parts[2..].join("/"))
-    } else {
-        None
-    };
-    let selected_path = if existing_path.is_some() {
-        selected.trim_matches('/')
-    } else {
-        selected
-            .strip_prefix("skills/")
-            .unwrap_or(selected)
-            .trim_matches('/')
-    };
+
+    let selected_path = selected
+        .strip_prefix("skills/")
+        .unwrap_or(selected)
+        .trim_matches('/');
     let mut result = format!("{}{}/{}", prefix, parts[0], parts[1]);
-    if let Some(existing_path) = existing_path.filter(|path| !path.is_empty()) {
-        result.push('/');
-        result.push_str(existing_path.trim_matches('/'));
+
+    match rewrite_mode {
+        SourceRewriteMode::Append => {
+            if parts.len() > 2 {
+                result.push('/');
+                result.push_str(parts[2..].join("/").trim_matches('/'));
+            }
+            let selected_path = if parts.len() > 2 {
+                selected.trim_matches('/')
+            } else {
+                selected_path
+            };
+            if !selected_path.is_empty() {
+                result.push('/');
+                result.push_str(selected_path);
+            }
+        }
+        SourceRewriteMode::ReplaceSkillsShPath => {
+            if !selected_path.is_empty() {
+                result.push('/');
+                result.push_str(selected_path);
+            }
+        }
     }
-    if !selected_path.is_empty() {
-        result.push('/');
-        result.push_str(selected_path);
-    }
+
     result
 }
 
@@ -1291,6 +1347,7 @@ mod tests {
     use super::{
         agent_target_mappings_from_config, discover_skill_candidates, global_config_root_from_home,
         reject_legacy_registry_source, select_skill_candidate, source_with_selected_subpath, Cli,
+        SourceRewriteMode,
     };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
@@ -1409,7 +1466,8 @@ mod tests {
         assert_eq!(
             source_with_selected_subpath(
                 "vercel-labs/skills#main",
-                Path::new("skills/find-skills")
+                Path::new("skills/find-skills"),
+                SourceRewriteMode::Append,
             ),
             "vercel-labs/skills/skills/find-skills#main"
         );
@@ -1421,6 +1479,7 @@ mod tests {
             source_with_selected_subpath(
                 "https://github.com/vercel-labs/skills",
                 Path::new("skills/find-skills"),
+                SourceRewriteMode::Append,
             ),
             "https://github.com/vercel-labs/skills/tree/HEAD/skills/find-skills"
         );
@@ -1432,6 +1491,7 @@ mod tests {
             source_with_selected_subpath(
                 "https://github.com/vercel-labs/skills#v1",
                 Path::new("skills/find-skills"),
+                SourceRewriteMode::Append,
             ),
             "https://github.com/vercel-labs/skills/tree/v1/skills/find-skills"
         );
@@ -1443,6 +1503,7 @@ mod tests {
             source_with_selected_subpath(
                 "https://www.skills.sh/vercel-labs/skills",
                 Path::new("skills/find-skills"),
+                SourceRewriteMode::Append,
             ),
             "https://www.skills.sh/vercel-labs/skills/find-skills"
         );
@@ -1451,8 +1512,24 @@ mod tests {
     #[test]
     fn selected_subpath_preserves_skills_sh_parent_path() {
         assert_eq!(
-            source_with_selected_subpath("skills.sh/owner/repo/category", Path::new("foo")),
+            source_with_selected_subpath(
+                "skills.sh/owner/repo/category",
+                Path::new("foo"),
+                SourceRewriteMode::Append,
+            ),
             "skills.sh/owner/repo/category/foo"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_replaces_missing_skills_sh_direct_path() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://www.skills.sh/mattpocock/skills/grill-me",
+                Path::new("skills/productivity/grill-me"),
+                SourceRewriteMode::ReplaceSkillsShPath,
+            ),
+            "https://www.skills.sh/mattpocock/skills/productivity/grill-me"
         );
     }
 
