@@ -210,13 +210,16 @@ fn run_add(args: AddArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
-    let selection = resolve_add_selection(&args.source, args.name.as_deref(), &config_path)?;
-    let skill_name = selection.skill_name;
-    let source = selection.source;
-
-    FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
-        .add_dependency(&skill_name, &source, &args.agents)?;
-    println!("Added {skill_name} to {}", config_path.display());
+    let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path)?;
+    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    for selection in selections {
+        store.add_dependency(&selection.skill_name, &selection.source, &args.agents)?;
+        println!(
+            "Added {} to {}",
+            selection.skill_name,
+            config_path.display()
+        );
+    }
 
     let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
     let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
@@ -781,13 +784,14 @@ struct DiscoveredSkills {
     default_selection_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 struct SkillChoice(SkillCandidate);
 
 impl std::fmt::Display for SkillChoice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "{} — {} ({})",
+            "\x1b[1m\x1b[36m{}\x1b[0m — {} ({})",
             self.0.name,
             self.0.description,
             self.0.relative_path.display()
@@ -795,11 +799,11 @@ impl std::fmt::Display for SkillChoice {
     }
 }
 
-fn resolve_add_selection(
+fn resolve_add_selections(
     source: &str,
     requested_name: Option<&str>,
     config_path: &Path,
-) -> Result<AddSelection> {
+) -> Result<Vec<AddSelection>> {
     let config_root = config_path.parent().unwrap_or_else(|| Path::new("."));
     let fallback_name = infer_skill_name(source);
     let parse_skill_name = requested_name.unwrap_or(&fallback_name);
@@ -808,17 +812,21 @@ fn resolve_add_selection(
 
     let discovered = discover_source_skills(&install_source, source)?;
     let selection_name = requested_name.or(discovered.default_selection_name.as_deref());
-    let selection = select_skill_candidate(source, selection_name, discovered.candidates)?;
-    let selected_source =
-        source_with_selected_subpath(source, &selection.relative_path, discovered.rewrite_mode);
-    let skill_name = requested_name
-        .map(str::to_owned)
-        .unwrap_or_else(|| selection.name.clone());
+    let selections = select_skill_candidates(source, selection_name, discovered.candidates)?;
 
-    Ok(AddSelection {
-        skill_name,
-        source: selected_source,
-    })
+    Ok(selections
+        .into_iter()
+        .map(|selection| AddSelection {
+            skill_name: requested_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| selection.name.clone()),
+            source: source_with_selected_subpath(
+                source,
+                &selection.relative_path,
+                discovered.rewrite_mode,
+            ),
+        })
+        .collect())
 }
 
 fn discover_source_skills(source: &InstallSource, raw_source: &str) -> Result<DiscoveredSkills> {
@@ -1046,11 +1054,11 @@ fn required_frontmatter_string(
     Ok(value.trim().to_owned())
 }
 
-fn select_skill_candidate(
+fn select_skill_candidates(
     source: &str,
     requested_name: Option<&str>,
     candidates: Vec<SkillCandidate>,
-) -> Result<SkillCandidate> {
+) -> Result<Vec<SkillCandidate>> {
     if candidates.is_empty() {
         bail!("no SKILL.md files found under source '{source}'");
     }
@@ -1069,14 +1077,14 @@ fn select_skill_candidate(
             .cloned()
             .collect::<Vec<_>>();
         return match matches.as_slice() {
-            [candidate] => Ok(candidate.clone()),
+            [candidate] => Ok(vec![candidate.clone()]),
             [] => bail!("no discovered skill named '{name}' under source '{source}'"),
             _ => bail!("multiple discovered skills matched '{name}' under source '{source}'"),
         };
     }
 
     if candidates.len() == 1 {
-        return Ok(candidates.into_iter().next().expect("one candidate"));
+        return Ok(vec![candidates.into_iter().next().expect("one candidate")]);
     }
 
     if !std::io::stdin().is_terminal() {
@@ -1086,8 +1094,11 @@ fn select_skill_candidate(
     }
 
     let choices = candidates.into_iter().map(SkillChoice).collect::<Vec<_>>();
-    let selected = inquire::Select::new("Select skill to add", choices).prompt()?;
-    Ok(selected.0)
+    let selected = inquire::MultiSelect::new("Select skills to add", choices).prompt()?;
+    if selected.is_empty() {
+        bail!("no skills selected");
+    }
+    Ok(selected.into_iter().map(|choice| choice.0).collect())
 }
 
 fn source_with_selected_subpath(
@@ -1346,7 +1357,7 @@ fn run_wizard() -> Result<()> {
 mod tests {
     use super::{
         agent_target_mappings_from_config, discover_skill_candidates, global_config_root_from_home,
-        reject_legacy_registry_source, select_skill_candidate, source_with_selected_subpath, Cli,
+        reject_legacy_registry_source, select_skill_candidates, source_with_selected_subpath, Cli,
         SourceRewriteMode,
     };
     use crate::domain::scope::Scope;
@@ -1439,8 +1450,21 @@ mod tests {
     }
 
     #[test]
+    fn skill_choice_display_styles_skill_name() {
+        let choice = super::SkillChoice(super::SkillCandidate {
+            name: "review".to_owned(),
+            description: "Review helper".to_owned(),
+            relative_path: PathBuf::from("skills/review"),
+        });
+
+        assert!(choice
+            .to_string()
+            .starts_with("\x1b[1m\x1b[36mreview\x1b[0m"));
+    }
+
+    #[test]
     fn name_option_selects_matching_discovered_skill() {
-        let selected = select_skill_candidate(
+        let selected = select_skill_candidates(
             "owner/repo",
             Some("review"),
             vec![
@@ -1458,7 +1482,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(selected.relative_path, Path::new("skills/review"));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].relative_path, Path::new("skills/review"));
     }
 
     #[test]
