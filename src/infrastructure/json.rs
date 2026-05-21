@@ -14,7 +14,7 @@ use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
     LockfileStore, LockfileStoreError,
 };
-use crate::application::registry::SourceUrlTransformers;
+use crate::application::source::SourceUrlTransformers;
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
