@@ -4,6 +4,7 @@ use std::process::Command;
 
 use crate::application::config::{GitInstallSource, InstallSource};
 use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
+use crate::domain::skill_manifest::parse_skill_manifest;
 
 #[derive(Debug, Clone, Default)]
 pub struct FileSystemSkillInstaller;
@@ -235,59 +236,10 @@ fn validate_skill_package(path: &Path) -> Result<(), SkillInstallError> {
         path: skill_md.display().to_string(),
         message: error.to_string(),
     })?;
-    let frontmatter = extract_yaml_frontmatter(&content).ok_or_else(|| {
-        SkillInstallError::InvalidSkillPackage {
-            path: skill_md.display().to_string(),
-            message: "SKILL.md YAML frontmatter is missing".to_owned(),
-        }
+    parse_skill_manifest(&content).map_err(|error| SkillInstallError::InvalidSkillPackage {
+        path: skill_md.display().to_string(),
+        message: error.to_string(),
     })?;
-    let frontmatter = serde_yaml::from_str::<serde_yaml::Value>(frontmatter).map_err(|error| {
-        SkillInstallError::InvalidSkillPackage {
-            path: skill_md.display().to_string(),
-            message: format!("SKILL.md YAML frontmatter is invalid: {error}"),
-        }
-    })?;
-
-    validate_required_frontmatter_string(&frontmatter, &skill_md, "name")?;
-    validate_required_frontmatter_string(&frontmatter, &skill_md, "description")?;
-    Ok(())
-}
-
-fn extract_yaml_frontmatter(content: &str) -> Option<&str> {
-    let content = content
-        .strip_prefix("---\r\n")
-        .or_else(|| content.strip_prefix("---\n"))?;
-    let end = content
-        .find("\n---\n")
-        .or_else(|| content.find("\n---\r\n"))?;
-    Some(&content[..end])
-}
-
-fn validate_required_frontmatter_string(
-    frontmatter: &serde_yaml::Value,
-    skill_md: &Path,
-    field: &str,
-) -> Result<(), SkillInstallError> {
-    let value = frontmatter
-        .get(field)
-        .ok_or_else(|| SkillInstallError::InvalidSkillPackage {
-            path: skill_md.display().to_string(),
-            message: format!("SKILL.md frontmatter field '{field}' is required"),
-        })?;
-
-    let Some(value) = value.as_str() else {
-        return Err(SkillInstallError::InvalidSkillPackage {
-            path: skill_md.display().to_string(),
-            message: format!("SKILL.md frontmatter field '{field}' must be a string"),
-        });
-    };
-    if value.trim().is_empty() {
-        return Err(SkillInstallError::InvalidSkillPackage {
-            path: skill_md.display().to_string(),
-            message: format!("SKILL.md frontmatter field '{field}' must not be empty"),
-        });
-    }
-
     Ok(())
 }
 
