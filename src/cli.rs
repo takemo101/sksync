@@ -21,6 +21,7 @@ use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::scope::Scope;
+use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
@@ -1090,58 +1091,9 @@ fn read_skill_metadata(path: &Path) -> Result<(String, String)> {
     let skill_md = path.join("SKILL.md");
     let content = fs::read_to_string(&skill_md)
         .with_context(|| format!("failed to read {}", skill_md.display()))?;
-    let frontmatter = extract_yaml_frontmatter(&content).with_context(|| {
-        format!(
-            "SKILL.md YAML frontmatter is missing: {}",
-            skill_md.display()
-        )
-    })?;
-    let frontmatter =
-        serde_yaml::from_str::<serde_yaml::Value>(frontmatter).with_context(|| {
-            format!(
-                "SKILL.md YAML frontmatter is invalid: {}",
-                skill_md.display()
-            )
-        })?;
-    let name = required_frontmatter_string(&frontmatter, &skill_md, "name")?;
-    let description = required_frontmatter_string(&frontmatter, &skill_md, "description")?;
-    Ok((name, description))
-}
-
-fn extract_yaml_frontmatter(content: &str) -> Option<&str> {
-    let content = content
-        .strip_prefix("---\r\n")
-        .or_else(|| content.strip_prefix("---\n"))?;
-    let end = content
-        .find("\n---\n")
-        .or_else(|| content.find("\n---\r\n"))?;
-    Some(&content[..end])
-}
-
-fn required_frontmatter_string(
-    frontmatter: &serde_yaml::Value,
-    skill_md: &Path,
-    field: &str,
-) -> Result<String> {
-    let value = frontmatter.get(field).with_context(|| {
-        format!(
-            "SKILL.md frontmatter field '{field}' is required: {}",
-            skill_md.display()
-        )
-    })?;
-    let value = value.as_str().with_context(|| {
-        format!(
-            "SKILL.md frontmatter field '{field}' must be a string: {}",
-            skill_md.display()
-        )
-    })?;
-    if value.trim().is_empty() {
-        bail!(
-            "SKILL.md frontmatter field '{field}' must not be empty: {}",
-            skill_md.display()
-        );
-    }
-    Ok(value.trim().to_owned())
+    let manifest = parse_skill_manifest(&content)
+        .with_context(|| format!("invalid SKILL.md metadata: {}", skill_md.display()))?;
+    Ok((manifest.name, manifest.description))
 }
 
 fn select_skill_candidates(

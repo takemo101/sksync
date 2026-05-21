@@ -9,4 +9,5 @@ pub mod link_plan;
 pub mod lockfile;
 pub mod scope;
 pub mod skill;
+pub mod skill_manifest;
 pub mod target;
