@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
-use crate::application::check::check_lockfile;
+use crate::application::check::check_lockfile_with_plan;
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
@@ -15,7 +15,7 @@ use crate::application::discovery::{
 use crate::application::init::{init_global, init_project};
 use crate::application::list::list_skills;
 use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
-use crate::application::plan::build_link_plan;
+use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::update_dependencies;
 use crate::domain::agent::AgentKind;
@@ -1014,7 +1014,21 @@ fn generated_at() -> String {
 fn run_check(args: CheckArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let lockfile = read_lockfile(lockfile_path_for(args.global, &current_dir)?)?;
-    let report = check_lockfile(&lockfile, &Sha256SourceHashStore, &FileSystemLinkStore);
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+    let plan = build_desired_link_plan(&config, &target_resolver)?;
+    let report = check_lockfile_with_plan(
+        &lockfile,
+        &plan,
+        &Sha256SourceHashStore,
+        &FileSystemLinkStore,
+    );
 
     for line in report.display_lines() {
         println!("{line}");
