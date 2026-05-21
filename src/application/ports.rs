@@ -163,14 +163,6 @@ pub enum SkillInstallError {
     MissingSourcePath { path: String },
     #[error("git command failed for {repo}: {message}")]
     Git { repo: String, message: String },
-    #[error("registry source is not supported yet: {registry}/{package}")]
-    UnsupportedRegistry { registry: String, package: String },
-    #[error("invalid registry package {registry}/{package}: {message}")]
-    InvalidRegistryPackage {
-        registry: String,
-        package: String,
-        message: String,
-    },
     #[error("failed to copy {from} to {to}: {message}")]
     Copy {
         from: String,

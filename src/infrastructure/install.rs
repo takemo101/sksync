@@ -2,9 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::application::config::{GitInstallSource, InstallSource, RegistryInstallSource};
+use crate::application::config::{GitInstallSource, InstallSource};
 use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
-use crate::application::registry::RegistryProviders;
 
 #[derive(Debug, Clone, Default)]
 pub struct FileSystemSkillInstaller;
@@ -55,22 +54,6 @@ fn install_to_staging(
             Ok(InstalledSkillSource {
                 label: path.display().to_string(),
                 resolved_source: source.clone(),
-            })
-        }
-        InstallSource::Registry(registry_source) => {
-            let git_source = RegistryProviders::default().resolve_git_source(registry_source)?;
-            let installed = install_git_to_staging(&git_source, staging)?;
-            let resolved_reference = match installed.resolved_source {
-                InstallSource::Git(git) => git.reference,
-                _ => registry_source.reference.clone(),
-            };
-            Ok(InstalledSkillSource {
-                label: installed.label,
-                resolved_source: InstallSource::Registry(RegistryInstallSource {
-                    registry: registry_source.registry.clone(),
-                    package: registry_source.package.clone(),
-                    reference: resolved_reference,
-                }),
             })
         }
         InstallSource::Git(git_source) => install_git_to_staging(git_source, staging),

@@ -7,14 +7,14 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::application::config::{
-    ConfigResolveError, GitInstallSource, InstallSource, RegistryInstallSource, ResolvedAgent,
-    ResolvedConfig, ResolvedSkill,
+    ConfigResolveError, GitInstallSource, InstallSource, ResolvedAgent, ResolvedConfig,
+    ResolvedSkill,
 };
 use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
     LockfileStore, LockfileStoreError,
 };
-use crate::application::registry::RegistryProviders;
+use crate::application::registry::SourceUrlTransformers;
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
@@ -428,20 +428,10 @@ fn parse_structured_install_source(
                 })?;
             Ok(InstallSource::Local(rebase_config_path(path, config_root)))
         }
-        Some("registry") => {
-            let registry = source.url.unwrap_or_else(|| "skills.sh".to_owned());
-            let package = source
-                .repo
-                .ok_or_else(|| ConfigResolveError::InvalidInstallSource {
-                    skill: skill.to_owned(),
-                    message: "registry source requires repo/package".to_owned(),
-                })?;
-            Ok(InstallSource::Registry(RegistryInstallSource {
-                registry,
-                package,
-                reference: source.reference,
-            }))
-        }
+        Some("registry") => Err(ConfigResolveError::InvalidInstallSource {
+            skill: skill.to_owned(),
+            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path".to_owned(),
+        }),
         _ => {
             let repo = source.repo.or(source.url).ok_or_else(|| {
                 ConfigResolveError::InvalidInstallSource {
@@ -472,7 +462,7 @@ fn parse_install_source_string(
     }
 
     let (body, reference) = split_ref(value);
-    if let Some(transformed) = RegistryProviders::default().transform_url(body, reference) {
+    if let Some(transformed) = SourceUrlTransformers::default().transform_url(body, reference) {
         return Ok(InstallSource::Git(transformed));
     }
 
@@ -480,18 +470,11 @@ fn parse_install_source_string(
         return Ok(InstallSource::Git(parsed));
     }
 
-    if let Some(registry_source) = body.strip_prefix("registry:") {
-        let (registry, package) = registry_source.split_once('/').ok_or_else(|| {
-            ConfigResolveError::InvalidInstallSource {
-                skill: skill.to_owned(),
-                message: "registry source must be registry:<host>/<package>".to_owned(),
-            }
-        })?;
-        return Ok(InstallSource::Registry(RegistryInstallSource {
-            registry: registry.to_owned(),
-            package: package.to_owned(),
-            reference: reference.map(str::to_owned),
-        }));
+    if body.starts_with("registry:") {
+        return Err(ConfigResolveError::InvalidInstallSource {
+            skill: skill.to_owned(),
+            message: "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path".to_owned(),
+        });
     }
     let body = body.strip_prefix("github:").unwrap_or(body);
     let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
@@ -865,12 +848,6 @@ enum RawLockedInstallSource {
     Local {
         path: PathBuf,
     },
-    Registry {
-        registry: String,
-        package: String,
-        #[serde(rename = "ref")]
-        reference: Option<String>,
-    },
 }
 
 impl RawLockedInstallSource {
@@ -886,15 +863,6 @@ impl RawLockedInstallSource {
                 path,
             }),
             Self::Local { path } => InstallSource::Local(path),
-            Self::Registry {
-                registry,
-                package,
-                reference,
-            } => InstallSource::Registry(RegistryInstallSource {
-                registry,
-                package,
-                reference,
-            }),
         })
     }
 
@@ -906,11 +874,6 @@ impl RawLockedInstallSource {
                 path: git.path.clone(),
             },
             InstallSource::Local(path) => Self::Local { path: path.clone() },
-            InstallSource::Registry(registry) => Self::Registry {
-                registry: registry.registry.clone(),
-                package: registry.package.clone(),
-                reference: registry.reference.clone(),
-            },
         }
     }
 }

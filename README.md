@@ -149,7 +149,7 @@ cargo run -- remove cuekit-dogfood --agent pi --agent claude-code
 
 ### `sksync outdated`
 
-lockfile と upstream を比較して、更新可能な skill を表示します。Git source は remote ref の HEAD と lockfile の resolved commit を比較します。legacy registry source は provider 未実装の場合 `registry-provider-missing` として表示します。
+lockfile と upstream を比較して、更新可能な skill を表示します。Git source は remote ref の HEAD と lockfile の resolved commit を比較します。
 
 ```bash
 cargo run -- outdated
@@ -192,8 +192,6 @@ owner/repo/path/to/skill#main
 https://github.com/owner/repo/tree/main/path/to/skill
 skills.sh/owner/repo/path/to/skill#version
 https://www.skills.sh/owner/repo/path/to/skill#version
-registry:skills.sh/owner/repo/path/to/skill#version (legacy)
-registry:example.com/owner/repo/skill#version (legacy)
 ./local-skill
 ```
 

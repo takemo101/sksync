@@ -97,12 +97,10 @@ owner/repo/path/to/skill#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
 skills.sh/owner/repo/path/to/skill#version
 https://www.skills.sh/owner/repo/path/to/skill#version
-registry:skills.sh/owner/repo/path/to/skill#version (legacy)
-registry:example.com/owner/repo/skill#version (legacy)
 ./local-skill
 ```
 
-内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。`registry:<host>/<package>#version` は legacy 互換として残す。
+内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。
 
 ### agent target mapping
 
@@ -234,7 +232,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 
 - config の dependencies を元に最新または指定 version を取得する
 - Git source は取得後に exact commit SHA に解決し、lockfile に保存する
-- registry source は resolved version / artifact URL / integrity を lockfile に保存する想定
+- provider URL は Git source に変換し、resolved commit / integrity を lockfile に保存する想定
 - `update` 自体は dependency 更新と lockfile 更新を主目的とし、symlink 反映は `install` / `apply` に寄せる
 
 ### `sksync remove <skill>`
@@ -262,7 +260,7 @@ agent 単位削除。
 
 - config と lockfile を読み込む
 - Git source は lockfile の commit と remote ref の HEAD を比較する
-- legacy registry source は provider 未実装時に `registry-provider-missing` として表示する
+- provider URL transformer で Git source に変換された source は Git remote ref と比較する
 - 更新可能な skill を `current / wanted / latest / source / status` 形式で表示する
 - `--global` と `--json` をサポートする
 
@@ -410,7 +408,7 @@ src/
 
 - 各エージェントの正式な skill ディレクトリ仕様
 - skill 形式が違う agent 向けに変換レイヤーを入れるか
-- registry / package manager 的な install をどこまでやるか
+- source URL transformer / package manager 的な install をどこまでやるか
 - project scope と user scope の優先順位
 - Windows での symlink 権限と junction 対応
 - TUI を初期 MVP に含めるか、CLI MVP 後に追加するか

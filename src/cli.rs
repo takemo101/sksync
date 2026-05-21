@@ -205,6 +205,7 @@ fn run_init(args: InitArgs) -> Result<()> {
 fn run_add(args: AddArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
+    reject_legacy_registry_source(&args.source)?;
     let skill_name = args.name.unwrap_or_else(|| infer_skill_name(&args.source));
 
     FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
@@ -748,6 +749,16 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     }
 }
 
+fn reject_legacy_registry_source(source: &str) -> Result<()> {
+    let body = source.split('#').next().unwrap_or(source).trim();
+    if body.starts_with("registry:") {
+        bail!(
+            "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path"
+        );
+    }
+    Ok(())
+}
+
 fn infer_skill_name(source: &str) -> String {
     let without_ref = source.split('#').next().unwrap_or(source);
     let trimmed = without_ref.trim_end_matches('/');
@@ -861,7 +872,10 @@ fn run_wizard() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_target_mappings_from_config, global_config_root_from_home, Cli};
+    use super::{
+        agent_target_mappings_from_config, global_config_root_from_home,
+        reject_legacy_registry_source, Cli,
+    };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
@@ -920,6 +934,11 @@ mod tests {
             "pi",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn add_rejects_legacy_registry_source_before_writing_config() {
+        assert!(reject_legacy_registry_source("registry:skills.sh/owner/repo/skill#main").is_err());
     }
 
     #[test]
