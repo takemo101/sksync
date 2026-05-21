@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::application::config::{GitInstallSource, InstallSource};
@@ -66,14 +66,10 @@ fn install_git_to_staging(
     git_source: &GitInstallSource,
     staging: &Path,
 ) -> Result<InstalledSkillSource, SkillInstallError> {
+    validate_git_subpath(&git_source.path)?;
     let clone_dir = staging.join(".repo");
     clone_git_source(git_source, &clone_dir)?;
-    let source_path = clone_dir.join(&git_source.path);
-    if !source_path.exists() {
-        return Err(SkillInstallError::MissingSourcePath {
-            path: source_path.display().to_string(),
-        });
-    }
+    let source_path = safe_git_source_path(&clone_dir, &git_source.path)?;
     copy_dir_contents(&source_path, staging)?;
     let rev = resolve_git_head(&clone_dir, &git_source.url)?;
     remove_dir(&clone_dir)?;
@@ -86,6 +82,53 @@ fn install_git_to_staging(
         label: format!("{}#{}:{}", git_source.url, rev, git_source.path.display()),
         resolved_source,
     })
+}
+
+fn validate_git_subpath(path: &Path) -> Result<(), SkillInstallError> {
+    let is_safe = !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)));
+    if is_safe {
+        Ok(())
+    } else {
+        Err(SkillInstallError::InvalidGitSubpath {
+            path: path.display().to_string(),
+            message: "path must be relative and must not contain '..'".to_owned(),
+        })
+    }
+}
+
+fn safe_git_source_path(clone_dir: &Path, subpath: &Path) -> Result<PathBuf, SkillInstallError> {
+    let source_path = clone_dir.join(subpath);
+    if !source_path.exists() {
+        return Err(SkillInstallError::MissingSourcePath {
+            path: source_path.display().to_string(),
+        });
+    }
+
+    let canonical_clone = clone_dir
+        .canonicalize()
+        .map_err(|error| SkillInstallError::Prepare {
+            path: clone_dir.display().to_string(),
+            message: error.to_string(),
+        })?;
+    let canonical_source =
+        source_path
+            .canonicalize()
+            .map_err(|error| SkillInstallError::Prepare {
+                path: source_path.display().to_string(),
+                message: error.to_string(),
+            })?;
+    if !canonical_source.starts_with(&canonical_clone) {
+        return Err(SkillInstallError::InvalidGitSubpath {
+            path: subpath.display().to_string(),
+            message: "resolved path escapes cloned repository".to_owned(),
+        });
+    }
+
+    Ok(canonical_source)
 }
 
 fn clone_git_source(
@@ -364,6 +407,66 @@ mod tests {
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
             skill_md("review", "Review v1")
         );
+    }
+
+    #[test]
+    fn git_install_rejects_parent_directory_subpath() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        create_git_skill_repo(&remote, &skill_md("review", "Review helper"));
+        let destination = temp.path().join("skills/review");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(
+                &InstallSource::Git(GitInstallSource {
+                    url: remote.display().to_string(),
+                    reference: None,
+                    path: "../review".into(),
+                }),
+                &destination,
+                "review",
+            )
+            .expect_err("parent directory git subpath should fail");
+
+        assert!(matches!(error, SkillInstallError::InvalidGitSubpath { .. }));
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn git_install_rejects_symlink_escape_subpath() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("SKILL.md"),
+            skill_md("outside", "Outside skill"),
+        )
+        .unwrap();
+        create_git_skill_repo(&remote, &skill_md("review", "Review helper"));
+        std::os::unix::fs::symlink(&outside, remote.join("skills/escape")).unwrap();
+        git(&remote, &["add", "."]);
+        git(&remote, &["commit", "-m", "add escape symlink"]);
+        let destination = temp.path().join("skills/escape");
+
+        let error = FileSystemSkillInstaller
+            .install_skill(
+                &InstallSource::Git(GitInstallSource {
+                    url: remote.display().to_string(),
+                    reference: None,
+                    path: "skills/escape".into(),
+                }),
+                &destination,
+                "escape",
+            )
+            .expect_err("symlink escape git subpath should fail");
+
+        assert!(matches!(
+            error,
+            SkillInstallError::InvalidGitSubpath { message, .. }
+                if message == "resolved path escapes cloned repository"
+        ));
+        assert!(!destination.exists());
     }
 
     #[test]

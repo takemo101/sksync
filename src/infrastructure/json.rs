@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -440,6 +440,7 @@ fn parse_structured_install_source(
                 }
             })?;
             let path = source.path.unwrap_or_else(|| PathBuf::from("."));
+            let path = validate_git_subpath_for_config(skill, path)?;
             Ok(InstallSource::Git(GitInstallSource {
                 url: git_url_from_repo(&repo),
                 reference: source.reference,
@@ -470,11 +471,13 @@ fn parse_install_source_string(
     }
 
     let (body, reference) = split_ref(value);
-    if let Some(transformed) = SourceUrlTransformers::default().transform_url(body, reference) {
+    if let Some(mut transformed) = SourceUrlTransformers::default().transform_url(body, reference) {
+        transformed.path = validate_git_subpath_for_config(skill, transformed.path)?;
         return Ok(InstallSource::Git(transformed));
     }
 
-    if let Some(parsed) = parse_github_tree_url(value) {
+    if let Some(mut parsed) = parse_github_tree_url(value) {
+        parsed.path = validate_git_subpath_for_config(skill, parsed.path)?;
         return Ok(InstallSource::Git(parsed));
     }
 
@@ -493,10 +496,11 @@ fn parse_install_source_string(
         } else {
             ".".to_owned()
         };
+        let path = validate_git_subpath_for_config(skill, PathBuf::from(path))?;
         return Ok(InstallSource::Git(GitInstallSource {
             url: git_url_from_repo(&repo),
             reference: reference.map(str::to_owned),
-            path: PathBuf::from(path),
+            path,
         }));
     }
 
@@ -504,6 +508,30 @@ fn parse_install_source_string(
         skill: skill.to_owned(),
         message: format!("unsupported source '{value}'"),
     })
+}
+
+fn validate_git_subpath_for_config(
+    skill: &str,
+    path: PathBuf,
+) -> Result<PathBuf, ConfigResolveError> {
+    if !is_safe_git_subpath(&path) {
+        return Err(ConfigResolveError::InvalidInstallSource {
+            skill: skill.to_owned(),
+            message: format!(
+                "git source path '{}' must be relative and must not contain '..'",
+                path.display()
+            ),
+        });
+    }
+    Ok(path)
+}
+
+fn is_safe_git_subpath(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
 }
 
 fn split_ref(value: &str) -> (&str, Option<&str>) {
@@ -1296,6 +1324,60 @@ mod tests {
             .expect("config resolves");
 
         assert_eq!(config.skills[0].agents, vec![AgentKind::ClaudeCode]);
+    }
+
+    #[test]
+    fn git_shorthand_rejects_parent_directory_subpath() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "owner/repo/../review#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect_err("unsafe git subpath should fail");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::InvalidInstallSource { .. }
+        ));
+    }
+
+    #[test]
+    fn structured_git_source_rejects_absolute_subpath() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": {
+                    "provider": "git",
+                    "url": "https://github.com/owner/repo.git",
+                    "path": "/tmp/review"
+                  },
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect_err("absolute git subpath should fail");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::InvalidInstallSource { .. }
+        ));
     }
 
     #[test]
