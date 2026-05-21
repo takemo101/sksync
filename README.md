@@ -17,6 +17,22 @@
 
 現在の実装では、Rust 製 CLI として以下を試せます。
 
+### Install on macOS
+
+GitHub Releases の macOS binary を `~/.local/bin/sksync` にインストールできます。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | sh
+```
+
+インストール先を変える場合:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+```
+
+現在の installer は macOS のみ対応です。`aarch64-apple-darwin` / `x86_64-apple-darwin` の release asset を取得します。
+
 ### Build
 
 ```bash
