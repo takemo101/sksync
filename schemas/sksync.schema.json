@@ -114,12 +114,18 @@
       ]
     },
     "structuredInstallSource": {
+      "oneOf": [
+        { "$ref": "#/$defs/structuredGitInstallSource" },
+        { "$ref": "#/$defs/structuredLocalInstallSource" }
+      ]
+    },
+    "structuredGitInstallSource": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["git", "github", "local"]
+          "enum": ["git", "github"]
         },
         "url": {
           "type": "string",
@@ -139,9 +145,21 @@
       },
       "anyOf": [
         { "required": ["url"] },
-        { "required": ["repo"] },
-        { "required": ["path"] }
+        { "required": ["repo"] }
       ]
+    },
+    "structuredLocalInstallSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "path"],
+      "properties": {
+        "provider": {
+          "const": "local"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        }
+      }
     }
   }
 }
