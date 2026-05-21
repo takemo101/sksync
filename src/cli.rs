@@ -211,33 +211,89 @@ fn run_add(args: AddArgs) -> Result<()> {
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
     let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path)?;
-    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
-    for selection in selections {
-        store.add_dependency(&selection.skill_name, &selection.source, &args.agents)?;
-        println!(
-            "Added {} to {}",
-            selection.skill_name,
-            config_path.display()
-        );
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let add_result = (|| -> Result<()> {
+        let store =
+            FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+        for selection in selections {
+            store.add_dependency(&selection.skill_name, &selection.source, &args.agents)?;
+            println!(
+                "Added {} to {}",
+                selection.skill_name,
+                config_path.display()
+            );
+        }
+
+        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+        let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+        apply_update_report_sources(&mut config, &report);
+        print_update_report(report);
+        let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
+        let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+        let fs_store = FileSystemLinkStore;
+        let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
+        apply_link_plan(
+            &plan,
+            &lockfile,
+            &fs_store,
+            &lockfile_store,
+            ApplyOptions { force: false },
+        )?;
+        print_plan(&plan);
+        Ok(())
+    })();
+
+    if let Err(error) = add_result {
+        if let Err(restore_error) = config_backup.restore() {
+            return Err(error.context(format!(
+                "sksync add failed and config rollback failed: {restore_error}"
+            )));
+        }
+        return Err(error.context("sksync add failed; restored previous config"));
     }
 
-    let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
-    let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
-    apply_update_report_sources(&mut config, &report);
-    print_update_report(report);
-    let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
-    let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
-    let fs_store = FileSystemLinkStore;
-    let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
-    apply_link_plan(
-        &plan,
-        &lockfile,
-        &fs_store,
-        &lockfile_store,
-        ApplyOptions { force: false },
-    )?;
-    print_plan(&plan);
     Ok(())
+}
+
+struct ConfigFileBackup {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+impl ConfigFileBackup {
+    fn capture(path: &Path) -> Result<Self> {
+        let content = if path.exists() {
+            Some(
+                fs::read(path)
+                    .with_context(|| format!("failed to read config backup {}", path.display()))?,
+            )
+        } else {
+            None
+        };
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            content,
+        })
+    }
+
+    fn restore(&self) -> Result<()> {
+        match &self.content {
+            Some(content) => fs::write(&self.path, content)
+                .with_context(|| format!("failed to restore config {}", self.path.display())),
+            None => {
+                if self.path.exists() {
+                    fs::remove_file(&self.path).with_context(|| {
+                        format!(
+                            "failed to remove rolled-back config {}",
+                            self.path.display()
+                        )
+                    })?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 fn run_remove(args: RemoveArgs) -> Result<()> {
@@ -1392,7 +1448,8 @@ mod tests {
     use super::{
         agent_target_mappings_from_config, discover_skill_candidates, global_config_root_from_home,
         is_managed_skill_dir, reject_legacy_registry_source, remove_installed_skill_dir,
-        select_skill_candidates, source_with_selected_subpath, Cli, SourceRewriteMode,
+        select_skill_candidates, source_with_selected_subpath, Cli, ConfigFileBackup,
+        SourceRewriteMode,
     };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
@@ -1482,6 +1539,34 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "find-skills");
         assert_eq!(candidates[0].relative_path, Path::new("skills/find-skills"));
+    }
+
+    #[test]
+    fn config_file_backup_restores_existing_config() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("sksync.config.json");
+        fs::write(&config_path, "{\"dependencies\":{}}\n").expect("write config");
+        let backup = ConfigFileBackup::capture(&config_path).expect("capture backup");
+        fs::write(&config_path, "{\"dependencies\":{\"bad\":{}}}\n").expect("mutate config");
+
+        backup.restore().expect("restore backup");
+
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read config"),
+            "{\"dependencies\":{}}\n"
+        );
+    }
+
+    #[test]
+    fn config_file_backup_removes_created_config() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("sksync.config.json");
+        let backup = ConfigFileBackup::capture(&config_path).expect("capture missing backup");
+        fs::write(&config_path, "{\"dependencies\":{\"bad\":{}}}\n").expect("create config");
+
+        backup.restore().expect("restore missing backup");
+
+        assert!(!config_path.exists());
     }
 
     #[test]
