@@ -31,10 +31,10 @@ shared skill store
       ├─ foo/SKILL.md
       └─ bar/SKILL.md
 
-sksync.config.json / ~/.config/sksync/config.json
+sksync.config.json / ~/.sksync/config.json
   └─ dependencies: GitHub/local source + target agents
 
-~/.config/sksync/agents.json
+~/.sksync/agents.json
   └─ global-only target directories per agent
 
 sksync update
@@ -61,8 +61,8 @@ sksync apply
 
 `sksync` は設定を2種類に分ける。
 
-1. **install dependency config**: どの source から skill を取得し、どの agent へ symlink するか。project (`sksync.config.json`) と global (`~/.config/sksync/config.json`) の両方で利用できる。
-2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global-only (`~/.config/sksync/agents.json`)。
+1. **install dependency config**: どの source から skill を取得し、どの agent へ symlink するか。project (`sksync.config.json`) と global (`~/.sksync/config.json`) の両方で利用できる。
+2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global-only (`~/.sksync/agents.json`)。
 
 ### install dependency config
 
@@ -87,7 +87,7 @@ sksync apply
 }
 ```
 
-SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.config/sksync/config.json` を更新する。
+SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.sksync/config.json` を更新する。
 
 ```text
 github:owner/repo/path/to/skill#ref
@@ -195,8 +195,8 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 
 - project mode では `sksync.config.json` を作成
 - project mode では `.sksync/skills/` ディレクトリを作成
-- `--global` では `~/.config/sksync/config.json` を作成
-- `--global` では `~/.config/sksync/skills/` ディレクトリを作成
+- `--global` では `~/.sksync/config.json` を作成
+- `--global` では `~/.sksync/skills/` ディレクトリを作成
 - 既存 config は上書きしない
 - built-in agent mapping のコメント付き例を出す
 
@@ -205,7 +205,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 - SkillKit-style source を受け取る
 - `dependencies.<skill>` を config に追加する
 - `--agent` は複数指定できる
-- `--global` の場合は `~/.config/sksync/config.json` を更新する
+- `--global` の場合は `~/.sksync/config.json` を更新する
 - 追加後に install/apply 相当の処理を実行する
 
 ### `sksync install`

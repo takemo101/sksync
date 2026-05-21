@@ -70,7 +70,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct InitArgs {
-    /// Initialize ~/.config/sksync/config.json instead of ./sksync.config.json.
+    /// Initialize ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(long)]
     global: bool,
 }
@@ -85,7 +85,7 @@ struct AddArgs {
     /// Override inferred skill name.
     #[arg(long)]
     name: Option<String>,
-    /// Write ~/.config/sksync/config.json instead of ./sksync.config.json.
+    /// Write ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(long)]
     global: bool,
 }
@@ -94,7 +94,7 @@ struct AddArgs {
 struct RemoveArgs {
     /// Skill name to remove.
     skill: String,
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
     /// Remove only from config and lockfile, leaving installed files and symlinks untouched.
@@ -110,7 +110,7 @@ struct RemoveArgs {
 
 #[derive(Debug, Args)]
 struct OutdatedArgs {
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
     /// Print machine-readable JSON.
@@ -123,7 +123,7 @@ struct PlanArgs {
     /// Explicitly run in dry-run mode.
     #[arg(long)]
     dry_run: bool,
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
 }
@@ -133,35 +133,35 @@ struct ApplyArgs {
     /// Allow replacing existing sksync-managed links when it is safe to do so.
     #[arg(long)]
     force: bool,
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct InstallArgs {
-    /// Use ~/.config/sksync/config.json and global lockfile instead of project files.
+    /// Use ~/.sksync/config.json and global lockfile instead of project files.
     #[arg(long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct UpdateArgs {
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct ListArgs {
-    /// Use ~/.config/sksync/config.json instead of project config.
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct CheckArgs {
-    /// Use ~/.config/sksync/sksync-lock.json instead of project lockfile.
+    /// Use ~/.sksync/sksync-lock.json instead of project lockfile.
     #[arg(long)]
     global: bool,
 }
@@ -651,12 +651,10 @@ fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedCon
 
 fn load_config_from_path(config_path: &Path, default_scope: Scope) -> Result<ResolvedConfig> {
     let mut config = FileConfigStore::new(config_path).load_with_default_scope(default_scope)?;
-    if let Some(config_dir) = dirs::config_dir() {
-        let mapping_path = config_dir.join("sksync/agents.json");
-        if mapping_path.exists() {
-            let mappings = read_agent_mappings(&mapping_path)?;
-            apply_agent_target_dirs(&mut config, mappings)?;
-        }
+    let mapping_path = config_root_for_global()?.join("agents.json");
+    if mapping_path.exists() {
+        let mappings = read_agent_mappings(&mapping_path)?;
+        apply_agent_target_dirs(&mut config, mappings)?;
     }
     Ok(config)
 }
@@ -686,9 +684,13 @@ fn lockfile_path_for(global: bool, current_dir: &Path) -> Result<PathBuf> {
 }
 
 fn config_root_for_global() -> Result<PathBuf> {
-    dirs::config_dir()
-        .map(|dir| dir.join("sksync"))
-        .context("failed to determine global config directory")
+    dirs::home_dir()
+        .map(|dir| global_config_root_from_home(&dir))
+        .context("failed to determine home directory for global sksync directory")
+}
+
+fn global_config_root_from_home(home_dir: &Path) -> PathBuf {
+    home_dir.join(".sksync")
 }
 
 fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
@@ -812,8 +814,9 @@ fn run_wizard() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{global_config_root_from_home, Cli};
     use clap::{CommandFactory, Parser};
+    use std::path::Path;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -853,6 +856,14 @@ mod tests {
     #[test]
     fn init_global_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--global"]).expect("init --global should parse");
+    }
+
+    #[test]
+    fn global_config_root_uses_home_dot_sksync() {
+        assert_eq!(
+            global_config_root_from_home(Path::new("/tmp/home")),
+            Path::new("/tmp/home/.sksync")
+        );
     }
 
     #[test]

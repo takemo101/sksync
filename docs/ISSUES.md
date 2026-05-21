@@ -336,8 +336,8 @@ lockfileと現在状態の差分を検出する。
 - `src/application/init.rs` を実装する
 - project mode では `sksync.config.json` を作る
 - project mode では `.sksync/skills/` directoryを作る
-- `--global` では `~/.config/sksync/config.json` を作る
-- `--global` では `~/.config/sksync/skills/` directoryを作る
+- `--global` では `~/.sksync/config.json` を作る
+- `--global` では `~/.sksync/skills/` directoryを作る
 - 既存configがある場合は上書きしない
 - `--force` は別issueに回してよい
 

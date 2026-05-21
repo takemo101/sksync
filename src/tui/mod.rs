@@ -49,7 +49,7 @@ impl fmt::Display for ConfigScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
             Self::Project => "project config (./sksync.config.json)",
-            Self::Global => "global config (~/.config/sksync/config.json)",
+            Self::Global => "global config (~/.sksync/config.json)",
         };
         formatter.write_str(label)
     }
@@ -292,9 +292,9 @@ fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<Reso
 fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<PathBuf> {
     match scope {
         ConfigScope::Project => Ok(project_root.join("sksync.config.json")),
-        ConfigScope::Global => dirs::config_dir()
-            .map(|dir| dir.join("sksync/config.json"))
-            .context("failed to determine global config directory"),
+        ConfigScope::Global => dirs::home_dir()
+            .map(|dir| dir.join(".sksync/config.json"))
+            .context("failed to determine home directory for global sksync directory"),
     }
 }
 

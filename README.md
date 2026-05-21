@@ -58,8 +58,8 @@ project mode で作成されるもの:
 
 global mode (`--global`) で作成されるもの:
 
-- `~/.config/sksync/config.json`
-- `~/.config/sksync/skills/`
+- `~/.sksync/config.json`
+- `~/.sksync/skills/`
 
 既に対象 config が存在する場合は上書きせず失敗します。
 
@@ -74,7 +74,7 @@ cargo run -- add registry:skills.sh/owner/repo/skill#version --agent pi
 cargo run -- add ./local-skill --agent pi --agent gemini
 ```
 
-`--global` を付けると `~/.config/sksync/config.json` に追加し、グローバル設定として扱います。
+`--global` を付けると `~/.sksync/config.json` に追加し、グローバル設定として扱います。
 
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --global
@@ -201,7 +201,7 @@ project-local の生成物は `.gitignore` します。
 ### Config / lockfile examples
 
 - [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
-- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.config/sksync/agents.json`)
+- [`sksync.agents.example.json`](sksync.agents.example.json) - global-only agent target mapping (`~/.sksync/agents.json`)
 - [`sksync-lock.example.json`](sksync-lock.example.json)
 
 ## 今後の予定
