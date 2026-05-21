@@ -11,7 +11,7 @@
       "targetDir": "~/.amp/skills"
     },
     "antigravity": {
-      "targetDir": "~/.antigravity/skills"
+      "targetDir": "~/.gemini/antigravity/skills"
     },
     "augment-code": {
       "targetDir": "~/.augment/skills"
@@ -154,7 +154,7 @@
       "targetDir": ".amp/skills"
     },
     "antigravity": {
-      "targetDir": ".antigravity/skills"
+      "targetDir": ".agents/skills"
     },
     "augment-code": {
       "targetDir": ".augment/skills"
