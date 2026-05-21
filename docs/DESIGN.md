@@ -309,13 +309,13 @@ agent 単位削除。
 
 ### TUI 操作モデル
 
-| intent | 質問する内容 | 実行する usecase |
-| ------ | ------------ | ---------------- |
-| skill 追加 | source, name override, agent, global scope | `add` |
-| skill 削除 | skill, keep files, config only, global scope | `remove` |
-| agent から外す | skill, agent, global scope | `remove --agent` |
-| 状態確認 | global scope, 出力詳細 | `list` / `check` |
-| apply | global scope, force, 確認 | `plan` -> `apply` |
+| intent         | 質問する内容                                 | 実行する usecase  |
+| -------------- | -------------------------------------------- | ----------------- |
+| skill 追加     | source, name override, agent, global scope   | `add`             |
+| skill 削除     | skill, keep files, config only, global scope | `remove`          |
+| agent から外す | skill, agent, global scope                   | `remove --agent`  |
+| 状態確認       | global scope, 出力詳細                       | `list` / `check`  |
+| apply          | global scope, force, 確認                    | `plan` -> `apply` |
 
 ### TUI の原則
 
@@ -341,16 +341,16 @@ agent 単位削除。
 
 ### crate 候補
 
-| 用途                        | crate                  |
-| --------------------------- | ---------------------- |
-| CLI parser                  | `clap`                 |
-| config / lockfile serialize | `serde`, `serde_json`  |
-| path / home dir 解決        | `dirs`, `shellexpand`  |
-| hash                        | `sha2`, `hex`          |
-| glob / walk                 | `walkdir`, `ignore`    |
-| error handling              | `anyhow`, `thiserror`  |
-| Prompt TUI                  | 標準入出力（必要に応じて `dialoguer` 等） |
-| snapshot / temp tests       | `insta`, `tempfile`    |
+| 用途                        | crate                                     |
+| --------------------------- | ----------------------------------------- |
+| CLI parser                  | `clap`                                    |
+| config / lockfile serialize | `serde`, `serde_json`                     |
+| path / home dir 解決        | `dirs`, `shellexpand`                     |
+| hash                        | `sha2`, `hex`                             |
+| glob / walk                 | `walkdir`, `ignore`                       |
+| error handling              | `anyhow`, `thiserror`                     |
+| Prompt TUI                  | `inquire`              |
+| snapshot / temp tests       | `insta`, `tempfile`                       |
 
 ### モジュール構成案
 

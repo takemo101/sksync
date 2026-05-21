@@ -1,40 +1,72 @@
-use std::io::{self, Write};
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use inquire::{Confirm, MultiSelect, Select, Text};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    AddSkill,
+    RemoveSkill,
+    RemoveAgent,
+    Status,
+    Apply,
+    Quit,
+}
+
+impl fmt::Display for Intent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::AddSkill => "skill を追加する",
+            Self::RemoveSkill => "skill を削除する",
+            Self::RemoveAgent => "特定 agent から skill を外す",
+            Self::Status => "状態を確認する",
+            Self::Apply => "apply する",
+            Self::Quit => "終了する",
+        };
+        formatter.write_str(label)
+    }
+}
 
 pub fn run(project_root: PathBuf) -> Result<()> {
     println!("sksync prompt TUI");
     println!("Project: {}", project_root.display());
 
     loop {
-        println!();
-        println!("何をしますか?");
-        println!("  1) skill を追加する");
-        println!("  2) skill を削除する");
-        println!("  3) 特定 agent から skill を外す");
-        println!("  4) 状態を確認する");
-        println!("  5) apply する");
-        println!("  q) 終了する");
+        let intent = Select::new(
+            "何をしますか?",
+            vec![
+                Intent::AddSkill,
+                Intent::RemoveSkill,
+                Intent::RemoveAgent,
+                Intent::Status,
+                Intent::Apply,
+                Intent::Quit,
+            ],
+        )
+        .prompt()
+        .context("failed to read TUI selection")?;
 
-        match prompt("選択")?.trim() {
-            "1" => run_add_flow(&project_root)?,
-            "2" => run_remove_flow(&project_root)?,
-            "3" => run_remove_agent_flow(&project_root)?,
-            "4" => run_status_flow(&project_root)?,
-            "5" => run_apply_flow(&project_root)?,
-            "q" | "Q" | "quit" | "exit" => return Ok(()),
-            value => println!("Unknown selection: {value}"),
+        match intent {
+            Intent::AddSkill => run_add_flow(&project_root)?,
+            Intent::RemoveSkill => run_remove_flow(&project_root)?,
+            Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
+            Intent::Status => run_status_flow(&project_root)?,
+            Intent::Apply => run_apply_flow(&project_root)?,
+            Intent::Quit => return Ok(()),
         }
     }
 }
 
 fn run_add_flow(project_root: &PathBuf) -> Result<()> {
     let source = prompt_required("skill source")?;
-    let name = prompt("name override (optional)")?;
+    let name = Text::new("name override")
+        .with_help_message("optional; leave blank to infer from source")
+        .prompt()
+        .context("failed to read name override")?;
     let agents = prompt_agents()?;
-    let global = prompt_yes_no("global config に追加しますか?", false)?;
+    let global = prompt_confirm("global config に追加しますか?", false)?;
 
     let mut args = vec!["add".to_owned(), source];
     for agent in agents {
@@ -49,18 +81,14 @@ fn run_add_flow(project_root: &PathBuf) -> Result<()> {
         args.push("--global".to_owned());
     }
 
-    println!("予定: sksync {}", args.join(" "));
-    if prompt_yes_no("実行しますか?", false)? {
-        run_sksync(project_root, &args)?;
-    }
-    Ok(())
+    confirm_and_run(project_root, "実行しますか?", args)
 }
 
 fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
     let skill = prompt_required("skill name")?;
-    let global = prompt_yes_no("global config から削除しますか?", false)?;
-    let keep_files = prompt_yes_no("skill 本体を残しますか?", false)?;
-    let config_only = prompt_yes_no("config / lockfile だけ変更しますか?", false)?;
+    let global = prompt_confirm("global config から削除しますか?", false)?;
+    let keep_files = prompt_confirm("skill 本体を残しますか?", false)?;
+    let config_only = prompt_confirm("config / lockfile だけ変更しますか?", false)?;
 
     let mut args = vec!["remove".to_owned(), skill];
     if global {
@@ -73,17 +101,13 @@ fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
         args.push("--config-only".to_owned());
     }
 
-    println!("予定: sksync {}", args.join(" "));
-    if prompt_yes_no("削除を実行しますか?", false)? {
-        run_sksync(project_root, &args)?;
-    }
-    Ok(())
+    confirm_and_run(project_root, "削除を実行しますか?", args)
 }
 
 fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
     let skill = prompt_required("skill name")?;
     let agents = prompt_agents()?;
-    let global = prompt_yes_no("global config を対象にしますか?", false)?;
+    let global = prompt_confirm("global config を対象にしますか?", false)?;
 
     let mut args = vec!["remove".to_owned(), skill];
     for agent in agents {
@@ -94,16 +118,12 @@ fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
         args.push("--global".to_owned());
     }
 
-    println!("予定: sksync {}", args.join(" "));
-    if prompt_yes_no("指定 agent から外しますか?", false)? {
-        run_sksync(project_root, &args)?;
-    }
-    Ok(())
+    confirm_and_run(project_root, "指定 agent から外しますか?", args)
 }
 
 fn run_status_flow(project_root: &PathBuf) -> Result<()> {
-    let global = prompt_yes_no("global config を対象にしますか?", false)?;
-    let check = prompt_yes_no("check も実行しますか?", true)?;
+    let global = prompt_confirm("global config を対象にしますか?", false)?;
+    let check = prompt_confirm("check も実行しますか?", true)?;
 
     let mut list_args = vec!["list".to_owned()];
     if global {
@@ -122,8 +142,8 @@ fn run_status_flow(project_root: &PathBuf) -> Result<()> {
 }
 
 fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
-    let global = prompt_yes_no("global config を対象にしますか?", false)?;
-    let force = prompt_yes_no("safe な managed link の置き換えを許可しますか?", false)?;
+    let global = prompt_confirm("global config を対象にしますか?", false)?;
+    let force = prompt_confirm("safe な managed link の置き換えを許可しますか?", false)?;
 
     let mut plan_args = vec!["plan".to_owned()];
     if global {
@@ -140,54 +160,71 @@ fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
         apply_args.push("--force".to_owned());
     }
 
-    println!("予定: sksync {}", apply_args.join(" "));
-    if prompt_yes_no("apply を実行しますか?", false)? {
-        run_sksync(project_root, &apply_args)?;
+    confirm_and_run(project_root, "apply を実行しますか?", apply_args)
+}
+
+fn confirm_and_run(project_root: &PathBuf, question: &str, args: Vec<String>) -> Result<()> {
+    println!("予定: sksync {}", args.join(" "));
+    if prompt_confirm(question, false)? {
+        run_sksync(project_root, &args)?;
     }
     Ok(())
 }
 
 fn prompt_agents() -> Result<Vec<String>> {
-    let input = prompt_required("agents (comma separated, e.g. pi,claude-code)")?;
-    let agents = input
+    let selected = MultiSelect::new(
+        "agents を選択してください",
+        vec!["pi", "claude-code", "codex", "gemini", "opencode", "custom"],
+    )
+    .with_help_message("space で選択、enter で確定")
+    .prompt()
+    .context("failed to read agent selection")?;
+
+    let mut agents = Vec::new();
+    for agent in selected {
+        if agent == "custom" {
+            agents.extend(prompt_custom_agents()?);
+        } else {
+            agents.push(agent.to_owned());
+        }
+    }
+
+    if agents.is_empty() {
+        bail!("at least one agent is required");
+    }
+    agents.sort();
+    agents.dedup();
+    Ok(agents)
+}
+
+fn prompt_custom_agents() -> Result<Vec<String>> {
+    let input = Text::new("custom agents")
+        .with_help_message("comma separated, e.g. cursor,qwen")
+        .prompt()
+        .context("failed to read custom agents")?;
+    Ok(input
         .split(',')
         .map(str::trim)
         .filter(|agent| !agent.is_empty())
         .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if agents.is_empty() {
-        bail!("at least one agent is required");
-    }
-    Ok(agents)
+        .collect())
 }
 
 fn prompt_required(label: &str) -> Result<String> {
-    let value = prompt(label)?;
+    let value = Text::new(label)
+        .prompt()
+        .with_context(|| format!("failed to read {label}"))?;
     if value.trim().is_empty() {
         bail!("{label} is required");
     }
     Ok(value.trim().to_owned())
 }
 
-fn prompt(label: &str) -> Result<String> {
-    print!("{label}: ");
-    io::stdout().flush().context("failed to flush stdout")?;
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read stdin")?;
-    Ok(input.trim_end().to_owned())
-}
-
-fn prompt_yes_no(question: &str, default: bool) -> Result<bool> {
-    let suffix = if default { "Y/n" } else { "y/N" };
-    let answer = prompt(&format!("{question} ({suffix})"))?;
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "" => Ok(default),
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        value => bail!("expected yes/no answer, got {value:?}"),
-    }
+fn prompt_confirm(question: &str, default: bool) -> Result<bool> {
+    Confirm::new(question)
+        .with_default(default)
+        .prompt()
+        .with_context(|| format!("failed to read confirmation for {question}"))
 }
 
 fn run_sksync(project_root: &PathBuf, args: &[String]) -> Result<()> {
@@ -205,17 +242,9 @@ fn run_sksync(project_root: &PathBuf, args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::prompt_yes_no;
-
     #[test]
     fn prompt_tui_module_is_available() {
         let run_fn: fn(std::path::PathBuf) -> anyhow::Result<()> = super::run;
         let _ = run_fn;
-    }
-
-    #[test]
-    fn yes_no_defaults_are_documented_by_type() {
-        let fn_ptr: fn(&str, bool) -> anyhow::Result<bool> = prompt_yes_no;
-        let _ = fn_ptr;
     }
 }
