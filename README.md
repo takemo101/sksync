@@ -47,14 +47,21 @@ cargo run -- list
 
 ```bash
 cargo run -- init
+# or initialize global config
+cargo run -- init --global
 ```
 
-作成されるもの:
+project mode で作成されるもの:
 
 - `sksync.config.json`
 - `.sksync/skills/`
 
-既に `sksync.config.json` が存在する場合は上書きせず失敗します。
+global mode (`--global`) で作成されるもの:
+
+- `~/.config/sksync/config.json`
+- `~/.config/sksync/skills/`
+
+既に対象 config が存在する場合は上書きせず失敗します。
 
 ### `sksync add`
 
