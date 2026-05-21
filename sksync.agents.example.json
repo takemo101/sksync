@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
-  "agents": {
+  "global": {
     "aider": {
       "targetDir": "~/.aider/skills"
     },
@@ -143,7 +143,7 @@
       "targetDir": "~/.zencoder/skills"
     }
   },
-  "projectAgents": {
+  "project": {
     "aider": {
       "targetDir": ".aider/skills"
     },

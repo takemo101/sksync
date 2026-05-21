@@ -159,7 +159,8 @@ mod tests {
         assert!(config.contains("skills"));
         assert!(config.contains("\"dependencies\": {}"));
         let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
-        assert!(agents.contains("\"agents\""));
+        assert!(agents.contains("\"global\""));
+        assert!(agents.contains("\"project\""));
         assert!(agents.contains("~/.pi/agent/skills"));
     }
 

@@ -84,24 +84,23 @@ pub struct RawStructuredInstallSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMappingConfig {
-    pub agents: BTreeMap<String, PathBuf>,
-    pub project_agents: BTreeMap<String, PathBuf>,
+    pub global: BTreeMap<String, PathBuf>,
+    pub project: BTreeMap<String, PathBuf>,
 }
 
 impl AgentMappingConfig {
     pub fn merge(&mut self, other: Self) {
-        self.agents.extend(other.agents);
-        self.project_agents.extend(other.project_agents);
+        self.global.extend(other.global);
+        self.project.extend(other.project);
     }
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct RawAgentMappings {
     #[serde(default)]
-    agents: BTreeMap<String, RawAgentTargetMapping>,
+    global: BTreeMap<String, RawAgentTargetMapping>,
     #[serde(default)]
-    project_agents: BTreeMap<String, RawAgentTargetMapping>,
+    project: BTreeMap<String, RawAgentTargetMapping>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +146,7 @@ pub fn read_agent_mapping_config(
 pub fn read_agent_mappings(
     path: impl AsRef<Path>,
 ) -> Result<BTreeMap<String, PathBuf>, AgentMappingJsonError> {
-    read_agent_mapping_config(path).map(|config| config.agents)
+    read_agent_mapping_config(path).map(|config| config.global)
 }
 
 fn parse_agent_mapping_config(
@@ -161,13 +160,13 @@ fn parse_agent_mapping_config(
         }
     })?;
     Ok(AgentMappingConfig {
-        agents: raw
-            .agents
+        global: raw
+            .global
             .into_iter()
             .map(|(name, mapping)| (name, mapping.target_dir))
             .collect(),
-        project_agents: raw
-            .project_agents
+        project: raw
+            .project
             .into_iter()
             .map(|(name, mapping)| (name, mapping.target_dir))
             .collect(),
