@@ -35,7 +35,7 @@ sksync.config.json / ~/.sksync/config.json
   └─ dependencies: GitHub/local source + target agents
 
 ~/.sksync/agents.json
-  └─ global-only target directories per agent
+  └─ global and project target directories per agent
 
 sksync update
   └─ GitHub/local source -> <project>/.sksync/skills/foo
@@ -62,7 +62,7 @@ sksync apply
 `sksync` は設定を2種類に分ける。
 
 1. **install dependency config**: どの source から skill を取得し、どの agent へ symlink するか。project (`sksync.config.json`) と global (`~/.sksync/config.json`) の両方で利用できる。
-2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global-only (`~/.sksync/agents.json`)。
+2. **agent target mapping**: agent ごとの symlink 先ディレクトリ。global/user scope と全 project 共通の project scope を `~/.sksync/agents.json` に保存する。
 
 ### install dependency config
 
@@ -102,7 +102,7 @@ registry:example.com/owner/repo/skill#version
 
 内部的には `repo/ref/path` または `registry:<host>/<package>#version` に正規化する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。registry は `InstallSource::Registry` として分岐させ、`skills.sh` も他の registry と同じ provider 実装として扱う。
 
-### global-only agent target mapping
+### agent target mapping
 
 Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.json)
 
@@ -111,15 +111,16 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "agents": {
     "claude-code": { "targetDir": "~/.claude/skills" },
-    "cursor": { "targetDir": "~/.cursor/skills" },
-    "codex": { "targetDir": "~/.codex/skills" },
-    "gemini-cli": { "targetDir": "~/.gemini/skills" },
-    "opencode": { "targetDir": "~/.config/opencode/skills" }
+    "cursor": { "targetDir": "~/.cursor/skills" }
+  },
+  "projectAgents": {
+    "claude-code": { "targetDir": ".claude/skills" },
+    "cursor": { "targetDir": ".cursor/skills" }
   }
 }
 ```
 
-`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。
+`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。`agents` は global/user scope、`projectAgents` は全 project 共通の project scope として扱う。
 
 ### 設定方針
 
@@ -128,7 +129,8 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 - project config は project scope、global config (`--global`) は user scope として agent target を解決する
 - `sksync plan/apply/check/list/install/update` は `--global` で global config / lockfile を対象にできる
 - 既存互換として `skills.*.source` は local-only skill として扱う
-- agent ごとの実際の target path は built-in mapping または global-only `agents.json` から解決する
+- agent ごとの実際の target path は built-in mapping または `~/.sksync/agents.json` から解決する
+- project config では全 project 共通の `projectAgents` が global `agents` より優先される
 
 ## 5. Built-in Agent Mapping 案
 

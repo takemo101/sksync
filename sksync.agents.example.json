@@ -142,5 +142,148 @@
     "zencoder": {
       "targetDir": "~/.zencoder/skills"
     }
+  },
+  "projectAgents": {
+    "aider": {
+      "targetDir": ".aider/skills"
+    },
+    "amazon-q": {
+      "targetDir": ".amazonq/skills"
+    },
+    "amp": {
+      "targetDir": ".amp/skills"
+    },
+    "antigravity": {
+      "targetDir": ".antigravity/skills"
+    },
+    "augment-code": {
+      "targetDir": ".augment/skills"
+    },
+    "bolt": {
+      "targetDir": ".bolt/skills"
+    },
+    "claude-code": {
+      "targetDir": ".claude/skills"
+    },
+    "clawdbot": {
+      "targetDir": ".clawdbot/skills"
+    },
+    "cline": {
+      "targetDir": ".cline/skills"
+    },
+    "codebuddy": {
+      "targetDir": ".codebuddy/skills"
+    },
+    "codegpt": {
+      "targetDir": ".codegpt/skills"
+    },
+    "codex": {
+      "targetDir": ".codex/skills"
+    },
+    "commandcode": {
+      "targetDir": ".commandcode/skills"
+    },
+    "continue": {
+      "targetDir": ".continue/skills"
+    },
+    "crush": {
+      "targetDir": ".crush/skills"
+    },
+    "cursor": {
+      "targetDir": ".cursor/skills"
+    },
+    "devin": {
+      "targetDir": ".devin/skills"
+    },
+    "droid": {
+      "targetDir": ".factory/skills"
+    },
+    "factory": {
+      "targetDir": ".factory/skills"
+    },
+    "gemini": {
+      "targetDir": ".gemini/skills"
+    },
+    "gemini-cli": {
+      "targetDir": ".gemini/skills"
+    },
+    "github-copilot": {
+      "targetDir": ".github/skills"
+    },
+    "goose": {
+      "targetDir": ".goose/skills"
+    },
+    "hermes": {
+      "targetDir": ".hermes/skills"
+    },
+    "kilo": {
+      "targetDir": ".kilocode/skills"
+    },
+    "kiro-cli": {
+      "targetDir": ".kiro/skills"
+    },
+    "lovable": {
+      "targetDir": ".lovable/skills"
+    },
+    "mcpjam": {
+      "targetDir": ".mcpjam/skills"
+    },
+    "mux": {
+      "targetDir": ".mux/skills"
+    },
+    "neovate": {
+      "targetDir": ".neovate/skills"
+    },
+    "opencode": {
+      "targetDir": ".opencode/skills"
+    },
+    "openclaw": {
+      "targetDir": ".openclaw/skills"
+    },
+    "openhands": {
+      "targetDir": ".openhands/skills"
+    },
+    "pi": {
+      "targetDir": ".pi/agent/skills"
+    },
+    "playcode-agent": {
+      "targetDir": ".playcode/skills"
+    },
+    "qoder": {
+      "targetDir": ".qoder/skills"
+    },
+    "qwen": {
+      "targetDir": ".qwen/skills"
+    },
+    "replit-agent": {
+      "targetDir": ".replit/skills"
+    },
+    "roo": {
+      "targetDir": ".roo/skills"
+    },
+    "sourcegraph-cody": {
+      "targetDir": ".cody/skills"
+    },
+    "tabby": {
+      "targetDir": ".tabby/skills"
+    },
+    "tabnine": {
+      "targetDir": ".tabnine/skills"
+    },
+    "trae": {
+      "targetDir": ".trae/skills"
+    },
+    "universal": {
+      "targetDir": "skills"
+    },
+    "vercel": {
+      "targetDir": ".vercel/skills"
+    },
+    "windsurf": {
+      "targetDir": ".windsurf/skills"
+    },
+    "zencoder": {
+      "targetDir": ".zencoder/skills"
+    }
   }
 }
