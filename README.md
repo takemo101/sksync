@@ -33,6 +33,35 @@ curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | 
 
 現在の installer は macOS のみ対応です。`aarch64-apple-darwin` / `x86_64-apple-darwin` の release asset を取得します。
 
+### Uninstall
+
+`install.sh` で入れた場合は、インストールした binary を削除します。
+
+```bash
+rm -f ~/.local/bin/sksync
+```
+
+`INSTALL_DIR` を変えてインストールした場合は、その場所の binary を削除してください。
+
+```bash
+rm -f /usr/local/bin/sksync
+```
+
+clone した repository から `just install` で入れた場合は、同じ `INSTALL_DIR` を指定して uninstall できます。
+
+```bash
+just uninstall
+# or
+INSTALL_DIR=/usr/local/bin just uninstall
+```
+
+global config / agent mapping / installed global skills も削除して完全に初期化する場合は、binary に加えて `~/.sksync` を削除します。
+
+```bash
+rm -f ~/.local/bin/sksync
+rm -rf ~/.sksync
+```
+
 ### Build
 
 ```bash
