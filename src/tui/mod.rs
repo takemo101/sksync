@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
@@ -116,7 +115,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
     }
 }
 
-fn run_add_flow(project_root: &PathBuf) -> Result<()> {
+fn run_add_flow(project_root: &Path) -> Result<()> {
     let source = prompt_required("Skill source")?;
     let name = Text::new("Name override")
         .with_help_message("Optional; leave blank to infer from source")
@@ -142,7 +141,7 @@ fn run_add_flow(project_root: &PathBuf) -> Result<()> {
     confirm_and_run(project_root, "Run this command?", args)
 }
 
-fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
+fn run_remove_flow(project_root: &Path) -> Result<()> {
     let scope = prompt_config_scope("Which config should the skill be removed from?")?;
     let config = load_config_for_scope(project_root, scope)?;
     let skill = prompt_skill_from_config(&config, "Select the skill to remove")?;
@@ -157,7 +156,7 @@ fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
     confirm_and_run(project_root, "Remove this skill?", args)
 }
 
-fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
+fn run_remove_agent_flow(project_root: &Path) -> Result<()> {
     let scope = prompt_config_scope("Which config should be updated?")?;
     let config = load_config_for_scope(project_root, scope)?;
     let skill = prompt_skill_from_config(&config, "Select the skill to detach from an agent")?;
@@ -179,7 +178,7 @@ fn run_remove_agent_flow(project_root: &PathBuf) -> Result<()> {
     )
 }
 
-fn run_status_flow(project_root: &PathBuf) -> Result<()> {
+fn run_status_flow(project_root: &Path) -> Result<()> {
     let global = prompt_config_scope("Which config should be inspected?")?.is_global();
     let check = prompt_confirm("Run check after list?", true)?;
 
@@ -199,7 +198,7 @@ fn run_status_flow(project_root: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
+fn run_apply_flow(project_root: &Path) -> Result<()> {
     let global = prompt_config_scope("Which config should be applied?")?.is_global();
     let force = prompt_confirm("Allow safe replacement of managed links?", false)?;
 
@@ -221,7 +220,7 @@ fn run_apply_flow(project_root: &PathBuf) -> Result<()> {
     confirm_and_run(project_root, "Apply these link changes?", apply_args)
 }
 
-fn confirm_and_run(project_root: &PathBuf, question: &str, args: Vec<String>) -> Result<()> {
+fn confirm_and_run(project_root: &Path, question: &str, args: Vec<String>) -> Result<()> {
     println!("Planned command: sksync {}", args.join(" "));
     if prompt_confirm(question, false)? {
         run_sksync(project_root, &args)?;
@@ -358,17 +357,34 @@ fn prompt_confirm(question: &str, default: bool) -> Result<bool> {
         .with_context(|| format!("failed to read confirmation for {question}"))
 }
 
-fn run_sksync(project_root: &PathBuf, args: &[String]) -> Result<()> {
-    let exe = std::env::current_exe().context("failed to determine current executable")?;
-    let status = Command::new(exe)
-        .args(args)
-        .current_dir(project_root)
-        .status()
-        .with_context(|| format!("failed to run sksync {}", args.join(" ")))?;
-    if !status.success() {
-        bail!("sksync {} failed with {status}", args.join(" "));
+fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
+    let previous_dir = std::env::current_dir().context("failed to determine current directory")?;
+    std::env::set_current_dir(project_root).with_context(|| {
+        format!(
+            "failed to enter project directory {}",
+            project_root.display()
+        )
+    })?;
+
+    let result =
+        crate::cli::run_with_args(std::iter::once("sksync".to_owned()).chain(args.iter().cloned()))
+            .with_context(|| format!("failed to run sksync {}", args.join(" ")));
+
+    let restore_result = std::env::set_current_dir(&previous_dir).with_context(|| {
+        format!(
+            "failed to restore working directory {}",
+            previous_dir.display()
+        )
+    });
+
+    match (result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(restore_error)) => Err(error.context(format!(
+            "also failed to restore working directory: {restore_error}"
+        ))),
     }
-    Ok(())
 }
 
 #[cfg(test)]
