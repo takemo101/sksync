@@ -449,6 +449,14 @@ fn parse_structured_install_source(
     }
 }
 
+pub fn parse_install_source_value(
+    skill: &str,
+    value: &str,
+    config_root: Option<&Path>,
+) -> Result<InstallSource, ConfigResolveError> {
+    parse_install_source_string(skill, value, config_root)
+}
+
 fn parse_install_source_string(
     skill: &str,
     value: &str,

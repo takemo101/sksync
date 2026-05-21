@@ -111,13 +111,14 @@ global mode (`--global`) で作成されるもの:
 
 ### `sksync add`
 
-SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
+SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。source が repo root や親ディレクトリを指していて直接 `SKILL.md` を持たない場合は、配下の `SKILL.md` を探索し、1件なら自動選択、複数なら選択プロンプトを表示します。`--name` を指定すると一致する discovered skill を自動選択します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
 
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- add github:owner/repo/path/to/skill#main --agent pi
-cargo run -- add skills.sh/owner/repo/skill-name#version --agent pi
-cargo run -- add https://www.skills.sh/owner/repo/skill-name#version --agent pi
+cargo run -- add owner/repo --name skill-name --agent pi
+cargo run -- add skills.sh/owner/repo --agent pi
+cargo run -- add https://www.skills.sh/owner/repo --agent pi
 cargo run -- add ./local-skill --agent pi --agent gemini
 ```
 

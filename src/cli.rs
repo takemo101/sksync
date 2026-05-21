@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command as GitCommand;
 use std::str::FromStr;
@@ -7,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::check::check_lockfile;
-use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
+use crate::application::config::{
+    apply_agent_target_mappings, AgentTargetDir, GitInstallSource, InstallSource, ResolvedConfig,
+};
 use crate::application::init::{init_global, init_project};
 use crate::application::list::list_skills;
 use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
@@ -23,8 +26,9 @@ use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
-    default_agent_mapping_config, read_agent_mapping_config, read_lockfile, AgentMappingConfig,
-    FileConfigStore, FileDependencyConfigStore, FileLockfileStore,
+    default_agent_mapping_config, parse_install_source_value, read_agent_mapping_config,
+    read_lockfile, AgentMappingConfig, FileConfigStore, FileDependencyConfigStore,
+    FileLockfileStore,
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -206,10 +210,12 @@ fn run_add(args: AddArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
-    let skill_name = args.name.unwrap_or_else(|| infer_skill_name(&args.source));
+    let selection = resolve_add_selection(&args.source, args.name.as_deref(), &config_path)?;
+    let skill_name = selection.skill_name;
+    let source = selection.source;
 
     FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
-        .add_dependency(&skill_name, &args.source, &args.agents)?;
+        .add_dependency(&skill_name, &source, &args.agents)?;
     println!("Added {skill_name} to {}", config_path.display());
 
     let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
@@ -749,6 +755,416 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AddSelection {
+    skill_name: String,
+    source: String,
+}
+
+#[derive(Debug, Clone)]
+struct SkillCandidate {
+    name: String,
+    description: String,
+    relative_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct SkillChoice(SkillCandidate);
+
+impl std::fmt::Display for SkillChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} — {} ({})",
+            self.0.name,
+            self.0.description,
+            self.0.relative_path.display()
+        )
+    }
+}
+
+fn resolve_add_selection(
+    source: &str,
+    requested_name: Option<&str>,
+    config_path: &Path,
+) -> Result<AddSelection> {
+    let config_root = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let fallback_name = infer_skill_name(source);
+    let parse_skill_name = requested_name.unwrap_or(&fallback_name);
+    let install_source = parse_install_source_value(parse_skill_name, source, Some(config_root))
+        .with_context(|| format!("failed to parse source '{source}'"))?;
+
+    let discovered = discover_source_skills(&install_source)?;
+    let selection = select_skill_candidate(source, requested_name, discovered)?;
+    let selected_source = source_with_selected_subpath(source, &selection.relative_path);
+    let skill_name = requested_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| selection.name.clone());
+
+    Ok(AddSelection {
+        skill_name,
+        source: selected_source,
+    })
+}
+
+fn discover_source_skills(source: &InstallSource) -> Result<Vec<SkillCandidate>> {
+    match source {
+        InstallSource::Local(path) => discover_skill_candidates(path, 5),
+        InstallSource::Git(git) => discover_git_source_skills(git),
+    }
+}
+
+fn discover_git_source_skills(source: &GitInstallSource) -> Result<Vec<SkillCandidate>> {
+    let clone_dir = temporary_clone_dir();
+    let result = (|| {
+        clone_git_for_discovery(source, &clone_dir)?;
+        let search_dir = clone_dir.join(&source.path);
+        if !search_dir.exists() {
+            bail!(
+                "install source path does not exist: {}",
+                search_dir.display()
+            );
+        }
+        discover_skill_candidates(&search_dir, 5)
+    })();
+
+    if clone_dir.exists() {
+        let _ = fs::remove_dir_all(&clone_dir);
+    }
+
+    result
+}
+
+fn clone_git_for_discovery(source: &GitInstallSource, clone_dir: &Path) -> Result<()> {
+    let output = GitCommand::new("git")
+        .arg("clone")
+        .arg("--filter=blob:none")
+        .arg("--no-checkout")
+        .arg(&source.url)
+        .arg(clone_dir)
+        .output()
+        .with_context(|| format!("failed to run git clone for {}", source.url))?;
+    if !output.status.success() {
+        bail!(
+            "git command failed for {}: {}",
+            source.url,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    checkout_git_for_discovery(
+        clone_dir,
+        &source.url,
+        source.reference.as_deref().unwrap_or("HEAD"),
+    )
+}
+
+fn checkout_git_for_discovery(clone_dir: &Path, repo: &str, reference: &str) -> Result<()> {
+    if run_git_for_discovery(clone_dir, repo, &["checkout", "--detach", reference]).is_ok() {
+        return Ok(());
+    }
+
+    run_git_for_discovery(
+        clone_dir,
+        repo,
+        &["fetch", "--depth", "1", "origin", reference],
+    )?;
+    run_git_for_discovery(clone_dir, repo, &["checkout", "--detach", "FETCH_HEAD"])
+}
+
+fn run_git_for_discovery(clone_dir: &Path, repo: &str, args: &[&str]) -> Result<()> {
+    let output = GitCommand::new("git")
+        .arg("-C")
+        .arg(clone_dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run git for {repo}"))?;
+    if !output.status.success() {
+        bail!(
+            "git command failed for {repo}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn temporary_clone_dir() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!("sksync-discover-{}-{nonce}", std::process::id()))
+}
+
+fn discover_skill_candidates(root: &Path, max_depth: usize) -> Result<Vec<SkillCandidate>> {
+    let mut candidates = Vec::new();
+    discover_skill_candidates_inner(root, root, max_depth, 0, &mut candidates)?;
+    candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(candidates)
+}
+
+fn discover_skill_candidates_inner(
+    root: &Path,
+    current: &Path,
+    max_depth: usize,
+    depth: usize,
+    candidates: &mut Vec<SkillCandidate>,
+) -> Result<()> {
+    if depth > max_depth || is_skipped_discovery_dir(current) {
+        return Ok(());
+    }
+
+    let skill_md = current.join("SKILL.md");
+    if skill_md.is_file() {
+        let metadata = read_skill_metadata(current)?;
+        let relative_path = current.strip_prefix(root).unwrap_or(current).to_path_buf();
+        candidates.push(SkillCandidate {
+            name: metadata.0,
+            description: metadata.1,
+            relative_path: if relative_path.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                relative_path
+            },
+        });
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(current)
+        .with_context(|| format!("failed to read directory {}", current.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", current.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        if file_type.is_dir() {
+            discover_skill_candidates_inner(root, &entry.path(), max_depth, depth + 1, candidates)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_skipped_discovery_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, ".git" | "node_modules" | ".sksync"))
+}
+
+fn read_skill_metadata(path: &Path) -> Result<(String, String)> {
+    let skill_md = path.join("SKILL.md");
+    let content = fs::read_to_string(&skill_md)
+        .with_context(|| format!("failed to read {}", skill_md.display()))?;
+    let frontmatter = extract_yaml_frontmatter(&content).with_context(|| {
+        format!(
+            "SKILL.md YAML frontmatter is missing: {}",
+            skill_md.display()
+        )
+    })?;
+    let frontmatter =
+        serde_yaml::from_str::<serde_yaml::Value>(frontmatter).with_context(|| {
+            format!(
+                "SKILL.md YAML frontmatter is invalid: {}",
+                skill_md.display()
+            )
+        })?;
+    let name = required_frontmatter_string(&frontmatter, &skill_md, "name")?;
+    let description = required_frontmatter_string(&frontmatter, &skill_md, "description")?;
+    Ok((name, description))
+}
+
+fn extract_yaml_frontmatter(content: &str) -> Option<&str> {
+    let content = content
+        .strip_prefix("---\r\n")
+        .or_else(|| content.strip_prefix("---\n"))?;
+    let end = content
+        .find("\n---\n")
+        .or_else(|| content.find("\n---\r\n"))?;
+    Some(&content[..end])
+}
+
+fn required_frontmatter_string(
+    frontmatter: &serde_yaml::Value,
+    skill_md: &Path,
+    field: &str,
+) -> Result<String> {
+    let value = frontmatter.get(field).with_context(|| {
+        format!(
+            "SKILL.md frontmatter field '{field}' is required: {}",
+            skill_md.display()
+        )
+    })?;
+    let value = value.as_str().with_context(|| {
+        format!(
+            "SKILL.md frontmatter field '{field}' must be a string: {}",
+            skill_md.display()
+        )
+    })?;
+    if value.trim().is_empty() {
+        bail!(
+            "SKILL.md frontmatter field '{field}' must not be empty: {}",
+            skill_md.display()
+        );
+    }
+    Ok(value.trim().to_owned())
+}
+
+fn select_skill_candidate(
+    source: &str,
+    requested_name: Option<&str>,
+    candidates: Vec<SkillCandidate>,
+) -> Result<SkillCandidate> {
+    if candidates.is_empty() {
+        bail!("no SKILL.md files found under source '{source}'");
+    }
+
+    if let Some(name) = requested_name {
+        let matches = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.name == name
+                    || candidate
+                        .relative_path
+                        .file_name()
+                        .and_then(|file_name| file_name.to_str())
+                        == Some(name)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [candidate] => Ok(candidate.clone()),
+            [] => bail!("no discovered skill named '{name}' under source '{source}'"),
+            _ => bail!("multiple discovered skills matched '{name}' under source '{source}'"),
+        };
+    }
+
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next().expect("one candidate"));
+    }
+
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "multiple skills found under source '{source}'; pass --name <skill> or use a more specific source"
+        );
+    }
+
+    let choices = candidates.into_iter().map(SkillChoice).collect::<Vec<_>>();
+    let selected = inquire::Select::new("Select skill to add", choices).prompt()?;
+    Ok(selected.0)
+}
+
+fn source_with_selected_subpath(source: &str, relative_path: &Path) -> String {
+    if relative_path == Path::new(".") {
+        return source.to_owned();
+    }
+
+    let (body, reference) = split_source_reference(source);
+    let selected = relative_path.to_string_lossy().replace('\\', "/");
+    let (body, reference) = if is_skills_sh_source_body(body) {
+        (append_skills_sh_selected_path(body, &selected), reference)
+    } else if is_plain_github_url_body(body) {
+        (
+            append_github_url_selected_path(body, &selected, reference),
+            None,
+        )
+    } else {
+        (append_path_to_source_body(body, &selected), reference)
+    };
+
+    if let Some(reference) = reference {
+        format!("{body}#{reference}")
+    } else {
+        body
+    }
+}
+
+fn split_source_reference(source: &str) -> (&str, Option<&str>) {
+    source
+        .rsplit_once('#')
+        .map_or((source, None), |(body, reference)| (body, Some(reference)))
+}
+
+fn is_skills_sh_source_body(body: &str) -> bool {
+    skills_sh_prefix(body).is_some()
+}
+
+fn append_skills_sh_selected_path(body: &str, selected: &str) -> String {
+    let Some(prefix) = skills_sh_prefix(body) else {
+        return append_path_to_source_body(body, selected);
+    };
+    let rest = body.trim_start_matches(prefix).trim_matches('/');
+    let parts = rest
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return append_path_to_source_body(body, selected);
+    }
+    let existing_path = if parts.len() > 2 {
+        Some(parts[2..].join("/"))
+    } else {
+        None
+    };
+    let selected_path = if existing_path.is_some() {
+        selected.trim_matches('/')
+    } else {
+        selected
+            .strip_prefix("skills/")
+            .unwrap_or(selected)
+            .trim_matches('/')
+    };
+    let mut result = format!("{}{}/{}", prefix, parts[0], parts[1]);
+    if let Some(existing_path) = existing_path.filter(|path| !path.is_empty()) {
+        result.push('/');
+        result.push_str(existing_path.trim_matches('/'));
+    }
+    if !selected_path.is_empty() {
+        result.push('/');
+        result.push_str(selected_path);
+    }
+    result
+}
+
+fn skills_sh_prefix(body: &str) -> Option<&'static str> {
+    [
+        "https://www.skills.sh/",
+        "http://www.skills.sh/",
+        "https://skills.sh/",
+        "http://skills.sh/",
+        "www.skills.sh/",
+        "skills.sh/",
+    ]
+    .into_iter()
+    .find(|prefix| body.starts_with(prefix))
+}
+
+fn is_plain_github_url_body(body: &str) -> bool {
+    body.trim_end_matches('/')
+        .starts_with("https://github.com/")
+        && !body.contains("/tree/")
+}
+
+fn append_github_url_selected_path(body: &str, selected: &str, reference: Option<&str>) -> String {
+    let trimmed = body.trim_end_matches('/');
+    let selected = selected.trim_matches('/');
+    if selected.is_empty() {
+        return trimmed.to_owned();
+    }
+    let reference = reference.unwrap_or("HEAD");
+    format!("{trimmed}/tree/{reference}/{selected}")
+}
+
+fn append_path_to_source_body(body: &str, selected: &str) -> String {
+    let trimmed = body.trim_end_matches('/');
+    let selected = selected.trim_matches('/');
+    if selected.is_empty() {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}/{selected}")
+    }
+}
+
 fn reject_legacy_registry_source(source: &str) -> Result<()> {
     let body = source.split('#').next().unwrap_or(source).trim();
     if body.starts_with("registry:") {
@@ -873,8 +1289,8 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, global_config_root_from_home,
-        reject_legacy_registry_source, Cli,
+        agent_target_mappings_from_config, discover_skill_candidates, global_config_root_from_home,
+        reject_legacy_registry_source, select_skill_candidate, source_with_selected_subpath, Cli,
     };
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
@@ -939,6 +1355,105 @@ mod tests {
     #[test]
     fn add_rejects_legacy_registry_source_before_writing_config() {
         assert!(reject_legacy_registry_source("registry:skills.sh/owner/repo/skill#main").is_err());
+    }
+
+    #[test]
+    fn discovers_skill_directories_under_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        std::fs::create_dir_all(root.join("skills/find-skills")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/ignored")).unwrap();
+        std::fs::write(
+            root.join("skills/find-skills/SKILL.md"),
+            "---\nname: find-skills\ndescription: Find skills\n---\n# Find skills\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/ignored/SKILL.md"),
+            "---\nname: ignored\ndescription: Ignored\n---\n# Ignored\n",
+        )
+        .unwrap();
+
+        let candidates = discover_skill_candidates(&root, 5).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "find-skills");
+        assert_eq!(candidates[0].relative_path, Path::new("skills/find-skills"));
+    }
+
+    #[test]
+    fn name_option_selects_matching_discovered_skill() {
+        let selected = select_skill_candidate(
+            "owner/repo",
+            Some("review"),
+            vec![
+                super::SkillCandidate {
+                    name: "find-skills".to_owned(),
+                    description: "Find skills".to_owned(),
+                    relative_path: PathBuf::from("skills/find-skills"),
+                },
+                super::SkillCandidate {
+                    name: "review".to_owned(),
+                    description: "Review helper".to_owned(),
+                    relative_path: PathBuf::from("skills/review"),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(selected.relative_path, Path::new("skills/review"));
+    }
+
+    #[test]
+    fn selected_subpath_is_appended_to_github_shorthand_source() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "vercel-labs/skills#main",
+                Path::new("skills/find-skills")
+            ),
+            "vercel-labs/skills/skills/find-skills#main"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_is_appended_to_github_url_as_tree_source() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://github.com/vercel-labs/skills",
+                Path::new("skills/find-skills"),
+            ),
+            "https://github.com/vercel-labs/skills/tree/HEAD/skills/find-skills"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_preserves_github_url_reference_as_tree_ref() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://github.com/vercel-labs/skills#v1",
+                Path::new("skills/find-skills"),
+            ),
+            "https://github.com/vercel-labs/skills/tree/v1/skills/find-skills"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_is_appended_to_skills_sh_source_as_skill_name() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://www.skills.sh/vercel-labs/skills",
+                Path::new("skills/find-skills"),
+            ),
+            "https://www.skills.sh/vercel-labs/skills/find-skills"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_preserves_skills_sh_parent_path() {
+        assert_eq!(
+            source_with_selected_subpath("skills.sh/owner/repo/category", Path::new("foo")),
+            "skills.sh/owner/repo/category/foo"
+        );
     }
 
     #[test]
