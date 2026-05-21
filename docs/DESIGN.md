@@ -89,20 +89,67 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 }
 ```
 
-SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。source が repo root や親ディレクトリを指す場合は配下の `SKILL.md` を探索し、1件なら自動選択、複数なら prompt で複数選択する。`--name` 指定時は一致する discovered skill を自動選択する。`skills.sh` の direct URL が実際の repo path と一致しない場合も repo root discovery で slug に一致する skill を探す。prompt の候補では skill 名を太字・シアンで表示する。`--global` 付きなら `~/.sksync/config.json` を更新する。
+SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.sksync/config.json` を更新する。
+
+#### source formats
 
 ```text
 github:owner/repo/path/to/skill#ref
 owner/repo/path/to/skill#ref
 owner/repo#ref
 https://github.com/owner/repo/tree/ref/path/to/skill
-skills.sh/owner/repo/skill-name#version
-skills.sh/owner/repo#version
-https://www.skills.sh/owner/repo/skill-name#version
+skills.sh/owner/repo/skill-name#ref
+skills.sh/owner/repo#ref
+https://www.skills.sh/owner/repo/skill-name#ref
 ./local-skill
 ```
 
-内部的には source URL transformer を順に適用し、`skills.sh` などの provider URL は GitHub の git source に変換する。`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証する。
+`registry:<host>/<package>` と `--provider` は扱わない。source URL transformer は source string から自動判定する。
+
+#### add-time discovery
+
+source が repo root や親ディレクトリを指す場合は配下の `SKILL.md` を最大 depth 5 で探索する。
+
+- direct source に `SKILL.md` がある場合はその source を使う
+- 1件だけ見つかった場合は自動選択する
+- 複数見つかった場合は TTY では複数選択 prompt を出す
+- 非対話環境で複数見つかった場合はエラーにする
+- `--name` 指定時は frontmatter `name` または directory name に一致する discovered skill を1件だけ自動選択する
+- `.git` / `node_modules` / `.sksync` は探索しない
+- prompt の候補では skill 名を太字・シアンで表示する
+
+選択した skill は、実際に見つかった subpath を反映した source として config に保存する。たとえば `owner/repo` から `skills/foo` を選んだ場合は `owner/repo/skills/foo` として保存する。
+
+#### skills.sh transformer
+
+`skills.sh` は registry ではなく GitHub source への URL transformer として扱う。
+
+```text
+https://www.skills.sh/vercel-labs/skills/find-skills
+→ https://github.com/vercel-labs/skills.git
+→ skills/find-skills
+```
+
+`skills.sh` の direct URL が実際の GitHub repo path と一致しない場合は、repo root discovery で URL slug に一致する skill を探し、実際の path を反映した source を保存する。
+
+```text
+https://www.skills.sh/mattpocock/skills/grill-me
+→ discovers skills/productivity/grill-me
+→ saved source: https://www.skills.sh/mattpocock/skills/productivity/grill-me
+```
+
+#### install validation
+
+`sksync add` / `update` / `install` で取得した skill は、destination を置き換える前に以下を検証する。
+
+- `SKILL.md` が存在する
+- `SKILL.md` がファイルである
+- YAML frontmatter が存在する
+- frontmatter に non-empty string の `name` / `description` がある
+
+検証に失敗した場合は destination を置き換えず、staging directory を削除してエラーにする。
+
+内部的には source URL transformer を順に適用し、`sksync update` は dependencies から最新を取得して lockfile を更新し、`sksync install` は lockfile があれば lockfile の source を優先して再構成する。
 
 ### agent target mapping
 
@@ -234,7 +281,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 
 - config の dependencies を元に最新または指定 version を取得する
 - Git source は取得後に exact commit SHA に解決し、lockfile に保存する
-- provider URL は Git source に変換し、resolved commit / integrity を lockfile に保存する想定
+- source URL transformer で Git source に変換された source は resolved commit / integrity を lockfile に保存する想定
 - `update` 自体は dependency 更新と lockfile 更新を主目的とし、symlink 反映は `install` / `apply` に寄せる
 
 ### `sksync remove <skill>`
@@ -262,7 +309,7 @@ agent 単位削除。
 
 - config と lockfile を読み込む
 - Git source は lockfile の commit と remote ref の HEAD を比較する
-- provider URL transformer で Git source に変換された source は Git remote ref と比較する
+- source URL transformer で Git source に変換された source は Git remote ref と比較する
 - 更新可能な skill を `current / wanted / latest / source / status` 形式で表示する
 - `--global` と `--json` をサポートする
 
