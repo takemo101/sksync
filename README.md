@@ -59,9 +59,10 @@ project mode で作成されるもの:
 global mode (`--global`) で作成されるもの:
 
 - `~/.sksync/config.json`
+- `~/.sksync/agents.json`
 - `~/.sksync/skills/`
 
-既に対象 config が存在する場合は上書きせず失敗します。
+既に対象 config が存在する場合は上書きせず失敗します。global mode で `agents.json` が既にある場合は上書きしません。
 
 ### `sksync add`
 

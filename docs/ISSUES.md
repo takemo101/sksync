@@ -337,15 +337,17 @@ lockfileと現在状態の差分を検出する。
 - project mode では `sksync.config.json` を作る
 - project mode では `.sksync/skills/` directoryを作る
 - `--global` では `~/.sksync/config.json` を作る
+- `--global` では `~/.sksync/agents.json` を作る
 - `--global` では `~/.sksync/skills/` directoryを作る
 - 既存configがある場合は上書きしない
+- 既存 `agents.json` は上書きしない
 - `--force` は別issueに回してよい
 
 **受け入れ条件**
 
 - 空ディレクトリで `sksync init` が成功する
-- temp HOME / XDG_CONFIG_HOME 配下で `sksync init --global` が成功する
-- configとskills directoryが作られる
+- temp HOME 配下で `sksync init --global` が成功する
+- config、agents mapping、skills directoryが作られる
 - 既存configがある場合は失敗する
 
 **依存**: Issue 4

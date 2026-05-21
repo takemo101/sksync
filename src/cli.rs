@@ -195,6 +195,9 @@ fn run_init(args: InitArgs) -> Result<()> {
         init_project(&current_dir)?
     };
     println!("Created {}", result.config_path.display());
+    if let Some(agent_mapping_path) = result.agent_mapping_path {
+        println!("Created {}", agent_mapping_path.display());
+    }
     println!("Created {}", result.skills_dir.display());
     Ok(())
 }
