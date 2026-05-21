@@ -41,8 +41,8 @@
 - Add cross-platform symlink/junction behavior
 - Preserve lockfile reproducibility across machines
 
-## Phase 5: Registry or source integrations
+## Phase 5: Source integrations
 
-- Support additional registry providers beyond `skills.sh`
-- Support additional `registry:<host>/<package>#version` providers
-- Explore GitLab / gist sources after GitHub/local/registry are stable
+- Support additional source URL transformers beyond `skills.sh`
+- Keep `registry:<host>/<package>#version` as a legacy compatibility path where useful
+- Explore GitLab / gist sources after GitHub/local/source URL transforms are stable

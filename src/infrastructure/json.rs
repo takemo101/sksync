@@ -14,6 +14,7 @@ use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
     LockfileStore, LockfileStoreError,
 };
+use crate::application::registry::RegistryProviders;
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
@@ -471,12 +472,8 @@ fn parse_install_source_string(
     }
 
     let (body, reference) = split_ref(value);
-    if let Some(package) = parse_skills_sh_package(body) {
-        return Ok(InstallSource::Registry(RegistryInstallSource {
-            registry: "skills.sh".to_owned(),
-            package,
-            reference: reference.map(str::to_owned),
-        }));
+    if let Some(transformed) = RegistryProviders::default().transform_url(body, reference) {
+        return Ok(InstallSource::Git(transformed));
     }
 
     if let Some(parsed) = parse_github_tree_url(value) {
@@ -516,19 +513,6 @@ fn parse_install_source_string(
         skill: skill.to_owned(),
         message: format!("unsupported source '{value}'"),
     })
-}
-
-fn parse_skills_sh_package(value: &str) -> Option<String> {
-    let body = value
-        .strip_prefix("https://skills.sh/")
-        .or_else(|| value.strip_prefix("http://skills.sh/"))
-        .or_else(|| value.strip_prefix("skills.sh/"))?;
-    let package = body.trim_matches('/');
-    if package.split('/').filter(|part| !part.is_empty()).count() >= 2 {
-        Some(package.to_owned())
-    } else {
-        None
-    }
 }
 
 fn split_ref(value: &str) -> (&str, Option<&str>) {
@@ -1344,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_sh_shorthand_source_parses_as_registry_source() {
+    fn skills_sh_shorthand_source_parses_as_git_source() {
         let raw = serde_json::from_str::<RawConfig>(
             r#"{
               "skillDir": "./.sksync/skills",
@@ -1361,13 +1345,40 @@ mod tests {
         let config = raw
             .resolve_with_default_scope(Scope::Project)
             .expect("config resolves");
-        let Some(InstallSource::Registry(registry)) = &config.skills[0].install_source else {
-            panic!("expected registry install source");
+        let Some(InstallSource::Git(git)) = &config.skills[0].install_source else {
+            panic!("expected git install source");
         };
 
-        assert_eq!(registry.registry, "skills.sh");
-        assert_eq!(registry.package, "owner/repo/skills/review");
-        assert_eq!(registry.reference.as_deref(), Some("main"));
+        assert_eq!(git.url, "https://github.com/owner/repo.git");
+        assert_eq!(git.path, Path::new("skills/review"));
+        assert_eq!(git.reference.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn skills_sh_url_source_parses_as_git_source() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "find-skills": {
+                  "source": "https://www.skills.sh/vercel-labs/skills/find-skills#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect("config resolves");
+        let Some(InstallSource::Git(git)) = &config.skills[0].install_source else {
+            panic!("expected git install source");
+        };
+
+        assert_eq!(git.url, "https://github.com/vercel-labs/skills.git");
+        assert_eq!(git.path, Path::new("find-skills"));
+        assert_eq!(git.reference.as_deref(), Some("main"));
     }
 
     #[test]
