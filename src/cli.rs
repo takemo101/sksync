@@ -77,7 +77,7 @@ struct InitArgs {
 
 #[derive(Debug, Args)]
 struct AddArgs {
-    /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, skills.sh/owner/repo/path#ref, https://www.skills.sh/owner/repo/path#ref, or ./local-skill.
+    /// Skill source, e.g. owner/repo/path#ref, github:owner/repo/path#ref, skills.sh/owner/repo/skill-name#ref, https://www.skills.sh/owner/repo/skill-name#ref, or ./local-skill.
     source: String,
     /// Agent to link into. Can be passed multiple times.
     #[arg(short, long = "agent", required = true)]
@@ -753,7 +753,7 @@ fn reject_legacy_registry_source(source: &str) -> Result<()> {
     let body = source.split('#').next().unwrap_or(source).trim();
     if body.starts_with("registry:") {
         bail!(
-            "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/path"
+            "registry sources are not supported; use a provider URL such as https://www.skills.sh/owner/repo/skill-name"
         );
     }
     Ok(())
