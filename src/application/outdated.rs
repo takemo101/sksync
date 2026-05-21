@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use super::config::{InstallSource, ResolvedConfig};
+use crate::application::registry::RegistryProviders;
 use crate::domain::lockfile::Lockfile;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,9 +70,7 @@ pub fn collect_outdated(
                         "registry:{}/{}",
                         config_registry.registry, config_registry.package
                     );
-                    if let Some(repo) =
-                        skills_sh_repo_url(&config_registry.registry, &config_registry.package)
-                    {
+                    if let Some(repo) = RegistryProviders::default().git_repo_url(config_registry) {
                         let wanted_ref = config_registry.reference.as_deref().unwrap_or("HEAD");
                         let latest = resolver
                             .git_remote_rev(&repo, wanted_ref)
@@ -115,21 +114,6 @@ pub fn collect_outdated(
         .collect();
 
     OutdatedReport { rows }
-}
-
-fn skills_sh_repo_url(registry: &str, package: &str) -> Option<String> {
-    let registry = registry.trim().to_ascii_lowercase();
-    if registry != "skills.sh" && registry != "skills-sh" {
-        return None;
-    }
-    let parts = package
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if parts.len() < 2 {
-        return None;
-    }
-    Some(format!("https://github.com/{}/{}.git", parts[0], parts[1]))
 }
 
 #[cfg(test)]

@@ -12,4 +12,5 @@ pub mod list;
 pub mod outdated;
 pub mod plan;
 pub mod ports;
+pub mod registry;
 pub mod update;
