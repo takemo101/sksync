@@ -312,8 +312,8 @@ agent 単位削除。
 | intent         | 質問する内容                                 | 実行する usecase  |
 | -------------- | -------------------------------------------- | ----------------- |
 | skill 追加     | source, name override, agent, global scope   | `add`             |
-| skill 削除     | skill, keep files, config only, global scope | `remove`          |
-| agent から外す | skill, agent, global scope                   | `remove --agent`  |
+| skill 削除     | project/global scope, configured skill list, keep files, config only | `remove`          |
+| agent から外す | project/global scope, configured skill list, configured agent list   | `remove --agent`  |
 | 状態確認       | global scope, 出力詳細                       | `list` / `check`  |
 | apply          | global scope, force, 確認                    | `plan` -> `apply` |
 

@@ -115,8 +115,9 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 
 1. prompt / wizard の intent 選択を実装
 2. add / remove / remove-agent / check / apply に必要な値を順番に質問する
-3. 破壊的操作前に summary / dry-run を表示する
-4. 明示確認後に CLI と同じ application usecase を呼ぶ
+3. remove / remove-agent は scope 選択後に config 由来の skill list / agent list から選ばせる
+4. 破壊的操作前に summary / dry-run を表示する
+5. 明示確認後に CLI と同じ application usecase を呼ぶ
 
 完了条件:
 
