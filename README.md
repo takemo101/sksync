@@ -117,14 +117,14 @@ global mode (`--global`) で作成されるもの:
 
 bundled mapping には SkillKit-compatible な agent entries を含めています。例:
 
-| Agent | Global targetDir | Project targetDir |
-| --- | --- | --- |
-| `pi` | `~/.pi/agent/skills` | `.pi/agent/skills` |
-| `claude-code` | `~/.claude/skills` | `.claude/skills` |
-| `codex` | `~/.codex/skills` | `.codex/skills` |
-| `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
-| `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
-| `antigravity` | `~/.gemini/antigravity/skills` | `.agents/skills` |
+| Agent                   | Global targetDir               | Project targetDir  |
+| ----------------------- | ------------------------------ | ------------------ |
+| `pi`                    | `~/.pi/agent/skills`           | `.pi/agent/skills` |
+| `claude-code`           | `~/.claude/skills`             | `.claude/skills`   |
+| `codex`                 | `~/.codex/skills`              | `.codex/skills`    |
+| `gemini` / `gemini-cli` | `~/.gemini/skills`             | `.gemini/skills`   |
+| `opencode`              | `~/.config/opencode/skills`    | `.opencode/skills` |
+| `antigravity`           | `~/.gemini/antigravity/skills` | `.agents/skills`   |
 
 Antigravity は公式仕様に合わせ、workspace default の `.agents/skills` を使います。`.agent/skills` は Antigravity 側では後方互換として扱われますが、sksync の bundled default は `.agents/skills` です。
 
@@ -170,6 +170,31 @@ cargo run -- add ./local-skill --agent pi --agent gemini
 | `./local-skill`, `../skills/foo`, `/abs/path`          | local directory。相対 path は config file のある directory から解決します。                     |
 
 `registry:<host>/<package>` と `--provider` はサポートしていません。source URL transformer は source 文字列から自動判定します。
+
+#### Private repositories
+
+private Git repository は sksync 独自の token 管理ではなく、ローカルの `git` 認証設定に委譲します。つまり、その環境で `git clone <repo>` が通る source であれば sksync でも利用できます。
+
+- GitHub shorthand (`owner/repo/path#ref`) は `https://github.com/owner/repo.git` に変換します。private repo の場合は Git credential helper / GitHub CLI / PAT などで HTTPS 認証済みにしてください。
+- SSH URL を使いたい場合は structured source を使います。
+
+```json
+{
+  "dependencies": {
+    "my-skill": {
+      "source": {
+        "provider": "git",
+        "url": "git@github.com:org/private-skills.git",
+        "path": "skills/my-skill",
+        "ref": "main"
+      },
+      "agents": ["pi"]
+    }
+  }
+}
+```
+
+sksync は `--token` / `--github-token` のような認証オプションを持たず、credentials を config に保存しません。認証エラーは underlying `git` command のエラーとして表示されます。`skills.sh` URL は基本的に public source 前提です。
 
 #### Discovery behavior
 
