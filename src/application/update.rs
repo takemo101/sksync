@@ -54,6 +54,18 @@ pub fn update_dependencies(
     Ok(report)
 }
 
+pub fn apply_update_report_sources(config: &mut ResolvedConfig, report: &UpdateReport) {
+    for updated in &report.updated {
+        if let Some(skill) = config
+            .skills
+            .iter_mut()
+            .find(|skill| skill.name.as_str() == updated.name)
+        {
+            skill.install_source = Some(updated.resolved_source.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::update_dependencies;
