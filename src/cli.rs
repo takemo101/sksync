@@ -16,7 +16,9 @@ use crate::application::discovery::{
 };
 use crate::application::init::{init_global, init_project};
 use crate::application::list::list_skills;
-use crate::application::outdated::{collect_outdated, RemoteRefError, RemoteRefResolver};
+use crate::application::outdated::{
+    collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
+};
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
@@ -210,11 +212,17 @@ fn run_init(args: InitArgs) -> Result<()> {
     } else {
         init_project(&current_dir)?
     };
-    println!("Created {}", result.config_path.display());
+    print_success(format!("Created config: {}", result.config_path.display()));
     if let Some(agent_mapping_path) = result.agent_mapping_path {
-        println!("Created {}", agent_mapping_path.display());
+        print_success(format!(
+            "Created agent mappings: {}",
+            agent_mapping_path.display()
+        ));
     }
-    println!("Created {}", result.skills_dir.display());
+    print_success(format!(
+        "Created skills directory: {}",
+        result.skills_dir.display()
+    ));
     Ok(())
 }
 
@@ -250,7 +258,11 @@ fn run_add(args: AddArgs) -> Result<()> {
             },
         )?;
         for added in &report.added {
-            println!("Added {} to {}", added.skill_name, config_path.display());
+            print_success(format!(
+                "Added dependency: {} ({})",
+                added.skill_name,
+                config_path.display()
+            ));
         }
         print_update_report(report.update_report);
         print_plan(&report.plan);
@@ -398,7 +410,7 @@ fn remove_entire_skill(
             FileLockfileStore::new(lockfile_path).write(lockfile)?;
         }
     }
-    println!("Removed {}", args.skill);
+    print_success(format!("Removed skill: {}", args.skill));
     Ok(())
 }
 
@@ -408,16 +420,19 @@ fn remove_installed_skill_dir(source: &Path, skill_dir: &Path) -> Result<()> {
     }
 
     if !is_managed_skill_dir(source, skill_dir)? {
-        println!(
-            "Skipped removing unmanaged skill files {}",
+        print_info(format!(
+            "Skipped unmanaged skill files: {}",
             source.display()
-        );
+        ));
         return Ok(());
     }
 
     fs::remove_dir_all(source)
         .with_context(|| format!("failed to remove installed skill {}", source.display()))?;
-    println!("Removed {}", source.display());
+    print_success(format!(
+        "Removed installed skill files: {}",
+        source.display()
+    ));
     Ok(())
 }
 
@@ -468,16 +483,16 @@ fn remove_skill_agents(
         }
     }
 
-    println!(
-        "Removed {} from agent(s): {}",
+    print_success(format!(
+        "Detached {} from agent(s): {}",
         args.skill,
         requested_agent_names.join(", ")
-    );
+    ));
     if remaining_agents.is_empty() {
-        println!(
+        print_info(format!(
             "No agents remain for {}; removed dependency entry",
             args.skill
-        );
+        ));
     }
     Ok(())
 }
@@ -523,16 +538,16 @@ fn remove_managed_symlink_target(source: &Path, target: &Path) -> Result<()> {
             if symlink_points_to_locked_source(target, source)? {
                 fs::remove_file(target)
                     .with_context(|| format!("failed to remove symlink {}", target.display()))?;
-                println!("Removed symlink {}", target.display());
+                print_success(format!("Removed symlink: {}", target.display()));
             } else {
-                println!(
-                    "Skipped symlink not pointing to locked source {}",
+                print_info(format!(
+                    "Skipped symlink not pointing to locked source: {}",
                     target.display()
-                );
+                ));
             }
         }
         Ok(_) => {
-            println!("Skipped non-symlink target {}", target.display());
+            print_info(format!("Skipped non-symlink target: {}", target.display()));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -593,15 +608,9 @@ fn run_outdated(args: OutdatedArgs) -> Result<()> {
             .collect::<Vec<_>>();
         println!("{}", serde_json::to_string_pretty(&json_rows)?);
     } else if rows.is_empty() {
-        println!("All skills are up to date.");
+        print_success("All skills are up to date.");
     } else {
-        println!("Skill\tCurrent\tWanted\tLatest\tSource\tStatus");
-        for row in rows {
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                row.skill, row.current, row.wanted, row.latest, row.source, row.status
-            );
-        }
+        print_outdated_rows(&rows);
     }
     Ok(())
 }
@@ -653,7 +662,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
         ApplyOptions { force: args.force },
     )?;
     print_plan(&plan);
-    println!("Wrote sksync-lock.json");
+    print_lockfile_written(lockfile_path_for(args.global, &current_dir)?);
 
     Ok(())
 }
@@ -681,7 +690,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
         ApplyOptions { force: false },
     )?;
     print_plan(&plan);
-    println!("Wrote sksync-lock.json");
+    print_lockfile_written(lockfile_path_for(args.global, &current_dir)?);
     Ok(())
 }
 
@@ -693,22 +702,25 @@ fn run_update(args: UpdateArgs) -> Result<()> {
     print_update_report(report);
     let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
-    FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?).write(&lockfile)?;
-    println!("Wrote sksync-lock.json");
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    FileLockfileStore::new(&lockfile_path).write(&lockfile)?;
+    print_lockfile_written(lockfile_path);
     Ok(())
 }
 
 fn print_update_report(report: crate::application::update::UpdateReport) {
+    if report.updated.is_empty() && report.skipped.is_empty() {
+        print_info("No dependency updates.");
+        return;
+    }
+
     for updated in report.updated {
-        println!(
-            "Updated {} from {} -> {}",
-            updated.name,
-            updated.source,
-            updated.destination.display()
-        );
+        print_success(format!("Updated skill: {}", updated.name));
+        print_detail(format!("source: {}", updated.source));
+        print_detail(format!("destination: {}", updated.destination.display()));
     }
     for skipped in report.skipped {
-        println!("Skipped {skipped}: no dependency source");
+        print_info(format!("Skipped {skipped}: no dependency source"));
     }
 }
 
@@ -951,12 +963,88 @@ fn reject_legacy_registry_source(source: &str) -> Result<()> {
 
 fn print_plan(plan: &LinkPlan) {
     if plan.is_empty() {
-        println!("No actions planned.");
+        print_success("No link changes planned.");
     } else {
+        print_section("Link plan");
         for line in plan.display_lines() {
-            println!("{line}");
+            println!("  - {line}");
         }
     }
+}
+
+fn print_outdated_rows(rows: &[OutdatedRow]) {
+    print_section("Outdated skills");
+    print_table(
+        &["Skill", "Current", "Wanted", "Latest", "Source", "Status"],
+        &rows
+            .iter()
+            .map(|row| {
+                vec![
+                    row.skill.clone(),
+                    row.current.clone(),
+                    row.wanted.clone(),
+                    row.latest.clone(),
+                    row.source.clone(),
+                    row.status.clone(),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    );
+}
+
+fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            if let Some(width) = widths.get_mut(index) {
+                *width = (*width).max(cell.len());
+            }
+        }
+    }
+
+    print_table_row(headers.iter().copied(), &widths);
+    let separators = widths
+        .iter()
+        .map(|width| "-".repeat(*width))
+        .collect::<Vec<_>>();
+    print_table_row(separators.iter().map(String::as_str), &widths);
+    for row in rows {
+        print_table_row(row.iter().map(String::as_str), &widths);
+    }
+}
+
+fn print_table_row<'a>(cells: impl IntoIterator<Item = &'a str>, widths: &[usize]) {
+    let cells = cells.into_iter().collect::<Vec<_>>();
+    for (index, cell) in cells.iter().enumerate() {
+        if index > 0 {
+            print!("  ");
+        }
+        print!("{cell:<width$}", width = widths[index]);
+    }
+    println!();
+}
+
+fn print_lockfile_written(path: impl AsRef<Path>) {
+    print_success(format!("Wrote lockfile: {}", path.as_ref().display()));
+}
+
+fn print_section(label: &str) {
+    println!("\n{label}");
+}
+
+fn print_success(message: impl AsRef<str>) {
+    println!("✓ {}", message.as_ref());
+}
+
+fn print_info(message: impl AsRef<str>) {
+    println!("ℹ {}", message.as_ref());
+}
+
+fn print_detail(message: impl AsRef<str>) {
+    println!("  {}", message.as_ref());
 }
 
 fn build_lockfile_from_plan(
@@ -1022,13 +1110,14 @@ fn run_check(args: CheckArgs) -> Result<()> {
         &FileSystemLinkStore,
     );
 
-    for line in report.display_lines() {
-        println!("{line}");
-    }
-
     if report.is_success() {
+        print_success("Check passed.");
         Ok(())
     } else {
+        print_section("Check problems");
+        for line in report.display_lines() {
+            println!("  ✗ {line}");
+        }
         bail!("check found {} problem(s)", report.problems.len())
     }
 }
@@ -1051,6 +1140,7 @@ fn run_list(args: ListArgs) -> Result<()> {
         &target_resolver,
     );
 
+    print_section("Skills");
     for line in report.display_lines() {
         println!("{line}");
     }
