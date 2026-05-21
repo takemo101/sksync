@@ -55,6 +55,34 @@ impl fmt::Display for ConfigScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveMode {
+    Normal,
+    KeepFiles,
+    ConfigOnly,
+}
+
+impl RemoveMode {
+    fn append_args(self, args: &mut Vec<String>) {
+        match self {
+            Self::Normal => {}
+            Self::KeepFiles => args.push("--keep-files".to_owned()),
+            Self::ConfigOnly => args.push("--config-only".to_owned()),
+        }
+    }
+}
+
+impl fmt::Display for RemoveMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Normal => "通常削除（オプションなし・symlink も削除）",
+            Self::KeepFiles => "skill 本体を残す（--keep-files）",
+            Self::ConfigOnly => "config / lockfile だけ変更（--config-only）",
+        };
+        formatter.write_str(label)
+    }
+}
+
 pub fn run(project_root: PathBuf) -> Result<()> {
     println!("sksync prompt TUI");
     println!("Project: {}", project_root.display());
@@ -114,19 +142,13 @@ fn run_remove_flow(project_root: &PathBuf) -> Result<()> {
     let scope = prompt_config_scope("どの config から削除しますか?")?;
     let config = load_config_for_scope(project_root, scope)?;
     let skill = prompt_skill_from_config(&config, "削除する skill を選択してください")?;
-    let keep_files = prompt_confirm("skill 本体を残しますか?", false)?;
-    let config_only = prompt_confirm("config / lockfile だけ変更しますか?", false)?;
+    let mode = prompt_remove_mode()?;
 
     let mut args = vec!["remove".to_owned(), skill];
     if scope.is_global() {
         args.push("--global".to_owned());
     }
-    if keep_files {
-        args.push("--keep-files".to_owned());
-    }
-    if config_only {
-        args.push("--config-only".to_owned());
-    }
+    mode.append_args(&mut args);
 
     confirm_and_run(project_root, "削除を実行しますか?", args)
 }
@@ -203,6 +225,20 @@ fn prompt_config_scope(message: &str) -> Result<ConfigScope> {
     Select::new(message, vec![ConfigScope::Project, ConfigScope::Global])
         .prompt()
         .context("failed to read config scope")
+}
+
+fn prompt_remove_mode() -> Result<RemoveMode> {
+    Select::new(
+        "削除モードを選択してください",
+        vec![
+            RemoveMode::Normal,
+            RemoveMode::KeepFiles,
+            RemoveMode::ConfigOnly,
+        ],
+    )
+    .with_help_message("通常削除は CLI の `sksync remove <skill>` と同じです")
+    .prompt()
+    .context("failed to read remove mode")
 }
 
 fn prompt_skill_from_config(config: &ResolvedConfig, message: &str) -> Result<String> {

@@ -402,7 +402,7 @@ CLI MVPで作ったcore logicを質問形式TUIから実行できるようにす
 **作業内容**
 
 - add: source / name override / agent / global scope を質問する
-- remove: project/global scope を先に選び、config 由来の skill list から skill を選ばせ、keep-files / config-only を質問する
+- remove: project/global scope を先に選び、config 由来の skill list から skill を選ばせ、通常削除（オプションなし） / keep-files / config-only の削除モードを選ばせる
 - remove-agent: project/global scope を先に選び、config 由来の skill list と選択 skill の agent list から対象を選ばせる
 - check/list: scope と表示詳細を質問する
 - apply: plan summary を表示し、確認後に apply する
