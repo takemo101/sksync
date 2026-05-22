@@ -1,6 +1,6 @@
-use crate::application::config::{GitInstallSource, InstallSource};
 use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
 use crate::domain::skill_manifest::parse_skill_manifest;
+use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::infrastructure::git::{GitClient, GitCommandError};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -230,8 +230,8 @@ fn staging_dir(skill_dir: &Path, skill_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::FileSystemSkillInstaller;
-    use crate::application::config::{GitInstallSource, InstallSource};
     use crate::application::ports::{SkillInstallError, SkillInstaller};
+    use crate::domain::source::{GitInstallSource, InstallSource};
     use std::path::Path;
     use std::process::Command;
 

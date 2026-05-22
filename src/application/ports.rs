@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::config::{ConfigResolveError, InstallSource, ResolvedConfig};
+use super::config::{ConfigResolveError, ResolvedConfig};
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{Digest, Lockfile};
 use crate::domain::scope::Scope;
 use crate::domain::skill::SourcePath;
+use crate::domain::source::InstallSource;
 use crate::domain::target::TargetPath;
 
 #[derive(Debug, Error)]

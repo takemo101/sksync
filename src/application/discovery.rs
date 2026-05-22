@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
-use crate::application::config::{GitInstallSource, InstallSource};
 use crate::domain::skill_manifest::parse_skill_manifest;
+use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::infrastructure::git::GitClient;
 
 #[derive(Debug, Clone)]

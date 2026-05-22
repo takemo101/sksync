@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use super::config::InstallSource;
 use super::config::ResolvedConfig;
 use super::ports::{SkillInstallError, SkillInstaller};
+use crate::domain::source::InstallSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateReport {
@@ -69,11 +69,12 @@ pub fn apply_update_report_sources(config: &mut ResolvedConfig, report: &UpdateR
 #[cfg(test)]
 mod tests {
     use super::update_dependencies;
-    use crate::application::config::{InstallSource, ResolvedAgent, ResolvedConfig, ResolvedSkill};
+    use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
     use crate::domain::agent::AgentKind;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::InstallSource;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};

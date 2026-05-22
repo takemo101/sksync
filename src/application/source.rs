@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::application::config::{GitInstallSource, InstallSource};
+use crate::domain::source::{GitInstallSource, InstallSource};
 
 pub trait SourceUrlTransformer {
     fn transform_url(&self, source: &str, reference: Option<&str>) -> Option<GitInstallSource>;
@@ -188,7 +188,7 @@ mod tests {
     use super::{
         parse_install_source_string, SkillsShProvider, SourceParseError, SourceUrlTransformer,
     };
-    use crate::application::config::InstallSource;
+    use crate::domain::source::InstallSource;
     use std::path::Path;
 
     #[test]
