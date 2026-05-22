@@ -570,6 +570,41 @@ impl DependencyConfigStore for FileDependencyConfigStore {
         self.write_value(&value)
     }
 
+    fn add_dependency_agents(
+        &self,
+        skill_name: &str,
+        agents: &[String],
+    ) -> Result<Vec<String>, DependencyConfigStoreError> {
+        let mut value = self.load_or_default()?;
+        let dependencies = dependencies_object_mut(&mut value)?;
+        let dependency = dependencies.get_mut(skill_name).ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{skill_name} must exist before attaching agents"
+            ))
+        })?;
+        let mut merged_agents = dependency_agents(Some(dependency), skill_name)?;
+        let mut normalized_existing_agents = merged_agents
+            .iter()
+            .map(|agent| normalize_agent_name(agent))
+            .collect::<BTreeSet<_>>();
+        for agent in agents {
+            let normalized = normalize_agent_name(agent);
+            if normalized_existing_agents.insert(normalized.clone()) {
+                merged_agents.push(normalized);
+            }
+        }
+        dependency
+            .as_object_mut()
+            .ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField(format!(
+                    "dependencies.{skill_name} must be an object"
+                ))
+            })?
+            .insert("agents".to_owned(), json!(merged_agents.clone()));
+        self.write_value(&value)?;
+        Ok(merged_agents)
+    }
+
     fn remove_dependency(&self, skill_name: &str) -> Result<(), DependencyConfigStoreError> {
         if !self.path.exists() {
             return Ok(());
@@ -1154,6 +1189,49 @@ mod tests {
             &std::fs::read_to_string(&config_path).expect("read config"),
         )
         .expect("parse config");
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi", "claude-code"])
+        );
+    }
+
+    #[test]
+    fn dependency_config_store_adds_agents_without_rewriting_source() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "review": {
+                  "source": {
+                    "provider": "git",
+                    "repo": "git@example.com:team/private.git",
+                    "ref": "main",
+                    "path": "skills/review"
+                  },
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+
+        let agents = store
+            .add_dependency_agents("review", &["claude-code".to_owned()])
+            .expect("attach agent");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(agents, vec!["pi", "claude-code"]);
+        assert!(value["dependencies"]["review"]["source"].is_object());
+        assert_eq!(
+            value["dependencies"]["review"]["source"]["repo"],
+            "git@example.com:team/private.git"
+        );
         assert_eq!(
             value["dependencies"]["review"]["agents"],
             serde_json::json!(["pi", "claude-code"])

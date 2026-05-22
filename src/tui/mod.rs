@@ -14,6 +14,7 @@ use crate::infrastructure::json::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
     AddSkill,
+    AttachAgent,
     RemoveSkill,
     RemoveAgent,
     Status,
@@ -25,6 +26,7 @@ impl fmt::Display for Intent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
             Self::AddSkill => "Add skill",
+            Self::AttachAgent => "Attach skill to agent",
             Self::RemoveSkill => "Remove skill",
             Self::RemoveAgent => "Detach skill from agent",
             Self::Status => "Show status",
@@ -94,6 +96,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             "What would you like to do?",
             vec![
                 Intent::AddSkill,
+                Intent::AttachAgent,
                 Intent::RemoveSkill,
                 Intent::RemoveAgent,
                 Intent::Status,
@@ -106,6 +109,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
 
         match intent {
             Intent::AddSkill => run_add_flow(&project_root)?,
+            Intent::AttachAgent => run_attach_agent_flow(&project_root)?,
             Intent::RemoveSkill => run_remove_flow(&project_root)?,
             Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
             Intent::Status => run_status_flow(&project_root)?,
@@ -139,6 +143,28 @@ fn run_add_flow(project_root: &Path) -> Result<()> {
     }
 
     confirm_and_run(project_root, "Run this command?", args)
+}
+
+fn run_attach_agent_flow(project_root: &Path) -> Result<()> {
+    let scope = prompt_config_scope("Which config should be updated?")?;
+    let config = load_config_for_scope(project_root, scope)?;
+    let skill = prompt_skill_from_config(&config, "Select the skill to attach to agent(s)")?;
+    let agents = prompt_agents_not_for_skill(&config, &skill, scope)?;
+
+    let mut args = vec!["attach".to_owned(), skill];
+    for agent in agents {
+        args.push("--agent".to_owned());
+        args.push(agent);
+    }
+    if scope.is_global() {
+        args.push("--global".to_owned());
+    }
+
+    confirm_and_run(
+        project_root,
+        "Attach this skill to the selected agent(s)?",
+        args,
+    )
 }
 
 fn run_remove_flow(project_root: &Path) -> Result<()> {
@@ -279,24 +305,58 @@ fn configured_skill_names(config: &ResolvedConfig) -> Result<Vec<String>> {
     Ok(skills)
 }
 
+fn prompt_agents_not_for_skill(
+    config: &ResolvedConfig,
+    skill_name: &str,
+    scope: ConfigScope,
+) -> Result<Vec<String>> {
+    let configured_agents = configured_agents_for_skill(config, skill_name)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let available_agents = agent_options_for_scope(scope)?
+        .into_iter()
+        .filter(|agent| !configured_agents.contains(agent))
+        .collect::<Vec<_>>();
+    if available_agents.is_empty() {
+        bail!("skill {skill_name} is already attached to every available agent");
+    }
+
+    let selected = MultiSelect::new("Select agent(s) to attach to", available_agents)
+        .with_help_message("Use space to select, enter to confirm")
+        .prompt()
+        .context("failed to read available agent selection")?;
+    if selected.is_empty() {
+        bail!("at least one agent is required");
+    }
+    Ok(selected)
+}
+
 fn prompt_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Result<Vec<String>> {
+    let agents = configured_agents_for_skill(config, skill_name)?;
+    if agents.is_empty() {
+        bail!("skill {skill_name} has no configured agents");
+    }
+    let selected = MultiSelect::new("Select agent(s) to detach from", agents)
+        .with_help_message("Use space to select, enter to confirm")
+        .prompt()
+        .context("failed to read configured agent selection")?;
+    if selected.is_empty() {
+        bail!("at least one agent is required");
+    }
+    Ok(selected)
+}
+
+fn configured_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Result<Vec<String>> {
     let skill = config
         .skills
         .iter()
         .find(|skill| skill.name.as_str() == skill_name)
         .with_context(|| format!("configured skill not found: {skill_name}"))?;
-    let agents = skill
+    Ok(skill
         .agents
         .iter()
         .map(|agent| agent.as_str().to_owned())
-        .collect::<Vec<_>>();
-    if agents.is_empty() {
-        bail!("skill {skill_name} has no configured agents");
-    }
-    MultiSelect::new("Select agent(s) to detach from", agents)
-        .with_help_message("Use space to select, enter to confirm")
-        .prompt()
-        .context("failed to read configured agent selection")
+        .collect())
 }
 
 fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<ResolvedConfig> {

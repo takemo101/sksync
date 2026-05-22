@@ -57,6 +57,8 @@ enum Command {
     Init(InitArgs),
     /// Add a dependency, update it, and apply symlinks.
     Add(AddArgs),
+    /// Attach an existing dependency-managed skill to more agents.
+    Attach(AttachArgs),
     /// Remove a dependency, installed skill, managed symlinks, and lock entry.
     Remove(RemoveArgs),
     /// Show dependencies that can be updated.
@@ -99,6 +101,18 @@ struct AddArgs {
     #[arg(long)]
     name: Option<String>,
     /// Write ~/.sksync/config.json instead of ./sksync.config.json.
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
+struct AttachArgs {
+    /// Existing dependency-managed skill name to attach.
+    skill: String,
+    /// Agent to link into. Can be passed multiple times.
+    #[arg(short, long = "agent", required = true)]
+    agents: Vec<String>,
+    /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
 }
@@ -198,6 +212,7 @@ fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Init(args) => run_init(args),
         Command::Add(args) => run_add(args),
+        Command::Attach(args) => run_attach(args),
         Command::Remove(args) => run_remove(args),
         Command::Outdated(args) => run_outdated(args),
         Command::Plan(args) => run_plan(args),
@@ -290,6 +305,59 @@ fn run_add(args: AddArgs) -> Result<()> {
             )));
         }
         return Err(error.context("sksync add failed; restored previous config"));
+    }
+
+    Ok(())
+}
+
+fn run_attach(args: AttachArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let attach_result = (|| -> Result<()> {
+        let store =
+            FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+        let agents = store.add_dependency_agents(&args.skill, &args.agents)?;
+        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+        let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+        apply_update_report_sources(&mut config, &update_report);
+        let fs_store = FileSystemLinkStore;
+        let root_dir = if args.global {
+            config_root_for_global()?
+        } else {
+            current_dir.clone()
+        };
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+        let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+        let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+        apply_link_plan(
+            &plan,
+            &lockfile,
+            &fs_store,
+            &FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: true,
+            },
+        )?;
+        print_success(format!(
+            "Attached dependency: {} -> {}",
+            args.skill,
+            agents.join(", ")
+        ));
+        print_update_report(update_report);
+        print_plan(&plan);
+        Ok(())
+    })();
+
+    if let Err(error) = attach_result {
+        if let Err(restore_error) = config_backup.restore() {
+            return Err(error.context(format!(
+                "sksync attach failed and config rollback failed: {restore_error}"
+            )));
+        }
+        return Err(error.context("sksync attach failed; restored previous config"));
     }
 
     Ok(())
@@ -1426,8 +1494,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "init", "add", "remove", "outdated", "plan", "apply", "install", "update", "check",
-                "list", "wizard",
+                "init", "add", "attach", "remove", "outdated", "plan", "apply", "install",
+                "update", "check", "list", "wizard",
             ]
         );
     }
@@ -1447,6 +1515,13 @@ mod tests {
     #[test]
     fn init_agents_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--agents"]).expect("init --agents should parse");
+    }
+
+    #[test]
+    fn attach_requires_agent() {
+        assert!(Cli::try_parse_from(["sksync", "attach", "review"]).is_err());
+        Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi"])
+            .expect("attach --agent should parse");
     }
 
     #[test]

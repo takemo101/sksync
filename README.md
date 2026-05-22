@@ -71,6 +71,7 @@ cargo run -- init
 cargo run -- init --global
 cargo run -- init --agents
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- attach skill-name --agent gemini
 cargo run -- remove skill-name
 cargo run -- outdated
 cargo run -- install
@@ -243,6 +244,15 @@ https://www.skills.sh/mattpocock/skills/grill-me
 cargo run -- add owner/repo/path/to/skill --agent pi --global
 ```
 
+### `sksync attach`
+
+既存の dependency-managed skill を追加 agent に紐づけ、既存 source 表現を保ったまま skill 取得と symlink 作成まで実行します。
+
+```bash
+cargo run -- attach cuekit-dogfood --agent claude-code
+cargo run -- attach cuekit-dogfood --agent pi --agent gemini --global
+```
+
 ### `sksync remove`
 
 指定した skill を dependency config / installed skill directory / managed symlink / lockfile から削除します。installed skill directory は configured `skillDir` 配下の sksync-managed directory の場合だけ削除し、local / legacy の unmanaged source directory は削除しません。
@@ -331,7 +341,7 @@ cargo run -- list --global
 
 ### `sksync wizard`
 
-質問形式の prompt wizard で、add / remove / list+check / plan+apply を対話的に実行できます。`ask` と `tui` は互換 alias です。
+質問形式の prompt wizard で、add / attach / detach / remove / list+check / plan+apply を対話的に実行できます。`ask` と `tui` は互換 alias です。
 
 ```bash
 cargo run -- wizard
