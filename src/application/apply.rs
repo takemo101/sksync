@@ -7,6 +7,7 @@ use crate::domain::lockfile::Lockfile;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOptions {
     pub force: bool,
+    pub skip_blocked_targets: bool,
 }
 
 #[derive(Debug, Error)]
@@ -38,9 +39,9 @@ pub fn apply_link_plan(
     lockfile: &Lockfile,
     applier: &impl LinkApplier,
     lockfile_store: &impl LockfileStore,
-    _options: ApplyOptions,
+    options: ApplyOptions,
 ) -> Result<(), ApplyError> {
-    validate_plan_is_safe_to_apply(plan)?;
+    validate_plan_is_safe_to_apply(plan, options)?;
 
     for item in &plan.items {
         if item.action == PlanAction::CreateSymlink {
@@ -52,7 +53,10 @@ pub fn apply_link_plan(
     Ok(())
 }
 
-fn validate_plan_is_safe_to_apply(plan: &LinkPlan) -> Result<(), ApplyError> {
+fn validate_plan_is_safe_to_apply(
+    plan: &LinkPlan,
+    options: ApplyOptions,
+) -> Result<(), ApplyError> {
     for item in &plan.items {
         match &item.action {
             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
@@ -63,18 +67,22 @@ fn validate_plan_is_safe_to_apply(plan: &LinkPlan) -> Result<(), ApplyError> {
                 });
             }
             PlanAction::Conflict { reason } => {
-                return Err(ApplyError::Conflict {
-                    skill: item.skill.as_str().to_owned(),
-                    agent: item.agent.as_str().to_owned(),
-                    reason: *reason,
-                });
+                if !options.skip_blocked_targets {
+                    return Err(ApplyError::Conflict {
+                        skill: item.skill.as_str().to_owned(),
+                        agent: item.agent.as_str().to_owned(),
+                        reason: *reason,
+                    });
+                }
             }
             PlanAction::DriftedSymlink { actual_source } => {
-                return Err(ApplyError::DriftedSymlink {
-                    skill: item.skill.as_str().to_owned(),
-                    agent: item.agent.as_str().to_owned(),
-                    actual_source: actual_source.display().to_string(),
-                });
+                if !options.skip_blocked_targets {
+                    return Err(ApplyError::DriftedSymlink {
+                        skill: item.skill.as_str().to_owned(),
+                        agent: item.agent.as_str().to_owned(),
+                        actual_source: actual_source.display().to_string(),
+                    });
+                }
             }
         }
     }
@@ -158,7 +166,10 @@ mod tests {
             &lockfile(),
             &applier,
             &lockfiles,
-            ApplyOptions { force: false },
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
         )
         .expect("apply succeeds");
 
@@ -179,13 +190,40 @@ mod tests {
             &lockfile(),
             &applier,
             &lockfiles,
-            ApplyOptions { force: false },
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
         )
         .expect_err("conflict fails");
 
         assert!(matches!(error, ApplyError::Conflict { .. }));
         assert!(applier.created.borrow().is_empty());
         assert!(!lockfiles.written.get());
+    }
+
+    #[test]
+    fn conflict_is_skipped_when_requested() {
+        let plan = LinkPlan::new(vec![item(PlanAction::Conflict {
+            reason: ConflictReason::Directory,
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: true,
+            },
+        )
+        .expect("conflict is skipped");
+
+        assert!(applier.created.borrow().is_empty());
+        assert!(lockfiles.written.get());
     }
 
     #[test]
@@ -201,12 +239,39 @@ mod tests {
             &lockfile(),
             &applier,
             &lockfiles,
-            ApplyOptions { force: false },
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
         )
         .expect_err("drift fails");
 
         assert!(matches!(error, ApplyError::DriftedSymlink { .. }));
         assert!(applier.created.borrow().is_empty());
         assert!(!lockfiles.written.get());
+    }
+
+    #[test]
+    fn unexpected_symlink_is_skipped_when_requested() {
+        let plan = LinkPlan::new(vec![item(PlanAction::DriftedSymlink {
+            actual_source: PathBuf::from("other"),
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: true,
+            },
+        )
+        .expect("drift is skipped");
+
+        assert!(applier.created.borrow().is_empty());
+        assert!(lockfiles.written.get());
     }
 }

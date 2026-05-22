@@ -22,7 +22,7 @@ use crate::domain::lockfile::{
     LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
 use crate::domain::scope::Scope;
-use crate::domain::skill::{SkillName, SourcePath};
+use crate::domain::skill::{SkillName, SourcePath, SourcePathError};
 use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::domain::target::TargetPath;
 
@@ -254,12 +254,6 @@ impl RawConfig {
 
         for (name, raw_dependency) in self.dependencies {
             let skill_name = parse_skill_name(&name)?;
-            let source = SourcePath::new(skill_dir.as_path().join(skill_name.as_str())).map_err(
-                |source| ConfigResolveError::InvalidSkillSource {
-                    skill: name.clone(),
-                    source,
-                },
-            )?;
             let skill_agents = resolve_or_create_dependency_agents(
                 &name,
                 raw_dependency.agents,
@@ -271,6 +265,11 @@ impl RawConfig {
                 return Err(ConfigResolveError::MissingAgents { skill: name });
             }
             let install_source = parse_install_source(&name, raw_dependency.source, config_root)?;
+            let source = dependency_source_path(&skill_dir, skill_name.as_str(), &install_source)
+                .map_err(|source| ConfigResolveError::InvalidSkillSource {
+                skill: name.clone(),
+                source,
+            })?;
 
             skills.push(ResolvedSkill {
                 name: skill_name,
@@ -455,6 +454,23 @@ fn parse_structured_install_source(
             }))
         }
     }
+}
+
+fn dependency_source_path(
+    skill_dir: &SourcePath,
+    skill_name: &str,
+    install_source: &InstallSource,
+) -> Result<SourcePath, SourcePathError> {
+    let legacy_flat_path = skill_dir.as_path().join(skill_name);
+    if legacy_flat_path.exists() {
+        return SourcePath::new(legacy_flat_path);
+    }
+
+    SourcePath::new(
+        skill_dir
+            .as_path()
+            .join(install_source.storage_subpath(skill_name)),
+    )
 }
 
 pub fn parse_install_source_value(
@@ -1205,6 +1221,68 @@ mod tests {
     }
 
     #[test]
+    fn file_config_store_preserves_existing_flat_dependency_source_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("nested/sksync.config.json");
+        let config_root = config_path.parent().expect("config parent");
+        std::fs::create_dir_all(config_root.join("skills/review"))
+            .expect("create legacy flat source");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "skillDir": "skills",
+              "dependencies": {
+                "review": {
+                  "source": "github:owner/repo/skills/review#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+
+        let config = FileConfigStore::new(&config_path)
+            .load_with_default_scope(Scope::Project)
+            .expect("config loads");
+
+        assert_eq!(
+            config.skills[0].source.as_path(),
+            config_root.join("skills/review")
+        );
+    }
+
+    #[test]
+    fn file_config_store_uses_namespaced_dependency_source_path_when_flat_path_is_absent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("nested/sksync.config.json");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create config parent");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "skillDir": "skills",
+              "dependencies": {
+                "review": {
+                  "source": "github:owner/repo/skills/review#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+
+        let config = FileConfigStore::new(&config_path)
+            .load_with_default_scope(Scope::Project)
+            .expect("config loads");
+        let config_root = config_path.parent().expect("config parent");
+
+        assert_eq!(
+            config.skills[0].source.as_path(),
+            config_root.join("skills/owner/repo/review")
+        );
+    }
+
+    #[test]
     fn dependency_agents_are_deduped_after_alias_resolution() {
         let raw = serde_json::from_str::<RawConfig>(
             r#"{
@@ -1305,6 +1383,35 @@ mod tests {
         assert_eq!(git.url, "https://github.com/owner/repo.git");
         assert_eq!(git.path, Path::new("skills/review"));
         assert_eq!(git.reference.as_deref(), Some("main"));
+        assert_eq!(
+            config.skills[0].source.as_path(),
+            Path::new("./.sksync/skills/owner/repo/review")
+        );
+    }
+
+    #[test]
+    fn github_dependency_uses_source_namespaced_storage_path() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "github:owner/repo/skills/review#main",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect("config resolves");
+
+        assert_eq!(
+            config.skills[0].source.as_path(),
+            Path::new("./.sksync/skills/owner/repo/review")
+        );
     }
 
     #[test]
@@ -1332,6 +1439,10 @@ mod tests {
         assert_eq!(git.url, "https://github.com/vercel-labs/skills.git");
         assert_eq!(git.path, Path::new("skills/find-skills"));
         assert_eq!(git.reference.as_deref(), Some("main"));
+        assert_eq!(
+            config.skills[0].source.as_path(),
+            Path::new("./.sksync/skills/vercel-labs/skills/find-skills")
+        );
     }
 
     #[test]

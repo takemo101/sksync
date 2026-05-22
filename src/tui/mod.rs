@@ -144,10 +144,11 @@ fn run_add_flow(project_root: &Path) -> Result<()> {
 fn run_remove_flow(project_root: &Path) -> Result<()> {
     let scope = prompt_config_scope("Which config should the skill be removed from?")?;
     let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "Select the skill to remove")?;
+    let skills = prompt_skills_from_config(&config, "Select skill(s) to remove")?;
     let mode = prompt_remove_mode()?;
 
-    let mut args = vec!["remove".to_owned(), skill];
+    let mut args = vec!["remove".to_owned()];
+    args.extend(skills);
     if scope.is_global() {
         args.push("--global".to_owned());
     }
@@ -249,6 +250,24 @@ fn prompt_remove_mode() -> Result<RemoveMode> {
 }
 
 fn prompt_skill_from_config(config: &ResolvedConfig, message: &str) -> Result<String> {
+    let skills = configured_skill_names(config)?;
+    Select::new(message, skills)
+        .prompt()
+        .context("failed to read skill selection")
+}
+
+fn prompt_skills_from_config(config: &ResolvedConfig, message: &str) -> Result<Vec<String>> {
+    let selected = MultiSelect::new(message, configured_skill_names(config)?)
+        .with_help_message("Use space to select, enter to confirm")
+        .prompt()
+        .context("failed to read skill selection")?;
+    if selected.is_empty() {
+        bail!("at least one skill is required");
+    }
+    Ok(selected)
+}
+
+fn configured_skill_names(config: &ResolvedConfig) -> Result<Vec<String>> {
     let skills = config
         .skills
         .iter()
@@ -257,9 +276,7 @@ fn prompt_skill_from_config(config: &ResolvedConfig, message: &str) -> Result<St
     if skills.is_empty() {
         bail!("no skills are configured");
     }
-    Select::new(message, skills)
-        .prompt()
-        .context("failed to read skill selection")
+    Ok(skills)
 }
 
 fn prompt_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Result<Vec<String>> {
