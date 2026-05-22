@@ -1,7 +1,8 @@
 use thiserror::Error;
 
-use super::config::{InstallSource, ResolvedConfig};
+use super::config::ResolvedConfig;
 use crate::domain::lockfile::Lockfile;
+use crate::domain::source::InstallSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutdatedReport {
@@ -40,7 +41,7 @@ pub fn collect_outdated(
             let locked = lockfile.skills.get(&skill.name)?;
             match (&skill.install_source, &locked.install_source) {
                 (Some(InstallSource::Git(config_git)), Some(InstallSource::Git(locked_git))) => {
-                    let wanted_ref = config_git.reference.as_deref().unwrap_or("HEAD");
+                    let wanted_ref = config_git.wanted_ref();
                     let latest = resolver
                         .git_remote_rev(&config_git.url, wanted_ref)
                         .unwrap_or_else(|error| format!("error: {error}"));
@@ -72,11 +73,10 @@ pub fn collect_outdated(
 #[cfg(test)]
 mod tests {
     use super::{collect_outdated, RemoteRefError, RemoteRefResolver};
-    use crate::application::config::{
-        GitInstallSource, InstallSource, ResolvedConfig, ResolvedSkill,
-    };
+    use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::{GitInstallSource, InstallSource};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 

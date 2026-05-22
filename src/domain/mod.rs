@@ -7,7 +7,9 @@
 pub mod agent;
 pub mod link_plan;
 pub mod lockfile;
+pub mod removal;
 pub mod scope;
 pub mod skill;
 pub mod skill_manifest;
+pub mod source;
 pub mod target;

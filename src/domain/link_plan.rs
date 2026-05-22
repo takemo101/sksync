@@ -17,10 +17,6 @@ impl LinkPlan {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
-
-    pub fn display_lines(&self) -> Vec<String> {
-        self.items.iter().map(LinkPlanItem::display_line).collect()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,45 +26,6 @@ pub struct LinkPlanItem {
     pub source: SourcePath,
     pub target: TargetPath,
     pub action: PlanAction,
-}
-
-impl LinkPlanItem {
-    pub fn display_line(&self) -> String {
-        match &self.action {
-            PlanAction::CreateSymlink => format!(
-                "create symlink: {} -> {} ({})",
-                self.target.as_path().display(),
-                self.source.as_path().display(),
-                self.label()
-            ),
-            PlanAction::AlreadySynced => format!(
-                "already synced: {} ({})",
-                self.target.as_path().display(),
-                self.label()
-            ),
-            PlanAction::Conflict { reason } => format!(
-                "conflict: {} ({}, {reason})",
-                self.target.as_path().display(),
-                self.label()
-            ),
-            PlanAction::DriftedSymlink { actual_source } => format!(
-                "drifted symlink: {} points to {} but expected {} ({})",
-                self.target.as_path().display(),
-                actual_source.display(),
-                self.source.as_path().display(),
-                self.label()
-            ),
-            PlanAction::SourceMissing => format!(
-                "source missing: {} ({})",
-                self.source.as_path().display(),
-                self.label()
-            ),
-        }
-    }
-
-    fn label(&self) -> String {
-        format!("skill={}, agent={}", self.skill, self.agent.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

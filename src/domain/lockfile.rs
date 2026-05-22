@@ -4,11 +4,10 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::application::config::InstallSource;
-
 use super::agent::AgentKind;
 use super::scope::Scope;
 use super::skill::{SkillName, SourcePath};
+use super::source::InstallSource;
 use super::target::TargetPath;
 
 pub const SUPPORTED_LOCKFILE_VERSION: u32 = 3;

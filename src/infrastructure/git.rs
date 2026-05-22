@@ -3,7 +3,7 @@ use std::process::Command;
 
 use thiserror::Error;
 
-use crate::application::config::GitInstallSource;
+use crate::domain::source::GitInstallSource;
 
 #[derive(Debug, Clone, Default)]
 pub struct GitClient;
@@ -22,11 +22,7 @@ impl GitClient {
         clone_dir: &Path,
     ) -> Result<(), GitCommandError> {
         self.clone_no_checkout(&source.url, clone_dir)?;
-        self.checkout_reference(
-            clone_dir,
-            &source.url,
-            source.reference.as_deref().unwrap_or("HEAD"),
-        )
+        self.checkout_reference(clone_dir, &source.url, source.wanted_ref())
     }
 
     pub fn resolve_head(&self, clone_dir: &Path, repo: &str) -> Result<String, GitCommandError> {

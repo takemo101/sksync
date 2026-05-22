@@ -7,8 +7,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::application::config::{
-    ConfigResolveError, GitInstallSource, InstallSource, ResolvedAgent, ResolvedConfig,
-    ResolvedSkill,
+    ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
     display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
@@ -24,6 +23,7 @@ use crate::domain::lockfile::{
 };
 use crate::domain::scope::Scope;
 use crate::domain::skill::{SkillName, SourcePath};
+use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::domain::target::TargetPath;
 
 #[derive(Debug, Deserialize)]
@@ -1037,11 +1037,12 @@ mod tests {
         parse_agent_mapping_config, read_lockfile, write_lockfile, FileConfigStore,
         FileDependencyConfigStore, LockfileJsonError, RawConfig,
     };
-    use crate::application::config::{ConfigResolveError, InstallSource};
+    use crate::application::config::ConfigResolveError;
     use crate::application::ports::{ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::SUPPORTED_LOCKFILE_VERSION;
     use crate::domain::scope::Scope;
+    use crate::domain::source::InstallSource;
     use std::path::Path;
 
     #[test]
@@ -1199,9 +1200,7 @@ mod tests {
         );
         assert_eq!(
             config.skills[0].install_source,
-            Some(crate::application::config::InstallSource::Local(
-                config_root.join("vendor/review")
-            ))
+            Some(InstallSource::Local(config_root.join("vendor/review")))
         );
     }
 

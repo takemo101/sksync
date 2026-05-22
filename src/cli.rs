@@ -25,6 +25,7 @@ use crate::application::update::{apply_update_report_sources, update_dependencie
 use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
+use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
@@ -349,32 +350,12 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
     let (_config, removal_plan, _root_dir) =
         build_plan_from_config(config.clone(), args.global, &current_dir)?;
 
-    if args.agents.is_empty() {
-        remove_entire_skill(
-            &args,
-            &config_path,
-            skill_source,
-            &skill_dir,
-            &lockfile_path,
-            &mut lockfile,
-            &removal_plan,
-        )?;
-        return Ok(());
-    }
-
     let requested_agents = parse_agent_kinds(&args.agents)?;
-    let removes_all_agents = skill
-        .map(|skill| {
-            !skill.agents.is_empty()
-                && skill
-                    .agents
-                    .iter()
-                    .all(|agent| requested_agents.iter().any(|requested| requested == agent))
-        })
-        .unwrap_or(false);
-
-    if removes_all_agents {
-        remove_entire_skill(
+    match classify_skill_removal(
+        skill.map(|skill| skill.agents.as_slice()).unwrap_or(&[]),
+        &requested_agents,
+    ) {
+        SkillRemovalScope::EntireSkill => remove_entire_skill(
             &args,
             &config_path,
             skill_source,
@@ -382,18 +363,16 @@ fn run_remove(args: RemoveArgs) -> Result<()> {
             &lockfile_path,
             &mut lockfile,
             &removal_plan,
-        )?;
-        return Ok(());
+        ),
+        SkillRemovalScope::SelectedAgents => remove_skill_agents(
+            &args,
+            &config_path,
+            &lockfile_path,
+            &mut lockfile,
+            &requested_agents,
+            &removal_plan,
+        ),
     }
-
-    remove_skill_agents(
-        &args,
-        &config_path,
-        &lockfile_path,
-        &mut lockfile,
-        &requested_agents,
-        &removal_plan,
-    )
 }
 
 fn remove_entire_skill(
