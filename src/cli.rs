@@ -9,13 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
-use crate::application::check::check_lockfile_with_plan;
+use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
 };
 use crate::application::init::{init_agents, init_global, init_project};
-use crate::application::list::list_skills;
+use crate::application::list::{list_skills, ListReport, ListedTargetState};
 use crate::application::outdated::{
     collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
 };
@@ -23,7 +23,7 @@ use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
-use crate::domain::link_plan::LinkPlan;
+use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::scope::Scope;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
@@ -878,11 +878,52 @@ impl std::fmt::Display for SkillChoice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "\x1b[1m\x1b[36m{}\x1b[0m — {} ({})",
+            "{}  {}",
             self.0.name,
-            self.0.description,
             self.0.relative_path.display()
         )
+    }
+}
+
+fn format_selected_skill_choices(
+    selected: &[inquire::list_option::ListOption<&SkillChoice>],
+) -> String {
+    let names = selected
+        .iter()
+        .map(|option| option.value.0.name.as_str())
+        .collect::<Vec<_>>();
+
+    match names.as_slice() {
+        [] => "no skills".to_owned(),
+        [name] => (*name).to_owned(),
+        _ if names.len() <= 4 => format!("{} skills: {}", names.len(), names.join(", ")),
+        _ => format!("{} skills: {}, …", names.len(), names[..4].join(", ")),
+    }
+}
+
+fn score_skill_choice(
+    input: &str,
+    choice: &SkillChoice,
+    _display: &str,
+    _index: usize,
+) -> Option<i64> {
+    let filter = input.trim().to_lowercase();
+    if filter.is_empty() {
+        return Some(0);
+    }
+
+    let name = choice.0.name.to_lowercase();
+    let path = choice.0.relative_path.to_string_lossy().to_lowercase();
+    let description = choice.0.description.to_lowercase();
+
+    if name.contains(&filter) {
+        Some(100)
+    } else if path.contains(&filter) {
+        Some(50)
+    } else if description.contains(&filter) {
+        Some(10)
+    } else {
+        None
     }
 }
 
@@ -956,7 +997,11 @@ fn select_skill_candidates(
     }
 
     let choices = candidates.into_iter().map(SkillChoice).collect::<Vec<_>>();
-    let selected = inquire::MultiSelect::new("Select skills to add", choices).prompt()?;
+    let selected = inquire::MultiSelect::new("Select skills to add", choices)
+        .with_formatter(&format_selected_skill_choices)
+        .with_scorer(&score_skill_choice)
+        .with_help_message("space: select · type: filter name/path/description · enter: confirm")
+        .prompt()?;
     if selected.is_empty() {
         bail!("no skills selected");
     }
@@ -975,33 +1020,161 @@ fn reject_legacy_registry_source(source: &str) -> Result<()> {
 
 fn print_plan(plan: &LinkPlan) {
     if plan.is_empty() {
-        print_success("No link changes planned.");
-    } else {
-        print_section("Link plan");
-        for line in plan.display_lines() {
-            println!("  - {line}");
+        print_success("Link plan is clean. No changes needed.");
+        return;
+    }
+
+    print_section_with_count("Link plan", plan.items.len());
+    for item in &plan.items {
+        print_plan_item(item);
+    }
+}
+
+fn print_plan_item(item: &LinkPlanItem) {
+    let (badge, title) = plan_action_badge(&item.action);
+    println!("{badge:<8} {} → {}", item.skill, item.agent.as_str());
+    print_detail(format!("action: {title}"));
+    match &item.action {
+        PlanAction::CreateSymlink | PlanAction::AlreadySynced => {
+            print_detail(format!("target: {}", item.target.as_path().display()));
+            print_detail(format!("source: {}", item.source.as_path().display()));
+        }
+        PlanAction::Conflict { reason } => {
+            print_detail(format!("target: {}", item.target.as_path().display()));
+            print_detail(format!("reason: {reason}"));
+        }
+        PlanAction::DriftedSymlink { actual_source } => {
+            print_detail(format!("target: {}", item.target.as_path().display()));
+            print_detail(format!("actual: {}", actual_source.display()));
+            print_detail(format!("expected: {}", item.source.as_path().display()));
+        }
+        PlanAction::SourceMissing => {
+            print_detail(format!("source: {}", item.source.as_path().display()));
+            print_detail(format!("target: {}", item.target.as_path().display()));
         }
     }
 }
 
+fn plan_action_badge(action: &PlanAction) -> (&'static str, &'static str) {
+    match action {
+        PlanAction::CreateSymlink => ("CREATE", "create managed symlink"),
+        PlanAction::AlreadySynced => ("OK", "already synced"),
+        PlanAction::Conflict { .. } => ("BLOCKED", "target conflict"),
+        PlanAction::DriftedSymlink { .. } => ("DRIFT", "symlink points elsewhere"),
+        PlanAction::SourceMissing => ("MISSING", "source directory missing"),
+    }
+}
+
 fn print_outdated_rows(rows: &[OutdatedRow]) {
-    print_section("Outdated skills");
+    print_section_with_count("Outdated skills", rows.len());
+    let table_rows = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.skill.clone(),
+                compact_revision(&row.current),
+                compact_revision(&row.wanted),
+                compact_revision(&row.latest),
+                compact_source(&row.source),
+                row.status.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
     print_table(
         &["Skill", "Current", "Wanted", "Latest", "Source", "Status"],
-        &rows
-            .iter()
-            .map(|row| {
-                vec![
-                    row.skill.clone(),
-                    row.current.clone(),
-                    row.wanted.clone(),
-                    row.latest.clone(),
-                    row.source.clone(),
-                    row.status.clone(),
-                ]
-            })
-            .collect::<Vec<_>>(),
+        &table_rows,
     );
+
+    for row in rows.iter().filter(|row| outdated_row_needs_detail(row)) {
+        print_detail(format!("{} current: {}", row.skill, row.current));
+        print_detail(format!("{} wanted: {}", row.skill, row.wanted));
+        print_detail(format!("{} latest: {}", row.skill, row.latest));
+        print_detail(format!("{} source: {}", row.skill, row.source));
+    }
+}
+
+fn outdated_row_needs_detail(row: &OutdatedRow) -> bool {
+    compact_revision(&row.current) != row.current
+        || compact_revision(&row.wanted) != row.wanted
+        || compact_revision(&row.latest) != row.latest
+        || compact_source(&row.source) != row.source
+}
+
+fn print_skill_list(report: &ListReport) {
+    if report.skills.is_empty() {
+        print_info("No skills configured.");
+        return;
+    }
+
+    print_section_with_count("Skills", report.skills.len());
+    for skill in &report.skills {
+        println!("• {}", skill.name);
+        if let Some(hash) = &skill.locked_hash {
+            print_detail(format!("locked: {}", compact_revision(hash)));
+        }
+        if skill.targets.is_empty() {
+            print_detail("no enabled targets");
+            continue;
+        }
+        for target in &skill.targets {
+            let path = if target.target.as_os_str().is_empty() {
+                "unresolved".to_owned()
+            } else {
+                target.target.display().to_string()
+            };
+            println!(
+                "  {} {:<14} {:<15} {}",
+                list_state_icon(&target.state),
+                target.agent,
+                list_state_label(&target.state),
+                path
+            );
+            if let Some(message) = list_state_detail(&target.state) {
+                print_detail(message);
+            }
+        }
+    }
+}
+
+fn list_state_icon(state: &ListedTargetState) -> &'static str {
+    match state {
+        ListedTargetState::Synced => "✓",
+        ListedTargetState::Missing | ListedTargetState::SourceMissing => "○",
+        ListedTargetState::Drifted
+        | ListedTargetState::Conflict
+        | ListedTargetState::BrokenSymlink
+        | ListedTargetState::InspectFailed(_)
+        | ListedTargetState::ResolveFailed(_) => "!",
+    }
+}
+
+fn list_state_label(state: &ListedTargetState) -> &'static str {
+    match state {
+        ListedTargetState::Missing => "missing",
+        ListedTargetState::Synced => "synced",
+        ListedTargetState::Drifted => "drifted",
+        ListedTargetState::Conflict => "conflict",
+        ListedTargetState::BrokenSymlink => "broken",
+        ListedTargetState::SourceMissing => "source-missing",
+        ListedTargetState::InspectFailed(_) => "inspect-failed",
+        ListedTargetState::ResolveFailed(_) => "resolve-failed",
+    }
+}
+
+fn list_state_detail(state: &ListedTargetState) -> Option<String> {
+    match state {
+        ListedTargetState::InspectFailed(message) | ListedTargetState::ResolveFailed(message) => {
+            Some(format!("reason: {message}"))
+        }
+        _ => None,
+    }
+}
+
+fn print_check_problems(problems: &[CheckProblem]) {
+    print_section_with_count("Check problems", problems.len());
+    for problem in problems {
+        println!("✗ {}", problem.display_line());
+    }
 }
 
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
@@ -1020,7 +1193,7 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     print_table_row(headers.iter().copied(), &widths);
     let separators = widths
         .iter()
-        .map(|width| "-".repeat(*width))
+        .map(|width| "─".repeat(*width))
         .collect::<Vec<_>>();
     print_table_row(separators.iter().map(String::as_str), &widths);
     for row in rows {
@@ -1045,6 +1218,12 @@ fn print_lockfile_written(path: impl AsRef<Path>) {
 
 fn print_section(label: &str) {
     println!("\n{label}");
+    println!("{}", "─".repeat(label.chars().count()));
+}
+
+fn print_section_with_count(label: &str, count: usize) {
+    let heading = format!("{label} ({count})");
+    print_section(&heading);
 }
 
 fn print_success(message: impl AsRef<str>) {
@@ -1057,6 +1236,45 @@ fn print_info(message: impl AsRef<str>) {
 
 fn print_detail(message: impl AsRef<str>) {
     println!("  {}", message.as_ref());
+}
+
+fn compact_revision(value: &str) -> String {
+    if value.starts_with("error:") {
+        truncate_middle(value, 48)
+    } else if is_hash_like(value) {
+        value.chars().take(12).collect()
+    } else {
+        truncate_middle(value, 18)
+    }
+}
+
+fn compact_source(value: &str) -> String {
+    truncate_middle(value, 42)
+}
+
+fn is_hash_like(value: &str) -> bool {
+    value.len() >= 20 && value.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars || max_chars <= 1 {
+        return value.to_owned();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let front = keep / 2;
+    let back = keep - front;
+    let prefix = value.chars().take(front).collect::<String>();
+    let suffix = value
+        .chars()
+        .rev()
+        .take(back)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{prefix}…{suffix}")
 }
 
 fn build_lockfile_from_plan(
@@ -1123,13 +1341,10 @@ fn run_check(args: CheckArgs) -> Result<()> {
     );
 
     if report.is_success() {
-        print_success("Check passed.");
+        print_success("Check passed. Config, lockfile, hashes, and links are healthy.");
         Ok(())
     } else {
-        print_section("Check problems");
-        for line in report.display_lines() {
-            println!("  ✗ {line}");
-        }
+        print_check_problems(&report.problems);
         bail!("check found {} problem(s)", report.problems.len())
     }
 }
@@ -1152,10 +1367,7 @@ fn run_list(args: ListArgs) -> Result<()> {
         &target_resolver,
     );
 
-    print_section("Skills");
-    for line in report.display_lines() {
-        println!("{line}");
-    }
+    print_skill_list(&report);
 
     Ok(())
 }
@@ -1168,9 +1380,10 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, global_config_root_from_home, is_managed_skill_dir,
-        reject_legacy_registry_source, remove_installed_skill_dir, select_skill_candidates, Cli,
-        ConfigFileBackup,
+        agent_target_mappings_from_config, compact_revision, compact_source,
+        format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
+        list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
+        score_skill_choice, select_skill_candidates, truncate_middle, Cli, ConfigFileBackup,
     };
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
@@ -1362,16 +1575,107 @@ mod tests {
     }
 
     #[test]
-    fn skill_choice_display_styles_skill_name() {
+    fn skill_choice_display_is_compact() {
         let choice = super::SkillChoice(super::SkillCandidate {
             name: "review".to_owned(),
-            description: "Review helper".to_owned(),
+            description: "Review helper with a long explanation".to_owned(),
             relative_path: PathBuf::from("skills/review"),
         });
 
-        assert!(choice
-            .to_string()
-            .starts_with("\x1b[1m\x1b[36mreview\x1b[0m"));
+        assert_eq!(choice.to_string(), "review  skills/review");
+        assert!(!choice.to_string().contains("long explanation"));
+    }
+
+    #[test]
+    fn selected_skill_formatter_summarizes_many_choices() {
+        let choices = [
+            super::SkillChoice(super::SkillCandidate {
+                name: "one".to_owned(),
+                description: "First".to_owned(),
+                relative_path: PathBuf::from("skills/one"),
+            }),
+            super::SkillChoice(super::SkillCandidate {
+                name: "two".to_owned(),
+                description: "Second".to_owned(),
+                relative_path: PathBuf::from("skills/two"),
+            }),
+            super::SkillChoice(super::SkillCandidate {
+                name: "three".to_owned(),
+                description: "Third".to_owned(),
+                relative_path: PathBuf::from("skills/three"),
+            }),
+            super::SkillChoice(super::SkillCandidate {
+                name: "four".to_owned(),
+                description: "Fourth".to_owned(),
+                relative_path: PathBuf::from("skills/four"),
+            }),
+            super::SkillChoice(super::SkillCandidate {
+                name: "five".to_owned(),
+                description: "Fifth".to_owned(),
+                relative_path: PathBuf::from("skills/five"),
+            }),
+        ];
+        let selected = choices
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| inquire::list_option::ListOption::new(index, choice))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            format_selected_skill_choices(&selected),
+            "5 skills: one, two, three, four, …"
+        );
+    }
+
+    #[test]
+    fn skill_choice_scorer_searches_description_without_displaying_it() {
+        let choice = super::SkillChoice(super::SkillCandidate {
+            name: "diagnose".to_owned(),
+            description: "Hard bugs and performance regressions".to_owned(),
+            relative_path: PathBuf::from("skills/engineering/diagnose"),
+        });
+
+        assert_eq!(score_skill_choice("performance", &choice, "", 0), Some(10));
+        assert_eq!(score_skill_choice("engineering", &choice, "", 0), Some(50));
+        assert_eq!(score_skill_choice("diagnose", &choice, "", 0), Some(100));
+        assert_eq!(score_skill_choice("missing", &choice, "", 0), None);
+    }
+
+    #[test]
+    fn compact_revision_shortens_hashes_for_human_tables() {
+        assert_eq!(
+            compact_revision("0123456789abcdef0123456789abcdef01234567"),
+            "0123456789ab"
+        );
+    }
+
+    #[test]
+    fn compact_source_keeps_start_and_end_visible() {
+        let compact = compact_source("https://github.com/example/really-long-repository-name.git");
+
+        assert!(compact.starts_with("https://github.com"));
+        assert!(compact.ends_with("repository-name.git"));
+        assert!(compact.chars().count() <= 42);
+    }
+
+    #[test]
+    fn truncate_middle_handles_short_and_long_values() {
+        assert_eq!(truncate_middle("short", 10), "short");
+        assert_eq!(truncate_middle("abcdefghij", 7), "abc…hij");
+    }
+
+    #[test]
+    fn list_state_labels_are_cli_friendly() {
+        assert_eq!(
+            list_state_label(&crate::application::list::ListedTargetState::SourceMissing),
+            "source-missing"
+        );
+        assert_eq!(
+            list_state_label(&crate::application::list::ListedTargetState::ResolveFailed(
+                "bad target".to_owned()
+            )),
+            "resolve-failed"
+        );
     }
 
     #[test]
