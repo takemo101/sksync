@@ -67,6 +67,9 @@
     "github-copilot": {
       "targetDir": "~/.github/skills"
     },
+    "jcode": {
+      "targetDir": "~/.jcode/skills"
+    },
     "goose": {
       "targetDir": "~/.goose/skills"
     },
@@ -209,6 +212,9 @@
     },
     "github-copilot": {
       "targetDir": ".github/skills"
+    },
+    "jcode": {
+      "targetDir": ".jcode/skills"
     },
     "goose": {
       "targetDir": ".goose/skills"
