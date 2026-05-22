@@ -105,8 +105,9 @@ struct AddArgs {
 
 #[derive(Debug, Args)]
 struct RemoveArgs {
-    /// Skill name to remove.
-    skill: String,
+    /// Skill name(s) to remove.
+    #[arg(required = true)]
+    skills: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
@@ -338,70 +339,95 @@ impl ConfigFileBackup {
 fn run_remove(args: RemoveArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
-    let config = load_config_for_scope(args.global, &current_dir)?;
-    let skill = config
-        .skills
-        .iter()
-        .find(|skill| skill.name.as_str() == args.skill);
-    let skill_source = skill.map(|skill| skill.source.as_path().to_path_buf());
-    let skill_dir = config.skill_dir.as_path().to_path_buf();
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
-    let mut lockfile = read_lockfile(&lockfile_path).ok();
-    let (_config, removal_plan, _root_dir) =
-        build_plan_from_config(config.clone(), args.global, &current_dir)?;
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let lockfile_backup = ConfigFileBackup::capture(&lockfile_path)?;
 
-    let requested_agents = parse_agent_kinds(&args.agents)?;
-    match classify_skill_removal(
-        skill.map(|skill| skill.agents.as_slice()).unwrap_or(&[]),
-        &requested_agents,
-    ) {
-        SkillRemovalScope::EntireSkill => remove_entire_skill(
-            &args,
-            &config_path,
-            skill_source,
-            &skill_dir,
-            &lockfile_path,
-            &mut lockfile,
-            &removal_plan,
-        ),
-        SkillRemovalScope::SelectedAgents => remove_skill_agents(
-            &args,
-            &config_path,
-            &lockfile_path,
-            &mut lockfile,
-            &requested_agents,
-            &removal_plan,
-        ),
+    let remove_result = (|| -> Result<()> {
+        let config = load_config_for_scope(args.global, &current_dir)?;
+        let skill_dir = config.skill_dir.as_path().to_path_buf();
+        let mut lockfile = read_lockfile(&lockfile_path).ok();
+        let (_config, removal_plan, _root_dir) =
+            build_plan_from_config(config.clone(), args.global, &current_dir)?;
+        let runtime = RemoveRuntime {
+            config_path: &config_path,
+            skill_dir: &skill_dir,
+            lockfile_path: &lockfile_path,
+            removal_plan: &removal_plan,
+        };
+        let requested_agents = parse_agent_kinds(&args.agents)?;
+
+        for skill_name in &args.skills {
+            let skill = config
+                .skills
+                .iter()
+                .find(|skill| skill.name.as_str() == skill_name);
+            let skill_source = skill.map(|skill| skill.source.as_path().to_path_buf());
+            match classify_skill_removal(
+                skill.map(|skill| skill.agents.as_slice()).unwrap_or(&[]),
+                &requested_agents,
+            ) {
+                SkillRemovalScope::EntireSkill => {
+                    remove_entire_skill(&args, skill_name, skill_source, &mut lockfile, &runtime)?
+                }
+                SkillRemovalScope::SelectedAgents => remove_skill_agents(
+                    &args,
+                    skill_name,
+                    &mut lockfile,
+                    &requested_agents,
+                    &runtime,
+                )?,
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = remove_result {
+        let config_restore = config_backup.restore();
+        let lockfile_restore = lockfile_backup.restore();
+        if let Err(restore_error) = config_restore.and(lockfile_restore) {
+            return Err(error.context(format!(
+                "sksync remove failed and rollback failed: {restore_error}"
+            )));
+        }
+        return Err(error.context("sksync remove failed; restored previous config and lockfile"));
     }
+
+    Ok(())
+}
+
+struct RemoveRuntime<'a> {
+    config_path: &'a Path,
+    skill_dir: &'a Path,
+    lockfile_path: &'a Path,
+    removal_plan: &'a LinkPlan,
 }
 
 fn remove_entire_skill(
     args: &RemoveArgs,
-    config_path: &Path,
+    skill: &str,
     skill_source: Option<PathBuf>,
-    skill_dir: &Path,
-    lockfile_path: &Path,
     lockfile: &mut Option<Lockfile>,
-    removal_plan: &LinkPlan,
+    runtime: &RemoveRuntime<'_>,
 ) -> Result<()> {
     if !args.config_only {
-        remove_managed_symlinks(removal_plan, &args.skill)?;
+        remove_managed_symlinks(runtime.removal_plan, skill)?;
         if !args.keep_files {
             if let Some(source) = skill_source {
-                remove_installed_skill_dir(&source, skill_dir)?;
+                remove_installed_skill_dir(&source, runtime.skill_dir)?;
             }
         }
     }
 
-    FileDependencyConfigStore::new(config_path, default_skill_dir_for(args.global)?)
-        .remove_dependency(&args.skill)?;
+    FileDependencyConfigStore::new(runtime.config_path, default_skill_dir_for(args.global)?)
+        .remove_dependency(skill)?;
     if let Some(lockfile) = lockfile {
-        if let Ok(skill_name) = crate::domain::skill::SkillName::new(args.skill.clone()) {
+        if let Ok(skill_name) = crate::domain::skill::SkillName::new(skill.to_owned()) {
             lockfile.skills.remove(&skill_name);
-            FileLockfileStore::new(lockfile_path).write(lockfile)?;
+            FileLockfileStore::new(runtime.lockfile_path).write(lockfile)?;
         }
     }
-    print_success(format!("Removed skill: {}", args.skill));
+    print_success(format!("Removed skill: {skill}"));
     Ok(())
 }
 
@@ -445,14 +471,13 @@ fn is_managed_skill_dir(source: &Path, skill_dir: &Path) -> Result<bool> {
 
 fn remove_skill_agents(
     args: &RemoveArgs,
-    config_path: &Path,
-    lockfile_path: &Path,
+    skill: &str,
     lockfile: &mut Option<Lockfile>,
     requested_agents: &[AgentKind],
-    removal_plan: &LinkPlan,
+    runtime: &RemoveRuntime<'_>,
 ) -> Result<()> {
     if !args.config_only {
-        remove_managed_symlinks_for_agents(removal_plan, &args.skill, requested_agents)?;
+        remove_managed_symlinks_for_agents(runtime.removal_plan, skill, requested_agents)?;
     }
 
     let requested_agent_names = requested_agents
@@ -460,29 +485,27 @@ fn remove_skill_agents(
         .map(|agent| agent.as_str().to_owned())
         .collect::<Vec<_>>();
     let remaining_agents =
-        FileDependencyConfigStore::new(config_path, default_skill_dir_for(args.global)?)
-            .remove_dependency_agents(&args.skill, &requested_agent_names)?;
+        FileDependencyConfigStore::new(runtime.config_path, default_skill_dir_for(args.global)?)
+            .remove_dependency_agents(skill, &requested_agent_names)?;
 
     if let Some(lockfile) = lockfile {
-        if let Ok(skill_name) = crate::domain::skill::SkillName::new(args.skill.clone()) {
+        if let Ok(skill_name) = crate::domain::skill::SkillName::new(skill.to_owned()) {
             if let Some(locked) = lockfile.skills.get_mut(&skill_name) {
                 locked
                     .targets
                     .retain(|target| !agent_kinds_contain(requested_agents, &target.agent));
             }
-            FileLockfileStore::new(lockfile_path).write(lockfile)?;
+            FileLockfileStore::new(runtime.lockfile_path).write(lockfile)?;
         }
     }
 
     print_success(format!(
-        "Detached {} from agent(s): {}",
-        args.skill,
+        "Detached {skill} from agent(s): {}",
         requested_agent_names.join(", ")
     ));
     if remaining_agents.is_empty() {
         print_info(format!(
-            "No agents remain for {}; removed dependency entry",
-            args.skill
+            "No agents remain for {skill}; removed dependency entry"
         ));
     }
     Ok(())
@@ -650,7 +673,10 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
         &lockfile,
         &fs_store,
         &lockfile_store,
-        ApplyOptions { force: args.force },
+        ApplyOptions {
+            force: args.force,
+            skip_blocked_targets: false,
+        },
     )?;
     print_plan(&plan);
     print_lockfile_written(lockfile_path_for(args.global, &current_dir)?);
@@ -678,7 +704,10 @@ fn run_install(args: InstallArgs) -> Result<()> {
         &lockfile,
         &fs_store,
         &lockfile_store,
-        ApplyOptions { force: false },
+        ApplyOptions {
+            force: false,
+            skip_blocked_targets: false,
+        },
     )?;
     print_plan(&plan);
     print_lockfile_written(lockfile_path_for(args.global, &current_dir)?);
@@ -1362,7 +1391,8 @@ mod tests {
         agent_target_mappings_from_config, compact_revision, compact_source,
         format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
         list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
-        score_skill_choice, select_skill_candidates, truncate_middle, Cli, ConfigFileBackup,
+        score_skill_choice, select_skill_candidates, truncate_middle, Cli, Command,
+        ConfigFileBackup,
     };
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
@@ -1417,6 +1447,17 @@ mod tests {
     #[test]
     fn init_agents_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--agents"]).expect("init --agents should parse");
+    }
+
+    #[test]
+    fn remove_accepts_multiple_skills() {
+        let cli =
+            Cli::try_parse_from(["sksync", "remove", "one", "two"]).expect("remove should parse");
+        let Command::Remove(args) = cli.command else {
+            panic!("expected remove command");
+        };
+
+        assert_eq!(args.skills, vec!["one", "two"]);
     }
 
     #[test]
