@@ -81,7 +81,7 @@ fn agents_schema_requires_agent_targets() {
 }
 
 #[test]
-fn agents_example_uses_antigravity_documented_skill_directories() {
+fn agents_example_uses_documented_skill_directories() {
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
 
     assert_eq!(
@@ -92,6 +92,8 @@ fn agents_example_uses_antigravity_documented_skill_directories() {
         agents["project"]["antigravity"]["targetDir"],
         ".agents/skills"
     );
+    assert_eq!(agents["global"]["jcode"]["targetDir"], "~/.jcode/skills");
+    assert_eq!(agents["project"]["jcode"]["targetDir"], ".jcode/skills");
 }
 
 #[test]
@@ -107,6 +109,7 @@ fn agents_example_includes_skillkit_compatible_mappings() {
         "gemini-cli",
         "opencode",
         "github-copilot",
+        "jcode",
         "windsurf",
         "roo",
         "aider",
