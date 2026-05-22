@@ -133,6 +133,14 @@ mod tests {
             Ok(())
         }
 
+        fn add_dependency_agents(
+            &self,
+            _skill_name: &str,
+            _agents: &[String],
+        ) -> Result<Vec<String>, DependencyConfigStoreError> {
+            Ok(Vec::new())
+        }
+
         fn remove_dependency(&self, _skill_name: &str) -> Result<(), DependencyConfigStoreError> {
             Ok(())
         }
