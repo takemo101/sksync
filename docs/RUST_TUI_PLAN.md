@@ -2,7 +2,7 @@
 
 ## 方針
 
-`sksync wizard` は SkillKit のような質問形式の prompt / wizard として実装する。
+`sksync wizard` は質問形式の prompt / wizard として実装する。
 `ask` / `tui` は互換 alias として残す。CLI と prompt wizard は入口だけを分け、同期計画・検査・適用のロジックは共有する。
 
 ## 推奨スタック

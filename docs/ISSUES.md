@@ -380,7 +380,7 @@ lockfileと現在状態の差分を検出する。
 ### Issue 15: Prompt wizard shellを追加する
 
 **目的**  
-SkillKit のような質問形式で操作できる `sksync wizard` を起動できるようにする。`ask` / `tui` は互換 alias として残す。
+質問形式で操作できる `sksync wizard` を起動できるようにする。`ask` / `tui` は互換 alias として残す。
 
 **作業内容**
 
