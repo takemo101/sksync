@@ -31,8 +31,13 @@
 - lockfile-backed source and symlink checks
 - add / attach / remove / detach workflows
 - prompt wizard as a thin CLI wrapper
+- read-only `doctor`
+- `agents list` / `agents doctor` / `agents refresh`
+- copy-only `import`
 
 ## v0.1: Read-only diagnosis and agent mapping UX
+
+Status: implemented.
 
 Goal: 既存機能を増やしすぎず、状態把握と agent mapping 管理を分かりやすくする。
 
@@ -67,6 +72,8 @@ Small command group for mapping visibility and refresh.
 `init --agents` can remain for compatibility, but should point users toward `agents refresh` once the command exists.
 
 ## v0.2: Conservative import
+
+Status: implemented.
 
 Goal: give users a safe migration path from manually managed agent skill directories.
 

@@ -72,6 +72,11 @@ cargo run -- init --global
 cargo run -- init --agents
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- attach skill-name --agent gemini
+cargo run -- agents list
+cargo run -- agents doctor
+cargo run -- agents refresh
+cargo run -- doctor
+cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- remove skill-name
 cargo run -- outdated
 cargo run -- install
@@ -110,7 +115,7 @@ global mode (`--global`) で作成されるもの:
 
 既に対象 config が存在する場合は上書きせず失敗します。global mode で `agents.json` が既にある場合は上書きしません。
 
-`init --agents` は config / skills directory には触らず、bundled default mapping で `~/.sksync/agents.json` だけを強制的に上書きします。新しい agent mapping を取り込む場合に使います。
+`init --agents` は config / skills directory には触らず、bundled default mapping で `~/.sksync/agents.json` だけを強制的に上書きします。新しい agent mapping を取り込む場合に使います。通常は同じ目的で `sksync agents refresh` も使えます。
 
 #### Agent target mappings
 
@@ -252,6 +257,35 @@ cargo run -- add owner/repo/path/to/skill --agent pi --global
 ```bash
 cargo run -- attach cuekit-dogfood --agent claude-code
 cargo run -- attach cuekit-dogfood --agent pi --agent gemini --global
+```
+
+### `sksync agents`
+
+agent target mapping を確認・更新します。`doctor` は read-only で targetDir の存在や書き込み可否を診断します。
+
+```bash
+cargo run -- agents list
+cargo run -- agents doctor
+cargo run -- agents refresh
+```
+
+### `sksync doctor`
+
+config / lockfile / source / target / agent mapping を read-only で総合診断し、問題がある場合は次に試すコマンドを表示して非ゼロ終了します。自動修復や directory 作成は行いません。
+
+```bash
+cargo run -- doctor
+cargo run -- doctor --global
+```
+
+### `sksync import`
+
+既存 agent skill directory から skill を copy-only で `.sksync/skills` または `~/.sksync/skills` に取り込み、指定 agent の dependency として config に登録します。元の directory は変更・削除・symlink 置換しません。target への symlink 反映は別途 `plan` / `apply` で確認します。
+
+```bash
+cargo run -- import ~/.claude/skills --agent claude-code --dry-run
+cargo run -- import ~/.claude/skills --agent claude-code
+cargo run -- import ~/.jcode/skills --agent jcode --global
 ```
 
 ### `sksync remove`
