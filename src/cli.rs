@@ -2554,6 +2554,30 @@ mod tests {
     }
 
     #[test]
+    fn selected_subpath_outside_skills_sh_skills_dir_becomes_github_tree_url() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://www.skills.sh/gitbutlerapp/gitbutler/but",
+                Path::new("crates/but/skill"),
+                SourceRewriteMode::ReplaceSkillsShPath,
+            ),
+            "https://github.com/gitbutlerapp/gitbutler/tree/HEAD/crates/but/skill"
+        );
+    }
+
+    #[test]
+    fn selected_subpath_outside_skills_sh_skills_dir_preserves_reference() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "skills.sh/gitbutlerapp/gitbutler/but#master",
+                Path::new("crates/but/skill"),
+                SourceRewriteMode::ReplaceSkillsShPath,
+            ),
+            "https://github.com/gitbutlerapp/gitbutler/tree/master/crates/but/skill"
+        );
+    }
+
+    #[test]
     fn global_config_root_uses_home_dot_sksync() {
         assert_eq!(
             global_config_root_from_home(Path::new("/tmp/home")),
