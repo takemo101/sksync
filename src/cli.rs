@@ -27,6 +27,8 @@ use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
+use crate::domain::skill::SkillName;
+use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
@@ -59,6 +61,12 @@ enum Command {
     Add(AddArgs),
     /// Attach an existing dependency-managed skill to more agents.
     Attach(AttachArgs),
+    /// Inspect and manage agent target mappings.
+    Agents(AgentsArgs),
+    /// Diagnose config, lockfile, links, sources, and agent mappings without mutating files.
+    Doctor(DoctorArgs),
+    /// Import existing skill directories into sksync without touching originals.
+    Import(ImportArgs),
     /// Remove a dependency, installed skill, managed symlinks, and lock entry.
     Remove(RemoveArgs),
     /// Show dependencies that can be updated.
@@ -115,6 +123,44 @@ struct AttachArgs {
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentsArgs {
+    #[command(subcommand)]
+    command: AgentsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentsCommand {
+    /// List effective agent target mappings.
+    List,
+    /// Refresh ~/.sksync/agents.json from bundled mappings.
+    Refresh,
+    /// Diagnose agent target mappings without changing the filesystem.
+    Doctor,
+}
+
+#[derive(Debug, Args)]
+struct DoctorArgs {
+    /// Use ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+}
+
+#[derive(Debug, Args)]
+struct ImportArgs {
+    /// Existing directory containing one or more skills.
+    path: PathBuf,
+    /// Agent to attach imported skills to. Can be passed multiple times.
+    #[arg(short, long = "agent", required = true)]
+    agents: Vec<String>,
+    /// Use ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Show what would be imported without writing files or config.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -213,6 +259,9 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Init(args) => run_init(args),
         Command::Add(args) => run_add(args),
         Command::Attach(args) => run_attach(args),
+        Command::Agents(args) => run_agents(args),
+        Command::Doctor(args) => run_doctor(args),
+        Command::Import(args) => run_import(args),
         Command::Remove(args) => run_remove(args),
         Command::Outdated(args) => run_outdated(args),
         Command::Plan(args) => run_plan(args),
@@ -252,6 +301,502 @@ fn run_init(args: InitArgs) -> Result<()> {
         "Created skills directory: {}",
         result.skills_dir.display()
     ));
+    Ok(())
+}
+
+fn run_agents(args: AgentsArgs) -> Result<()> {
+    match args.command {
+        AgentsCommand::List => run_agents_list(),
+        AgentsCommand::Refresh => run_agents_refresh(),
+        AgentsCommand::Doctor => run_agents_doctor(),
+    }
+}
+
+fn run_agents_list() -> Result<()> {
+    let mappings = merged_agent_mapping_config()?;
+    print_agent_mapping_scope("Global agent mappings", &mappings.global);
+    print_agent_mapping_scope("Project agent mappings", &mappings.project);
+    Ok(())
+}
+
+fn run_agents_refresh() -> Result<()> {
+    let result = init_agents(config_root_for_global()?)?;
+    print_success(format!(
+        "Updated agent mappings: {}",
+        result.agent_mapping_path.display()
+    ));
+    Ok(())
+}
+
+fn run_agents_doctor() -> Result<()> {
+    let diagnostics = collect_agent_diagnostics()?;
+    print_agent_diagnostics(&diagnostics);
+    if diagnostics.iter().any(AgentDiagnostic::is_error) {
+        bail!("agents doctor found problem(s)");
+    }
+    Ok(())
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let mut problems = Vec::new();
+    let mut warnings = Vec::new();
+
+    match load_config_for_scope(args.global, &current_dir) {
+        Ok(config) => {
+            let root_dir = if args.global {
+                config_root_for_global()?
+            } else {
+                current_dir.clone()
+            };
+            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+            let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+            match build_desired_link_plan(&config, &target_resolver) {
+                Ok(plan) => {
+                    for item in &plan.items {
+                        match &item.action {
+                            PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
+                            PlanAction::SourceMissing => problems.push(format!(
+                                "{} -> {}: source missing; try `sksync update` or `sksync install`",
+                                item.skill,
+                                item.agent.as_str()
+                            )),
+                            PlanAction::Conflict { reason } => problems.push(format!(
+                                "{} -> {}: target conflict ({reason}); inspect with `sksync plan`",
+                                item.skill,
+                                item.agent.as_str()
+                            )),
+                            PlanAction::DriftedSymlink { actual_source } => problems.push(format!(
+                                "{} -> {}: symlink drifted to {}; inspect with `sksync plan` or re-run `sksync apply --force` if safe",
+                                item.skill,
+                                item.agent.as_str(),
+                                actual_source.display()
+                            )),
+                        }
+                    }
+
+                    match read_lockfile(lockfile_path_for(args.global, &current_dir)?) {
+                        Ok(lockfile) => {
+                            let report = check_lockfile_with_plan(
+                                &lockfile,
+                                &plan,
+                                &Sha256SourceHashStore,
+                                &FileSystemLinkStore,
+                            );
+                            for problem in report.problems {
+                                problems.push(format!(
+                                    "lockfile/link health: {}; try `sksync install`, `sksync update`, or `sksync apply`",
+                                    problem.display_line()
+                                ));
+                            }
+                        }
+                        Err(error) => problems.push(format!(
+                            "lockfile: failed to load ({error}); try `sksync install`"
+                        )),
+                    }
+                }
+                Err(error) => problems.push(format!(
+                    "plan: failed to build desired link plan ({error}); try `sksync plan`"
+                )),
+            }
+        }
+        Err(error) => problems.push(format!(
+            "config: failed to load ({error}); try `sksync init{}`",
+            if args.global { " --global" } else { "" }
+        )),
+    }
+
+    for diagnostic in collect_agent_diagnostics()? {
+        let message = format!(
+            "agent mapping: {} {} -> {}: {}; try `sksync agents doctor`",
+            diagnostic.scope,
+            diagnostic.name,
+            diagnostic.target.display(),
+            diagnostic.status
+        );
+        if diagnostic.is_error() {
+            problems.push(message);
+        } else if diagnostic.is_warning() {
+            warnings.push(message);
+        }
+    }
+
+    if !warnings.is_empty() {
+        print_section_with_count("Doctor warnings", warnings.len());
+        for warning in &warnings {
+            println!("! {warning}");
+        }
+    }
+
+    if problems.is_empty() {
+        if warnings.is_empty() {
+            print_success(
+                "Doctor passed. Config, lockfile, links, sources, and agent mappings look healthy.",
+            );
+        } else {
+            print_success("Doctor passed with warning(s). No required repair was detected.");
+        }
+        return Ok(());
+    }
+
+    print_section_with_count("Doctor problems", problems.len());
+    for problem in &problems {
+        println!("✗ {problem}");
+    }
+    bail!("doctor found {} problem(s)", problems.len())
+}
+
+fn run_import(args: ImportArgs) -> Result<()> {
+    parse_agent_kinds(&args.agents)?;
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let config = if config_path.exists() {
+        Some(
+            load_config_for_scope(args.global, &current_dir)
+                .context("failed to load config before import")?,
+        )
+    } else {
+        None
+    };
+    let configured = config
+        .as_ref()
+        .map(|config| {
+            config
+                .skills
+                .iter()
+                .map(|skill| skill.name.as_str().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let skill_dir = config
+        .map(|config| config.skill_dir.as_path().to_path_buf())
+        .unwrap_or(resolve_default_skill_dir(args.global, &current_dir)?);
+    let scan = scan_import_candidates(&args.path, &skill_dir, &configured)?;
+
+    print_import_scan(&scan, args.dry_run);
+    if args.dry_run {
+        return Ok(());
+    }
+    if scan.importable.is_empty() {
+        bail!("no importable skills found")
+    }
+    if !scan.conflicts.is_empty() {
+        bail!("import has conflict(s); rerun with --dry-run for details")
+    }
+
+    let backup = ConfigFileBackup::capture(&config_path)?;
+    let mut copied_destinations = Vec::new();
+    let result = (|| -> Result<()> {
+        let store =
+            FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+        for candidate in &scan.importable {
+            if candidate.destination.exists() {
+                bail!(
+                    "destination already exists: {}",
+                    candidate.destination.display()
+                )
+            }
+            copied_destinations.push(candidate.destination.clone());
+            copy_dir_all(&candidate.source, &candidate.destination)?;
+            let source = config_source_for_path(&candidate.destination, &current_dir);
+            store.add_dependency(&candidate.name, &source, &args.agents)?;
+            print_success(format!(
+                "Imported {} -> {}",
+                candidate.name,
+                candidate.destination.display()
+            ));
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        for destination in copied_destinations.iter().rev() {
+            if destination.exists() {
+                let _ = fs::remove_dir_all(destination);
+            }
+        }
+        if let Err(restore_error) = backup.restore() {
+            return Err(error.context(format!(
+                "sksync import failed and config rollback failed: {restore_error}"
+            )));
+        }
+        return Err(
+            error.context("sksync import failed; restored previous config and copied files")
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct AgentDiagnostic {
+    scope: &'static str,
+    name: String,
+    target: PathBuf,
+    status: String,
+}
+
+impl AgentDiagnostic {
+    fn is_ok(&self) -> bool {
+        self.status == "ok"
+    }
+
+    fn is_warning(&self) -> bool {
+        self.status == "missing"
+    }
+
+    fn is_error(&self) -> bool {
+        !self.is_ok() && !self.is_warning()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImportCandidate {
+    name: String,
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct ImportScan {
+    importable: Vec<ImportCandidate>,
+    conflicts: Vec<ImportCandidate>,
+    invalid: Vec<String>,
+}
+
+fn print_agent_mapping_scope(label: &str, mappings: &BTreeMap<String, PathBuf>) {
+    print_section_with_count(label, mappings.len());
+    if mappings.is_empty() {
+        print_info("No mappings configured.");
+        return;
+    }
+    let rows = mappings
+        .iter()
+        .map(|(agent, target)| vec![agent.clone(), target.display().to_string()])
+        .collect::<Vec<_>>();
+    print_table(&["Agent", "Target"], &rows);
+}
+
+fn collect_agent_diagnostics() -> Result<Vec<AgentDiagnostic>> {
+    let mappings = merged_agent_mapping_config()?;
+    let project_root = std::env::current_dir().context("failed to determine current directory")?;
+    let global_root = config_root_for_global()?;
+    let mut diagnostics = Vec::new();
+    for (name, target) in mappings.global {
+        diagnostics.push(agent_diagnostic("global", name, target, &global_root));
+    }
+    for (name, target) in mappings.project {
+        diagnostics.push(agent_diagnostic("project", name, target, &project_root));
+    }
+    Ok(diagnostics)
+}
+
+fn agent_diagnostic(
+    scope: &'static str,
+    name: String,
+    target: PathBuf,
+    root: &Path,
+) -> AgentDiagnostic {
+    let resolved = resolve_agent_path(&target, root);
+    let status = match fs::metadata(&resolved) {
+        Ok(metadata) if !metadata.is_dir() => "not a directory".to_owned(),
+        Ok(metadata) if metadata.permissions().readonly() => "read-only".to_owned(),
+        Ok(_) => "ok".to_owned(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".to_owned(),
+        Err(error) => format!("unreadable: {error}"),
+    };
+    AgentDiagnostic {
+        scope,
+        name,
+        target: resolved,
+        status,
+    }
+}
+
+fn resolve_agent_path(path: &Path, root: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn print_agent_diagnostics(diagnostics: &[AgentDiagnostic]) {
+    print_section_with_count("Agent diagnostics", diagnostics.len());
+    for diagnostic in diagnostics {
+        let badge = if diagnostic.is_ok() {
+            "OK"
+        } else if diagnostic.is_warning() {
+            "WARN"
+        } else {
+            "ISSUE"
+        };
+        println!("{badge:<6} {} {}", diagnostic.scope, diagnostic.name);
+        print_detail(format!("target: {}", diagnostic.target.display()));
+        print_detail(format!("status: {}", diagnostic.status));
+    }
+}
+
+fn resolve_default_skill_dir(global: bool, current_dir: &Path) -> Result<PathBuf> {
+    let default = default_skill_dir_for(global)?;
+    let global_root;
+    let root = if global {
+        global_root = config_root_for_global()?;
+        global_root.as_path()
+    } else {
+        current_dir
+    };
+    Ok(resolve_agent_path(&default, root))
+}
+
+fn validate_import_skill_name(name: &str) -> Result<SkillName> {
+    let skill_name = SkillName::new(name.to_owned())
+        .with_context(|| format!("invalid skill name in SKILL.md: {name:?}"))?;
+    if skill_name.as_str() == "." || skill_name.as_str() == ".." {
+        bail!("invalid skill name in SKILL.md: {name:?}")
+    }
+    Ok(skill_name)
+}
+
+fn scan_import_candidates(
+    root: &Path,
+    skill_dir: &Path,
+    configured: &std::collections::BTreeSet<String>,
+) -> Result<ImportScan> {
+    let mut scan = ImportScan::default();
+    scan_import_candidates_inner(root, root, skill_dir, configured, 0, &mut scan)?;
+    Ok(scan)
+}
+
+fn scan_import_candidates_inner(
+    root: &Path,
+    dir: &Path,
+    skill_dir: &Path,
+    configured: &std::collections::BTreeSet<String>,
+    depth: usize,
+    scan: &mut ImportScan,
+) -> Result<()> {
+    if depth > 5 {
+        return Ok(());
+    }
+    let manifest_path = dir.join("SKILL.md");
+    if manifest_path.exists() {
+        match fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))
+            .and_then(|content| parse_skill_manifest(&content).map_err(Into::into))
+        {
+            Ok(manifest) => {
+                let skill_name = validate_import_skill_name(&manifest.name)?;
+                let candidate = ImportCandidate {
+                    name: skill_name.as_str().to_owned(),
+                    source: dir.to_path_buf(),
+                    destination: skill_dir.join(skill_name.as_str()),
+                };
+                if configured.contains(&candidate.name) || candidate.destination.exists() {
+                    scan.conflicts.push(candidate);
+                } else {
+                    scan.importable.push(candidate);
+                }
+            }
+            Err(error) => {
+                let relative = dir.strip_prefix(root).unwrap_or(dir);
+                scan.invalid
+                    .push(format!("{}: {error}", relative.display()));
+            }
+        }
+        return Ok(());
+    }
+
+    if !dir.is_dir() {
+        bail!("import source is not a directory: {}", dir.display())
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry =
+            entry.with_context(|| format!("failed to read entry under {}", dir.display()))?;
+        if entry.file_type()?.is_dir() {
+            scan_import_candidates_inner(
+                root,
+                &entry.path(),
+                skill_dir,
+                configured,
+                depth + 1,
+                scan,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn print_import_scan(scan: &ImportScan, dry_run: bool) {
+    let label = if dry_run {
+        "Import dry run"
+    } else {
+        "Import plan"
+    };
+    print_section_with_count(label, scan.importable.len() + scan.conflicts.len());
+    for candidate in &scan.importable {
+        println!("IMPORT {}", candidate.name);
+        print_detail(format!("from: {}", candidate.source.display()));
+        print_detail(format!("to: {}", candidate.destination.display()));
+    }
+    for candidate in &scan.conflicts {
+        println!("CONFLICT {}", candidate.name);
+        print_detail(format!("from: {}", candidate.source.display()));
+        print_detail(format!("to: {}", candidate.destination.display()));
+    }
+    for invalid in &scan.invalid {
+        println!("INVALID {invalid}");
+    }
+}
+
+fn config_source_for_path(path: &Path, current_dir: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(current_dir) {
+        return format!("./{}", relative.display());
+    }
+    path.display().to_string()
+}
+
+fn copy_dir_all(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        bail!("destination already exists: {}", destination.display())
+    }
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    let result = copy_dir_contents(source, destination);
+    if result.is_err() && destination.exists() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
+}
+
+fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry under {}", source.display()))?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    entry.path().display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1456,11 +2001,11 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, compact_revision, compact_source,
+        agent_target_mappings_from_config, compact_revision, compact_source, copy_dir_all,
         format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
         list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
-        score_skill_choice, select_skill_candidates, truncate_middle, Cli, Command,
-        ConfigFileBackup,
+        scan_import_candidates, score_skill_choice, select_skill_candidates, truncate_middle, Cli,
+        Command, ConfigFileBackup,
     };
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
@@ -1468,7 +2013,7 @@ mod tests {
     use crate::domain::scope::Scope;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1494,8 +2039,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "init", "add", "attach", "remove", "outdated", "plan", "apply", "install",
-                "update", "check", "list", "wizard",
+                "init", "add", "attach", "agents", "doctor", "import", "remove", "outdated",
+                "plan", "apply", "install", "update", "check", "list", "wizard",
             ]
         );
     }
@@ -1515,6 +2060,145 @@ mod tests {
     #[test]
     fn init_agents_is_registered() {
         Cli::try_parse_from(["sksync", "init", "--agents"]).expect("init --agents should parse");
+    }
+
+    #[test]
+    fn agents_subcommands_are_registered() {
+        Cli::try_parse_from(["sksync", "agents", "list"]).expect("agents list parses");
+        Cli::try_parse_from(["sksync", "agents", "refresh"]).expect("agents refresh parses");
+        Cli::try_parse_from(["sksync", "agents", "doctor"]).expect("agents doctor parses");
+    }
+
+    #[test]
+    fn doctor_command_is_registered() {
+        Cli::try_parse_from(["sksync", "doctor"]).expect("doctor parses");
+        Cli::try_parse_from(["sksync", "doctor", "--global"]).expect("doctor --global parses");
+    }
+
+    #[test]
+    fn import_requires_agent_and_accepts_dry_run() {
+        assert!(Cli::try_parse_from(["sksync", "import", "./skills"]).is_err());
+        Cli::try_parse_from([
+            "sksync",
+            "import",
+            "./skills",
+            "--agent",
+            "jcode",
+            "--dry-run",
+        ])
+        .expect("import --agent --dry-run parses");
+    }
+
+    #[test]
+    fn import_scan_detects_valid_skills_and_conflicts() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("agent-skills");
+        let skill_dir = temp.path().join(".sksync/skills");
+        fs::create_dir_all(source.join("review")).expect("create review");
+        fs::create_dir_all(source.join("existing")).expect("create existing");
+        fs::write(
+            source.join("review/SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\n# Review\n",
+        )
+        .expect("write review manifest");
+        fs::write(
+            source.join("existing/SKILL.md"),
+            "---\nname: existing\ndescription: Existing skill\n---\n# Existing\n",
+        )
+        .expect("write existing manifest");
+        fs::create_dir_all(skill_dir.join("existing")).expect("create conflict destination");
+
+        let configured = BTreeSet::new();
+        let scan = scan_import_candidates(&source, &skill_dir, &configured).expect("scan import");
+
+        assert_eq!(
+            scan.importable
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["review"]
+        );
+        assert_eq!(
+            scan.conflicts
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing"]
+        );
+    }
+
+    #[test]
+    fn import_scan_rejects_skill_names_that_escape_skill_dir() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("agent-skills");
+        let skill_dir = temp.path().join(".sksync/skills");
+        fs::create_dir_all(source.join("escaped")).expect("create escaped");
+        fs::write(
+            source.join("escaped/SKILL.md"),
+            "---\nname: ..\ndescription: Escape\n---\n# Escape\n",
+        )
+        .expect("write escaping manifest");
+
+        let configured = BTreeSet::new();
+        let error = scan_import_candidates(&source, &skill_dir, &configured)
+            .expect_err("escaping skill name must fail");
+
+        assert!(error.to_string().contains("invalid skill name"));
+        assert!(!skill_dir.exists());
+    }
+
+    #[test]
+    fn import_scan_rejects_skill_names_with_separators() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("agent-skills");
+        let skill_dir = temp.path().join(".sksync/skills");
+        fs::create_dir_all(source.join("nested")).expect("create nested");
+        fs::write(
+            source.join("nested/SKILL.md"),
+            "---\nname: foo/bar\ndescription: Nested\n---\n# Nested\n",
+        )
+        .expect("write nested manifest");
+
+        let configured = BTreeSet::new();
+        let error = scan_import_candidates(&source, &skill_dir, &configured)
+            .expect_err("separator skill name must fail");
+
+        assert!(error.to_string().contains("invalid skill name"));
+        assert!(!skill_dir.exists());
+    }
+
+    #[test]
+    fn import_scan_reports_invalid_skill_manifests_without_writing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("agent-skills");
+        let skill_dir = temp.path().join(".sksync/skills");
+        fs::create_dir_all(source.join("broken")).expect("create broken");
+        fs::write(source.join("broken/SKILL.md"), "# Missing frontmatter\n")
+            .expect("write broken manifest");
+
+        let configured = BTreeSet::new();
+        let scan = scan_import_candidates(&source, &skill_dir, &configured).expect("scan import");
+
+        assert!(scan.importable.is_empty());
+        assert!(scan.conflicts.is_empty());
+        assert_eq!(scan.invalid.len(), 1);
+        assert!(!skill_dir.exists());
+    }
+
+    #[test]
+    fn copy_dir_all_cleans_partial_destination_on_copy_failure() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).expect("create source");
+        fs::write(source.join("copied-first.txt"), "partial").expect("write regular file");
+        std::os::unix::fs::symlink(source.join("missing"), source.join("dangling"))
+            .expect("create dangling symlink");
+
+        let error = copy_dir_all(&source, &destination).expect_err("dangling symlink should fail");
+
+        assert!(error.to_string().contains("failed to copy"));
+        assert!(!destination.exists());
     }
 
     #[test]
