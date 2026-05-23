@@ -94,6 +94,14 @@ fn agents_example_uses_documented_skill_directories() {
     );
     assert_eq!(agents["global"]["jcode"]["targetDir"], "~/.jcode/skills");
     assert_eq!(agents["project"]["jcode"]["targetDir"], ".jcode/skills");
+    assert_eq!(
+        agents["global"]["universal"]["targetDir"],
+        "~/.agents/skills"
+    );
+    assert_eq!(
+        agents["project"]["universal"]["targetDir"],
+        ".agents/skills"
+    );
 }
 
 #[test]
@@ -110,6 +118,7 @@ fn agents_example_includes_skillkit_compatible_mappings() {
         "opencode",
         "github-copilot",
         "jcode",
+        "universal",
         "windsurf",
         "roo",
         "aider",
