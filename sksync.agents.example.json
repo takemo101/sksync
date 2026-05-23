@@ -134,7 +134,7 @@
       "targetDir": "~/.trae/skills"
     },
     "universal": {
-      "targetDir": "~/skills"
+      "targetDir": "~/.agents/skills"
     },
     "vercel": {
       "targetDir": "~/.vercel/skills"
@@ -280,7 +280,7 @@
       "targetDir": ".trae/skills"
     },
     "universal": {
-      "targetDir": "skills"
+      "targetDir": ".agents/skills"
     },
     "vercel": {
       "targetDir": ".vercel/skills"
