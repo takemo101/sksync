@@ -46,12 +46,35 @@ sksync apply
   └─ ...
 ```
 
+### Product boundary
+
+`sksync` は総合的な skill marketplace / package platform ではなく、**安全・再現可能・軽量な Agent Skills deployment / sync tool** として設計する。
+
+中心に置く価値は以下に限定する。
+
+- config と lockfile による再現可能な skill 配置
+- source body と agent target symlink の安全な同期
+- project / global scope の明確な分離
+- agent target mapping の確認・更新
+- 既存手管理 skill からの保守的な移行
+
+意図的に扱わないもの:
+
+- marketplace / large registry の運営
+- recommendation / stack-aware skill suggestion
+- agent 間 format translation
+- REST / MCP server
+- mesh / messaging
+- `doctor` による自動修復
+
+これらは将来も core に入れず、必要になった場合のみ外部連携または別ツールとして検討する。
+
 ## 3. 用語
 
 | 用語       | 意味                                                                |
 | ---------- | ------------------------------------------------------------------- |
 | skill      | エージェントが読み込む再利用可能な指示・ツール説明・テンプレート    |
-| source     | SkillKit-style install source または skill の実体ディレクトリ       |
+| source     | GitHub / skills.sh / local などの install source または skill の実体ディレクトリ |
 | dependency | どこから skill を取得し、どの agent へリンクするかの設定            |
 | target     | 各エージェントが参照する配置先                                      |
 | mapping    | agent ごとの target directory 設定                                  |
@@ -89,7 +112,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 }
 ```
 
-SkillKit と同様に source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.sksync/config.json` を更新する。
+source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.sksync/config.json` を更新する。
 
 #### source formats
 
@@ -169,7 +192,7 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 }
 ```
 
-`sksync.agents.example.json` は SkillKit の supported agents に近い agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。`global` は global/user scope、`project` は全 project 共通の project scope として扱う。
+`sksync.agents.example.json` は主要な coding agent keys を含め、`sksync init --global` で `~/.sksync/agents.json` として生成する。`global` は global/user scope、`project` は全 project 共通の project scope として扱う。
 
 ### 設定方針
 
@@ -185,13 +208,15 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 
 > 実際のパスは各ツールの仕様確認後に確定する。ここでは初期設計として override 可能な default を置く。
 
-| agent       | user scope default          | project scope default | 備考                                  |
-| ----------- | --------------------------- | --------------------- | ------------------------------------- |
-| pi          | `~/.pi/agent/skills`        | `.pi/agent/skills`    | 既存 pi skill 形式に合わせる          |
-| claude-code | `~/.claude/skills`          | `.claude/skills`      | Claude Code の skill 配置先として扱う |
-| codex       | `~/.codex/skills`           | `.codex/skills`       | 将来 instructions 変換が必要かも      |
-| gemini      | `~/.gemini/skills`          | `.gemini/skills`      | Gemini CLI 側仕様に合わせて調整       |
-| opencode    | `~/.config/opencode/skills` | `.opencode/skills`    | OS 差分に注意                         |
+| agent       | user scope default              | project scope default | 備考                                      |
+| ----------- | ------------------------------- | --------------------- | ----------------------------------------- |
+| pi          | `~/.pi/agent/skills`            | `.pi/agent/skills`    | 既存 pi skill 形式に合わせる              |
+| claude-code | `~/.claude/skills`              | `.claude/skills`      | Claude Code の skill 配置先として扱う     |
+| codex       | `~/.codex/skills`               | `.codex/skills`       | 将来 instructions 変換が必要かも          |
+| gemini      | `~/.gemini/skills`              | `.gemini/skills`      | Gemini CLI 側仕様に合わせて調整           |
+| jcode       | `~/.jcode/skills`               | `.jcode/skills`       | jcode の skill 配置先として扱う           |
+| opencode    | `~/.config/opencode/skills`     | `.opencode/skills`    | OS 差分に注意                             |
+| antigravity | `~/.gemini/antigravity/skills`  | `.agents/skills`      | workspace default は `.agents/skills`     |
 
 ## 6. Lockfile 案
 
@@ -243,11 +268,15 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 | `sksync add <source> --agent <agent>`   | `npm install <pkg>` / `npm add` | dependency config に追加し、取得・link まで実行する                                       |
 | `sksync install`                        | `npm install`                   | lockfile があれば lockfile を優先して再現し、なければ config から構成して lockfile を作る |
 | `sksync update`                         | `npm update`                    | config の dependencies から最新または指定 version を取得し、lockfile を更新する           |
+| `sksync attach <skill> --agent <agent>` | npm optional dependency add     | 既存 dependency-managed skill を追加 agent に紐づける                                    |
 | `sksync remove <skill>`                 | `npm uninstall`                 | dependency / installed skill / lockfile entry / managed symlink を削除する                |
 | `sksync remove <skill> --agent <agent>` | npm optional dependency removal | 指定 agent の dependency target / managed symlink だけを削除する                          |
 | `sksync outdated`                       | `npm outdated`                  | lockfile の resolved source と upstream/latest を比較し、更新可能な skill を表示する      |
 | `sksync apply`                          | sksync specific                 | installed skill から agent target へ symlink を反映する                                   |
 | `sksync check`                          | `npm ls` / health check         | lockfile hash、source、target symlink の drift を検査する                                 |
+| `sksync doctor`                         | health check                    | read-only で config / lockfile / source / target / mapping の問題を診断する              |
+| `sksync agents <subcommand>`            | config management               | agent target mapping の一覧・診断・更新を行う                                            |
+| `sksync import <path> --agent <agent>`  | migration                       | 既存 skill directory を copy-only で `.sksync/skills` に取り込む                         |
 | `sksync list`                           | `npm ls`                        | 管理中 skill と agent ごとの link 状態を一覧表示する                                      |
 | `sksync wizard`                         | n/a                             | 質問形式の wizard で状態確認と操作を行う                                                  |
 
@@ -265,7 +294,7 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 
 ### `sksync add <source> --agent <agent>`
 
-- SkillKit-style source を受け取る
+- GitHub / skills.sh / local source を受け取る
 - `dependencies.<skill>` を config に追加する
 - `--agent` は複数指定できる
 - `--global` の場合は `~/.sksync/config.json` を更新する
@@ -284,6 +313,17 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 - Git source は取得後に exact commit SHA に解決し、lockfile に保存する
 - source URL transformer で Git source に変換された source は resolved commit / integrity を lockfile に保存する想定
 - `update` 自体は dependency 更新と lockfile 更新を主目的とし、symlink 反映は `install` / `apply` に寄せる
+
+### `sksync attach <skill> --agent <agent>`
+
+agent 単位追加。
+
+- `--agent` は複数指定できる
+- 既存の dependency-managed skill だけを対象にする
+- config の `dependencies.<skill>.agents` に指定 agent を追加する
+- 既存の `dependencies.<skill>.source` 表現は string / structured object のどちらでも保持する
+- 追加後に install/apply 相当の処理を実行する
+- `--global` で global config / lockfile を対象にする
 
 ### `sksync remove <skill>`
 
@@ -328,6 +368,37 @@ agent 単位削除。
 - symlink が壊れていないか確認
 - source hash と lockfile hash のズレを確認
 
+### `sksync doctor`
+
+read-only の総合診断。自動修復はしない。
+
+- config / agents.json / lockfile の parse と schema 的な整合性を確認する
+- dependencies と installed source directory の対応を確認する
+- lockfile hash drift / missing source / stale source を確認する
+- target conflict / broken symlink / drifted symlink を確認する
+- agent target mapping の存在、targetDir の存在、書き込み可否を確認する
+- 問題ごとに次に実行すべき `init --agents` / `agents refresh` / `plan` / `apply` / `update` / `remove` などの候補を提示する
+
+### `sksync agents`
+
+agent target mapping の管理に限定した command group。
+
+- `sksync agents list`: bundled mapping と user mapping を scope 別に一覧表示する
+- `sksync agents doctor`: targetDir の存在・書き込み可否・重複 mapping を read-only で確認する
+- `sksync agents refresh`: bundled mapping を `~/.sksync/agents.json` に反映する
+- 既存の `sksync init --agents` は将来的に `sksync agents refresh` への導線または alias として整理する
+
+### `sksync import <path> --agent <agent>`
+
+既存手管理 skill directory からの移行用。copy-only を原則とする。
+
+- 元ディレクトリは変更・削除・symlink 置換しない
+- 指定 path 配下の skill directory を scan する
+- `.sksync/skills` または `~/.sksync/skills` にコピーする
+- config の `dependencies` または local source として登録する
+- symlink 置換は import では行わず、`plan` / `apply` で別途確認する
+- `--dry-run` でコピー予定・衝突・名前重複を確認できるようにする
+
 ### `sksync list`
 
 - 管理中 skill 一覧
@@ -335,7 +406,7 @@ agent 単位削除。
 
 ### `sksync wizard`
 
-- SkillKit のような質問形式の対話フローを起動する
+- 質問形式の対話フローを起動する
 - `sksync ask` / `sksync tui` は互換 alias として扱う
 - ユーザーに「追加 / 削除 / agent 変更 / 状態確認」などの intent を選ばせる
 - intent ごとに必要な source / skill / agent / scope を順番に質問する
@@ -351,6 +422,7 @@ agent 単位削除。
 ```text
 ? What would you like to do?
   > Add skill
+    Attach skill to agent
     Remove skill
     Detach skill from agent
     Show status
@@ -379,6 +451,7 @@ Planned changes:
 | intent            | prompts                                                            | usecase           |
 | ----------------- | ------------------------------------------------------------------ | ----------------- |
 | add skill         | source, name override, agent, global scope                         | `add`             |
+| attach to agent   | project/global scope, configured skill list, available agent list  | `attach`          |
 | remove skill      | project/global scope, configured skill list, remove mode           | `remove`          |
 | detach from agent | project/global scope, configured skill list, configured agent list | `remove --agent`  |
 | status            | global scope, output detail                                        | `list` / `check`  |
