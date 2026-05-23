@@ -166,10 +166,7 @@ pub fn source_with_selected_subpath(
     let (body, reference) = split_source_reference(source);
     let selected = relative_path.to_string_lossy().replace('\\', "/");
     let (body, reference) = if is_skills_sh_source_body(body) {
-        (
-            rewrite_skills_sh_selected_path(body, &selected, rewrite_mode),
-            reference,
-        )
+        rewrite_skills_sh_selected_path(body, &selected, rewrite_mode, reference)
     } else if is_plain_github_url_body(body) {
         (
             append_github_url_selected_path(body, &selected, reference),
@@ -196,13 +193,14 @@ fn is_skills_sh_source_body(body: &str) -> bool {
     skills_sh_prefix(body).is_some()
 }
 
-fn rewrite_skills_sh_selected_path(
+fn rewrite_skills_sh_selected_path<'a>(
     body: &str,
     selected: &str,
     rewrite_mode: SourceRewriteMode,
-) -> String {
+    reference: Option<&'a str>,
+) -> (String, Option<&'a str>) {
     let Some(prefix) = skills_sh_prefix(body) else {
-        return append_path_to_source_body(body, selected);
+        return (append_path_to_source_body(body, selected), reference);
     };
     let rest = body.trim_start_matches(prefix).trim_matches('/');
     let parts = rest
@@ -210,13 +208,20 @@ fn rewrite_skills_sh_selected_path(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
     if parts.len() < 2 {
-        return append_path_to_source_body(body, selected);
+        return (append_path_to_source_body(body, selected), reference);
     }
 
-    let selected_path = selected
-        .strip_prefix("skills/")
-        .unwrap_or(selected)
-        .trim_matches('/');
+    let selected = selected.trim_matches('/');
+    let selected_under_skills = selected == "skills" || selected.starts_with("skills/");
+    if should_store_skills_sh_selection_as_github_tree(&parts, selected_under_skills, rewrite_mode)
+    {
+        return (
+            github_tree_source_from_skills_sh_parts(parts[0], parts[1], selected, reference),
+            None,
+        );
+    }
+
+    let selected_path = selected.strip_prefix("skills/").unwrap_or(selected);
     let mut result = format!("{}{}/{}", prefix, parts[0], parts[1]);
 
     match rewrite_mode {
@@ -226,7 +231,7 @@ fn rewrite_skills_sh_selected_path(
                 result.push_str(parts[2..].join("/").trim_matches('/'));
             }
             let selected_path = if parts.len() > 2 {
-                selected.trim_matches('/')
+                selected
             } else {
                 selected_path
             };
@@ -243,7 +248,29 @@ fn rewrite_skills_sh_selected_path(
         }
     }
 
-    result
+    (result, reference)
+}
+
+fn should_store_skills_sh_selection_as_github_tree(
+    parts: &[&str],
+    selected_under_skills: bool,
+    rewrite_mode: SourceRewriteMode,
+) -> bool {
+    !selected_under_skills
+        && match rewrite_mode {
+            SourceRewriteMode::ReplaceSkillsShPath => true,
+            SourceRewriteMode::Append => parts.len() == 2,
+        }
+}
+
+fn github_tree_source_from_skills_sh_parts(
+    owner: &str,
+    repo: &str,
+    selected: &str,
+    reference: Option<&str>,
+) -> String {
+    let reference = reference.unwrap_or("HEAD");
+    format!("https://github.com/{owner}/{repo}/tree/{reference}/{selected}")
 }
 
 fn skills_sh_prefix(body: &str) -> Option<&'static str> {
