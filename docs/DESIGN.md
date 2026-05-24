@@ -145,20 +145,21 @@ source が repo root や親ディレクトリを指す場合は配下の `SKILL.
 
 #### skills.sh transformer
 
-`skills.sh` は registry ではなく GitHub source への URL transformer として扱う。
+`skills.sh` は registry ではなく GitHub source への URL transformer として扱う。入力には `skills.sh` URL / shorthand を使えるが、config には選択後の実 GitHub path を `https://github.com/<owner>/<repo>/tree/<ref>/<path>` として保存する。
 
 ```text
 https://www.skills.sh/vercel-labs/skills/find-skills
 → https://github.com/vercel-labs/skills.git
 → skills/find-skills
+→ saved source: https://github.com/vercel-labs/skills/tree/HEAD/skills/find-skills
 ```
 
-`skills.sh` の direct URL が実際の GitHub repo path と一致しない場合は、repo root discovery で URL slug に一致する skill を探し、実際の path を反映した source を保存する。
+`skills.sh` の direct URL が実際の GitHub repo path と一致しない場合は、repo root discovery で URL slug に一致する skill を探し、その exact GitHub tree URL を保存する。
 
 ```text
-https://www.skills.sh/mattpocock/skills/grill-me
-→ discovers skills/productivity/grill-me
-→ saved source: https://www.skills.sh/mattpocock/skills/productivity/grill-me
+https://www.skills.sh/gitbutlerapp/gitbutler/but
+→ discovers crates/but/skill
+→ saved source: https://github.com/gitbutlerapp/gitbutler/tree/HEAD/crates/but/skill
 ```
 
 #### install validation
