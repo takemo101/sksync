@@ -2518,38 +2518,50 @@ mod tests {
     }
 
     #[test]
-    fn selected_subpath_is_appended_to_skills_sh_source_as_skill_name() {
+    fn selected_subpath_from_skills_sh_repo_root_becomes_github_tree_url() {
         assert_eq!(
             source_with_selected_subpath(
                 "https://www.skills.sh/vercel-labs/skills",
                 Path::new("skills/find-skills"),
                 SourceRewriteMode::Append,
             ),
-            "https://www.skills.sh/vercel-labs/skills/find-skills"
+            "https://github.com/vercel-labs/skills/tree/HEAD/skills/find-skills"
         );
     }
 
     #[test]
-    fn selected_subpath_preserves_skills_sh_parent_path() {
+    fn selected_subpath_from_skills_sh_parent_path_becomes_github_tree_url() {
         assert_eq!(
             source_with_selected_subpath(
                 "skills.sh/owner/repo/category",
                 Path::new("foo"),
                 SourceRewriteMode::Append,
             ),
-            "skills.sh/owner/repo/category/foo"
+            "https://github.com/owner/repo/tree/HEAD/skills/category/foo"
         );
     }
 
     #[test]
-    fn selected_subpath_replaces_missing_skills_sh_direct_path() {
+    fn selected_subpath_from_skills_sh_direct_path_becomes_github_tree_url() {
         assert_eq!(
             source_with_selected_subpath(
                 "https://www.skills.sh/mattpocock/skills/grill-me",
                 Path::new("skills/productivity/grill-me"),
                 SourceRewriteMode::ReplaceSkillsShPath,
             ),
-            "https://www.skills.sh/mattpocock/skills/productivity/grill-me"
+            "https://github.com/mattpocock/skills/tree/HEAD/skills/productivity/grill-me"
+        );
+    }
+
+    #[test]
+    fn direct_skills_sh_selected_subpath_becomes_github_tree_url() {
+        assert_eq!(
+            source_with_selected_subpath(
+                "https://www.skills.sh/vercel-labs/skills/find-skills#main",
+                Path::new("."),
+                SourceRewriteMode::Append,
+            ),
+            "https://github.com/vercel-labs/skills/tree/main/skills/find-skills"
         );
     }
 

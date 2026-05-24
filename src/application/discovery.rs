@@ -159,11 +159,11 @@ pub fn source_with_selected_subpath(
     relative_path: &Path,
     rewrite_mode: SourceRewriteMode,
 ) -> String {
-    if relative_path == Path::new(".") {
+    let (body, reference) = split_source_reference(source);
+    if relative_path == Path::new(".") && !is_skills_sh_source_body(body) {
         return source.to_owned();
     }
 
-    let (body, reference) = split_source_reference(source);
     let selected = relative_path.to_string_lossy().replace('\\', "/");
     let (body, reference) = if is_skills_sh_source_body(body) {
         rewrite_skills_sh_selected_path(body, &selected, rewrite_mode, reference)
@@ -212,55 +212,45 @@ fn rewrite_skills_sh_selected_path<'a>(
     }
 
     let selected = selected.trim_matches('/');
-    let selected_under_skills = selected == "skills" || selected.starts_with("skills/");
-    if should_store_skills_sh_selection_as_github_tree(&parts, selected_under_skills, rewrite_mode)
-    {
-        return (
-            github_tree_source_from_skills_sh_parts(parts[0], parts[1], selected, reference),
-            None,
-        );
-    }
-
-    let selected_path = selected.strip_prefix("skills/").unwrap_or(selected);
-    let mut result = format!("{}{}/{}", prefix, parts[0], parts[1]);
-
-    match rewrite_mode {
-        SourceRewriteMode::Append => {
-            if parts.len() > 2 {
-                result.push('/');
-                result.push_str(parts[2..].join("/").trim_matches('/'));
-            }
-            let selected_path = if parts.len() > 2 {
-                selected
-            } else {
-                selected_path
-            };
-            if !selected_path.is_empty() {
-                result.push('/');
-                result.push_str(selected_path);
-            }
-        }
+    let source_path = skills_sh_source_path_from_parts(&parts);
+    let tree_path = match rewrite_mode {
+        SourceRewriteMode::Append => append_skills_sh_tree_path(&source_path, selected),
         SourceRewriteMode::ReplaceSkillsShPath => {
-            if !selected_path.is_empty() {
-                result.push('/');
-                result.push_str(selected_path);
+            if selected == "." || selected.is_empty() {
+                source_path
+            } else {
+                selected.to_owned()
             }
         }
-    }
+    };
 
-    (result, reference)
+    (
+        github_tree_source_from_skills_sh_parts(parts[0], parts[1], &tree_path, reference),
+        None,
+    )
 }
 
-fn should_store_skills_sh_selection_as_github_tree(
-    parts: &[&str],
-    selected_under_skills: bool,
-    rewrite_mode: SourceRewriteMode,
-) -> bool {
-    !selected_under_skills
-        && match rewrite_mode {
-            SourceRewriteMode::ReplaceSkillsShPath => true,
-            SourceRewriteMode::Append => parts.len() == 2,
-        }
+fn skills_sh_source_path_from_parts(parts: &[&str]) -> String {
+    if parts.len() > 2 {
+        format!("skills/{}", parts[2..].join("/").trim_matches('/'))
+    } else {
+        ".".to_owned()
+    }
+}
+
+fn append_skills_sh_tree_path(source_path: &str, selected: &str) -> String {
+    if selected == "." || selected.is_empty() {
+        return source_path.to_owned();
+    }
+    if source_path == "." || source_path.is_empty() {
+        selected.to_owned()
+    } else {
+        format!(
+            "{}/{}",
+            source_path.trim_matches('/'),
+            selected.trim_matches('/')
+        )
+    }
 }
 
 fn github_tree_source_from_skills_sh_parts(
@@ -270,7 +260,11 @@ fn github_tree_source_from_skills_sh_parts(
     reference: Option<&str>,
 ) -> String {
     let reference = reference.unwrap_or("HEAD");
-    format!("https://github.com/{owner}/{repo}/tree/{reference}/{selected}")
+    if selected == "." || selected.is_empty() {
+        format!("https://github.com/{owner}/{repo}/tree/{reference}")
+    } else {
+        format!("https://github.com/{owner}/{repo}/tree/{reference}/{selected}")
+    }
 }
 
 fn skills_sh_prefix(body: &str) -> Option<&'static str> {
