@@ -34,7 +34,14 @@ fn config_schema_covers_supported_top_level_fields() {
     let schema = parse_json(include_str!("../schemas/sksync.schema.json"));
     let properties = schema["properties"].as_object().expect("properties object");
 
-    for field in ["$schema", "skillDir", "agents", "skills", "dependencies"] {
+    for field in [
+        "$schema",
+        "skillDir",
+        "agents",
+        "defaultAgents",
+        "skills",
+        "dependencies",
+    ] {
         assert!(properties.contains_key(field), "missing field {field}");
     }
 }

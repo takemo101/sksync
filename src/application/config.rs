@@ -50,6 +50,7 @@ pub struct ResolvedConfig {
     pub skill_dir: SourcePath,
     pub agents: BTreeMap<String, ResolvedAgent>,
     pub skills: Vec<ResolvedSkill>,
+    pub default_agents: Vec<AgentKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

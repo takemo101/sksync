@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
   "skillDir": "./.sksync/skills",
+  "defaultAgents": ["universal"],
   "dependencies": {
     "example-skill": {
       "source": "github:owner/repo/path/to/skills/example-skill#main",

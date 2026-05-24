@@ -36,6 +36,8 @@ pub struct RawConfig {
     #[serde(default)]
     pub agents: BTreeMap<String, RawAgentConfig>,
     #[serde(default)]
+    pub default_agents: Vec<String>,
+    #[serde(default)]
     pub skills: BTreeMap<String, RawSkillConfig>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, RawDependencyConfig>,
@@ -229,6 +231,7 @@ impl RawConfig {
             upsert_agent(&mut agents, &mut known_agents, name, raw_agent)?;
         }
 
+        let default_agents = parse_default_agents(self.default_agents)?;
         let mut skills = Vec::with_capacity(self.skills.len() + self.dependencies.len());
         for (name, raw_skill) in self.skills {
             let skill_name = parse_skill_name(&name)?;
@@ -283,6 +286,7 @@ impl RawConfig {
             skill_dir,
             agents,
             skills,
+            default_agents,
         })
     }
 }
@@ -345,6 +349,19 @@ fn parse_skill_name(name: &str) -> Result<SkillName, ConfigResolveError> {
         name: name.to_owned(),
         source,
     })
+}
+
+fn parse_default_agents(agents: Vec<String>) -> Result<Vec<AgentKind>, ConfigResolveError> {
+    let mut default_agents = Vec::with_capacity(agents.len());
+    let mut seen_agents = BTreeSet::new();
+    for agent in agents {
+        let kind = parse_agent_kind(&agent)?;
+        let key = kind.as_str().to_owned();
+        if seen_agents.insert(key) {
+            default_agents.push(kind);
+        }
+    }
+    Ok(default_agents)
 }
 
 fn resolve_skill_agents(
@@ -1140,6 +1157,33 @@ mod tests {
         assert!(config.skills[0].install_source.is_some());
         assert_eq!(config.agents["pi"].kind, AgentKind::Pi);
         assert_eq!(config.agents["pi"].scope, Scope::User);
+        assert_eq!(
+            config.default_agents,
+            vec![AgentKind::Custom(
+                crate::domain::agent::AgentName::new("universal").unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn parses_default_agents_with_alias_deduplication() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "defaultAgents": ["universal", "claude", "claude_code", "pi"]
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw.resolve().expect("config resolves");
+
+        assert_eq!(
+            config
+                .default_agents
+                .iter()
+                .map(AgentKind::as_str)
+                .collect::<Vec<_>>(),
+            vec!["universal", "claude-code", "pi"]
+        );
     }
 
     #[test]

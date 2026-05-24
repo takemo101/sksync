@@ -138,6 +138,18 @@ Antigravity は公式仕様に合わせ、workspace default の `.agents/skills`
 
 `universal` は Agent Skills ecosystem の canonical directory です。global は `~/.agents/skills`、project は `.agents/skills` に配置します。
 
+#### Default wizard agents
+
+`defaultAgents` を config に書くと、wizard の `Add skill` で agent selection が初期選択されます。CLI の `sksync add` では引き続き `--agent` の明示指定が必要です。
+
+```json
+{
+  "defaultAgents": ["universal", "pi"]
+}
+```
+
+`defaultAgents` は wizard の `Configure default agents` からも設定できます。
+
 ### `sksync add`
 
 SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。途中で install / plan / apply に失敗した場合は、変更前の config に rollback します。
@@ -380,7 +392,7 @@ cargo run -- list --global
 
 ### `sksync wizard`
 
-質問形式の prompt wizard で、add / attach / detach / remove / list+check / plan+apply を対話的に実行できます。`ask` と `tui` は互換 alias です。
+質問形式の prompt wizard で、add / attach / detach / remove / default agents 設定 / list+check / plan+apply を対話的に実行できます。`ask` と `tui` は互換 alias です。
 
 ```bash
 cargo run -- wizard

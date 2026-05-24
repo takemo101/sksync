@@ -136,6 +136,7 @@ mod tests {
                 install_source: Some(install_source),
                 agents: vec![AgentKind::Pi],
             }],
+            default_agents: Vec::new(),
         }
     }
 }

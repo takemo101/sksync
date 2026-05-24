@@ -95,6 +95,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
   "skillDir": "./.sksync/skills",
+  "defaultAgents": ["universal"],
   "dependencies": {
     "reviewer": {
       "source": "github:owner/repo/skills/reviewer#main",
@@ -113,6 +114,8 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 ```
 
 source は短い文字列を基本にする。`sksync add <source> --agent <agent>` はこの `dependencies` を更新し、そのまま update/apply まで実行する。`--global` 付きなら `~/.sksync/config.json` を更新する。
+
+`defaultAgents` は wizard の `Add skill` agent selection で初期選択する agent list。CLI の `add` では互換性と明示性のため `--agent` を引き続き必須にし、wizard 上での入力補助だけに使う。
 
 #### source formats
 
