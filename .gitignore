@@ -3,3 +3,8 @@
 /.sksync/
 /skills/
 /sksync-lock.json
+
+# docs site (VitePress)
+node_modules/
+site/.vitepress/cache
+site/.vitepress/dist
