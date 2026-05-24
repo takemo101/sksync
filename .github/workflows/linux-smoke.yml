@@ -1,0 +1,112 @@
+name: linux-smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: build x86_64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build portable Linux binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Package portable Linux archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="dist/sksync-x86_64-unknown-linux-musl"
+          mkdir -p "$staging"
+          cp target/x86_64-unknown-linux-musl/release/sksync "$staging/sksync"
+          tar -C "$staging" -czf dist/sksync-x86_64-unknown-linux-musl.tar.gz sksync
+
+      - name: Upload portable Linux archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: sksync-x86_64-unknown-linux-musl
+          path: dist/sksync-x86_64-unknown-linux-musl.tar.gz
+          if-no-files-found: error
+
+  docker-smoke:
+    name: ${{ matrix.image }}
+    needs: build-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:bookworm
+          - debian:trixie
+          - ubuntu:22.04
+          - ubuntu:24.04
+    steps:
+      - name: Download portable Linux archive
+        uses: actions/download-artifact@v4
+        with:
+          name: sksync-x86_64-unknown-linux-musl
+          path: dist
+
+      - name: Run smoke test in ${{ matrix.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_script="$RUNNER_TEMP/linux-smoke.sh"
+          cat > "$smoke_script" <<'SMOKE'
+          set -eux
+          install_dir=/tmp/sksync-bin
+          mkdir -p "$install_dir"
+          tar -xzf /work/dist/sksync-x86_64-unknown-linux-musl.tar.gz -C "$install_dir"
+          bin="$install_dir/sksync"
+          test -x "$bin"
+          export HOME=/tmp/sksync-home
+          mkdir -p "$HOME"
+          project=/tmp/sksync-project
+          mkdir -p "$project/local-skill"
+          cd "$project"
+          {
+            printf '%s\n' '---'
+            printf '%s\n' 'name: linux-smoke'
+            printf '%s\n' 'description: Linux distro smoke test skill.'
+            printf '%s\n' '---'
+            printf '%s\n' ''
+            printf '%s\n' '# Linux Smoke'
+            printf '%s\n' ''
+            printf '%s\n' 'This skill verifies sksync can run in a Linux container.'
+          } > local-skill/SKILL.md
+
+          "$bin" --help >/dev/null
+          "$bin" init
+          "$bin" add ./local-skill --agent universal
+          "$bin" plan --dry-run
+          "$bin" apply
+          "$bin" check
+          "$bin" list
+          test -L .agents/skills/linux-smoke
+          test -f .sksync/skills/linux-smoke/SKILL.md
+          "$bin" remove linux-smoke
+          test ! -e .agents/skills/linux-smoke
+          SMOKE
+          docker run --rm \
+            -v "$PWD/dist:/work/dist:ro" \
+            -v "$smoke_script:/tmp/linux-smoke.sh:ro" \
+            -w /tmp \
+            --entrypoint /bin/sh \
+            "${{ matrix.image }}" \
+            /tmp/linux-smoke.sh
