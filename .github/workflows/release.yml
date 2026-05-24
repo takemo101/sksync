@@ -89,21 +89,20 @@ jobs:
           path: dist/sksync-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
-  publish:
-    name: publish GitHub release
-    needs:
-      - build-macos
-      - build-linux
+  publish-linux:
+    name: publish Linux release assets
+    needs: build-linux
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download Linux artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: sksync-*-unknown-linux-musl
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Generate Linux checksums
         shell: bash
         run: |
           set -euo pipefail
@@ -111,10 +110,46 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
           cat checksums.txt
 
-      - name: Publish release
+      - name: Publish Linux assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
           generate_release_notes: true
+
+  publish-macos:
+    name: publish macOS release assets
+    needs:
+      - build-macos
+      - publish-linux
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: sksync-*-apple-darwin
+          merge-multiple: true
+
+      - name: Merge checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          gh release download "$TAG_NAME" --pattern checksums.txt --dir .
+          sha256sum *.tar.gz > macos-checksums.txt
+          cat checksums.txt macos-checksums.txt | sort -k2 > combined-checksums.txt
+          mv combined-checksums.txt checksums.txt
+          cat checksums.txt
+
+      - name: Publish macOS assets and refreshed checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG_NAME" dist/*.tar.gz dist/checksums.txt --clobber
