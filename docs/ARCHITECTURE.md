@@ -30,10 +30,11 @@ CLI/TUI/ファイルシステム操作は入口・出口として扱い、同期
 ┌───────────────────────▼─────────────────────┐
 │ Application Layer                            │
 │  - init                                      │
-│  - plan / dry-run                            │
-│  - apply                                     │
-│  - check                                     │
-│  - list                                      │
+│  - add / attach / remove                     │
+│  - install / update / outdated               │
+│  - plan / dry-run / apply                    │
+│  - check / list / doctor                     │
+│  - agents / import use cases                 │
 └───────────────────────┬─────────────────────┘
                         │
 ┌───────────────────────▼─────────────────────┐
@@ -65,6 +66,7 @@ Clean Architecture の依存ルールに従う。
 - `cli` / `tui` は `application` を呼ぶだけにする
 - `infrastructure` は `application` が定義した port / trait を実装する
 - TUI から直接 symlink 作成・lockfile 書き込みをしない
+- TUI が config preference (`defaultAgents`) を更新する場合は、既存 config JSON を保持する薄い adapter に限定する
 
 依存方向:
 
@@ -312,10 +314,11 @@ trait LinkStore {
 
 TUI は application の thin adapter とする。ここでの TUI は質問形式の wizard / prompt UI とする。
 
-- TUI は `AddUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
-- TUI は filesystem を直接触らない
+- TUI は `AddUseCase`, `AttachUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
+- TUI は symlink / source install / lockfile 操作の filesystem を直接触らない
+- wizard preference の config 更新は、既存 JSON fields を保持する adapter として扱う
 - TUI state は質問途中の回答、選択中 option、確認待ちだけにする
-- 追加・削除・agent 変更は質問フローで必要情報を集める
+- 追加・削除・agent 変更・default agents 設定は質問フローで必要情報を集める
 - 破壊的操作は dry-run summary を表示し、明示確認後に実行する
 - 常駐型の一覧画面は持たず、必要な状態確認は `list` / `check` の summary として表示する
 

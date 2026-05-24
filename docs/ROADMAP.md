@@ -25,15 +25,18 @@
 
 - Rust single-binary CLI
 - project / global config
-- bundled agent mappings, including jcode
+- bundled agent mappings, including jcode and universal Agent Skills directories
 - GitHub / skills.sh / local source support
+- `skills.sh` input normalization to exact GitHub tree URLs
 - dependency install/update/apply/check/list/outdated flows
+- portable lockfile v4 for macOS / Linux reproduction
 - lockfile-backed source and symlink checks
 - add / attach / remove / detach workflows
 - prompt wizard as a thin CLI wrapper
 - read-only `doctor`
 - `agents list` / `agents doctor` / `agents refresh`
 - copy-only `import`
+- wizard-configurable `defaultAgents` for Add skill preselection
 
 ## v0.1: Read-only diagnosis and agent mapping UX
 
@@ -94,6 +97,12 @@ Required safety behavior:
 - name collision reporting
 - skip or fail clearly on invalid skill directories
 - no deletion of unmanaged files
+
+## Current stabilization notes
+
+- `defaultAgents` is intentionally a wizard preselection aid. CLI `sksync add <source>` still requires explicit `--agent` arguments.
+- `sksync-lock.json` v4 is the current portable format; v2/v3 remain read-compatible but new writes use v4.
+- `skills.sh` remains input-only; persisted config should use exact GitHub tree URLs after add-time discovery.
 
 ## Later only if needed
 

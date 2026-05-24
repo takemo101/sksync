@@ -4,29 +4,36 @@ const CONFIG_SCHEMA_ID: &str =
     "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json";
 const AGENTS_SCHEMA_ID: &str =
     "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json";
+const LOCK_SCHEMA_ID: &str =
+    "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json";
 
 #[test]
 fn schema_files_are_valid_json() {
     parse_json(include_str!("../schemas/sksync.schema.json"));
     parse_json(include_str!("../schemas/sksync.agents.schema.json"));
+    parse_json(include_str!("../schemas/sksync-lock.schema.json"));
 }
 
 #[test]
 fn examples_point_to_repository_schemas() {
     let config = parse_json(include_str!("../sksync.config.example.json"));
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
+    let lockfile = parse_json(include_str!("../sksync-lock.example.json"));
 
     assert_eq!(config["$schema"], CONFIG_SCHEMA_ID);
     assert_eq!(agents["$schema"], AGENTS_SCHEMA_ID);
+    assert_eq!(lockfile["$schema"], LOCK_SCHEMA_ID);
 }
 
 #[test]
 fn schema_ids_match_example_references() {
     let config_schema = parse_json(include_str!("../schemas/sksync.schema.json"));
     let agents_schema = parse_json(include_str!("../schemas/sksync.agents.schema.json"));
+    let lock_schema = parse_json(include_str!("../schemas/sksync-lock.schema.json"));
 
     assert_eq!(config_schema["$id"], CONFIG_SCHEMA_ID);
     assert_eq!(agents_schema["$id"], AGENTS_SCHEMA_ID);
+    assert_eq!(lock_schema["$id"], LOCK_SCHEMA_ID);
 }
 
 #[test]
@@ -69,6 +76,26 @@ fn config_schema_structured_sources_match_runtime_requirements() {
         serde_json::json!(["provider", "path"])
     );
     assert_eq!(local_source["properties"]["provider"]["const"], "local");
+}
+
+#[test]
+fn lock_schema_covers_current_portable_v4_fields() {
+    let schema = parse_json(include_str!("../schemas/sksync-lock.schema.json"));
+
+    assert_eq!(schema["properties"]["lockfileVersion"]["const"], 4);
+    assert_eq!(schema["properties"]["root"]["const"], ".");
+    assert_eq!(
+        schema["$defs"]["lockedSkill"]["required"],
+        serde_json::json!(["source", "hash", "files"])
+    );
+    assert_eq!(
+        schema["$defs"]["lockedGitInstallSource"]["required"],
+        serde_json::json!(["type", "url", "path"])
+    );
+    assert_eq!(
+        schema["$defs"]["lockedLocalInstallSource"]["required"],
+        serde_json::json!(["type", "path"])
+    );
 }
 
 #[test]

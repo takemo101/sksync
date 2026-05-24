@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 4,
   "generatedBy": "sksync@0.1.0",
   "generatedAt": "2026-05-17T00:00:00.000Z",
@@ -9,7 +10,7 @@
       "installSource": {
         "type": "git",
         "url": "https://github.com/owner/repo.git",
-        "ref": "main",
+        "ref": "0123456789abcdef0123456789abcdef01234567",
         "path": "path/to/skills/example-skill"
       },
       "hash": "sha256-placeholder",
