@@ -37,7 +37,7 @@
 | `skills.<name>.installSource` | The resolved upstream — for Git, the **commit** `ref`, `url`, and subpath. |
 | `skills.<name>.hash` / `files[]` | Aggregate and per-file SHA-256 hashes used by `check`. |
 
-Because the Git `installSource.ref` is a resolved commit (not a moving branch), `sksync install` reconstructs the same content. The lockfile is portable across macOS and Linux.
+Because the Git `installSource.ref` is a resolved commit (not a moving branch), `sksync install` reconstructs the same content. The lockfile is portable across macOS and Linux; Linux release assets use musl binaries so the same project lockfile can be replayed across common Debian / Ubuntu environments.
 
 ## The sync commands
 

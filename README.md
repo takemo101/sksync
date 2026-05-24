@@ -11,9 +11,9 @@
 
 ## CLI
 
-### Install on macOS
+### Install on macOS / Linux
 
-GitHub Releases の macOS binary を `~/.local/bin/sksync` にインストールできます。
+GitHub Releases の prebuilt binary を `~/.local/bin/sksync` にインストールできます。macOS は Apple Silicon / Intel、Linux は x86_64 / aarch64 の musl binary を使います。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | sh
@@ -25,7 +25,16 @@ curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | 
 curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-現在の installer は macOS のみ対応です。`aarch64-apple-darwin` / `x86_64-apple-darwin` の release asset を取得します。
+installer は以下の release asset を自動選択します。
+
+| OS | Architecture | Asset target |
+| --- | --- | --- |
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| Linux | x86_64 / amd64 | `x86_64-unknown-linux-musl` |
+| Linux | arm64 / aarch64 | `aarch64-unknown-linux-musl` |
+
+Linux は Debian / Ubuntu など複数 distro で動かしやすいよう、installer では musl target を選びます。Linux assets はこの対応を含む release 以降で利用できます。`latest` が古い場合は source build するか、新しい `VERSION=v...` を指定してください。Windows は現時点では未対応です。
 
 ### Uninstall
 
@@ -440,6 +449,19 @@ project-local の生成物は `.gitignore` します。
 - [`schemas/sksync.schema.json`](schemas/sksync.schema.json) - JSON Schema for `config.json` / `sksync.config.json`
 - [`schemas/sksync.agents.schema.json`](schemas/sksync.agents.schema.json) - JSON Schema for `agents.json`
 - [`schemas/sksync-lock.schema.json`](schemas/sksync-lock.schema.json) - JSON Schema for current portable `sksync-lock.json` v4
+
+## Linux / Docker compatibility
+
+Linux release asset は `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` を提供します。CI では Docker 上の Debian / Ubuntu image で x86_64 musl binary を起動し、local source の `init` / `add` / `plan` / `apply` / `check` / `list` / `remove` smoke test を実行します。
+
+現在の smoke coverage:
+
+- `debian:bookworm`
+- `debian:trixie`
+- `ubuntu:22.04`
+- `ubuntu:24.04`
+
+Windows は当面対象外です。macOS / Linux の symlink behavior を優先して安定化します。
 
 ## 今後の予定
 

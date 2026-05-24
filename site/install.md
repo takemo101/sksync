@@ -1,14 +1,14 @@
 # Install
 
-sksync ships as a single static binary. The recommended path is the install script for macOS; building from source works on any platform Rust supports.
+sksync ships as a single binary. The recommended path is the install script for macOS and Linux; building from source works on any platform Rust supports.
 
 ## Requirements
 
-- **macOS** (Apple Silicon or Intel) for the prebuilt binary. The current installer fetches `aarch64-apple-darwin` / `x86_64-apple-darwin` release assets only.
+- **macOS** (Apple Silicon or Intel) or **Linux** (x86_64 / aarch64) for prebuilt binaries.
 - For other platforms, a **[Rust](https://www.rust-lang.org/tools/install) toolchain** (`cargo`) to build from source.
 - `git` on `PATH` — sksync delegates all repository access (including private repos) to your local Git auth.
 
-## From the install script (macOS, recommended)
+## From the install script (macOS / Linux, recommended)
 
 Installs the latest release binary to `~/.local/bin/sksync`:
 
@@ -22,7 +22,18 @@ Pick a different install directory:
 curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-The script verifies the release checksum when `shasum` is available and warns (rather than failing) if the checksum file is missing.
+The script verifies the release checksum when `sha256sum` or `shasum` is available and warns (rather than failing) if the checksum file is missing.
+
+Supported prebuilt targets:
+
+| OS | Architecture | Asset target |
+|---|---|---|
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| Linux | x86_64 / amd64 | `x86_64-unknown-linux-musl` |
+| Linux | arm64 / aarch64 | `aarch64-unknown-linux-musl` |
+
+Linux uses musl assets by default for portability across Debian / Ubuntu distributions. CI smoke-tests the x86_64 Linux binary in `debian:bookworm`, `debian:trixie`, `ubuntu:22.04`, and `ubuntu:24.04`. Linux assets are available from releases that include this support; if `latest` predates them, build from source or set `VERSION=v...` to a newer tag. Windows is not supported yet.
 
 ::: tip
 If `~/.local/bin` is not on your `PATH`, the installer prints a warning. Add it to your shell profile, e.g. `export PATH="$HOME/.local/bin:$PATH"`.

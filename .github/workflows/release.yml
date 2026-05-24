@@ -47,9 +47,53 @@ jobs:
           path: dist/sksync-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  build-linux:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="dist/sksync-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/sksync" "$staging/sksync"
+          tar -C "$staging" -czf "dist/sksync-${{ matrix.target }}.tar.gz" sksync
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sksync-${{ matrix.target }}
+          path: dist/sksync-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
   publish:
     name: publish GitHub release
-    needs: build-macos
+    needs:
+      - build-macos
+      - build-linux
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:

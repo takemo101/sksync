@@ -37,6 +37,8 @@
 - `agents list` / `agents doctor` / `agents refresh`
 - copy-only `import`
 - wizard-configurable `defaultAgents` for Add skill preselection
+- macOS / Linux release assets, with Linux musl binaries for distro portability
+- Docker smoke coverage for Debian / Ubuntu containers
 
 ## v0.1: Read-only diagnosis and agent mapping UX
 
@@ -103,6 +105,8 @@ Required safety behavior:
 - `defaultAgents` is intentionally a wizard preselection aid. CLI `sksync add <source>` still requires explicit `--agent` arguments.
 - `sksync-lock.json` v4 is the current portable format; v2/v3 remain read-compatible but new writes use v4.
 - `skills.sh` remains input-only; persisted config should use exact GitHub tree URLs after add-time discovery.
+- Linux installer defaults to musl release assets (`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`) so Debian / Ubuntu users do not depend on the build runner's glibc version.
+- Docker smoke tests cover `debian:bookworm`, `debian:trixie`, `ubuntu:22.04`, and `ubuntu:24.04`; Windows remains out of scope for now.
 
 ## Later only if needed
 
