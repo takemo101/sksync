@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "sksync"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "clap",
