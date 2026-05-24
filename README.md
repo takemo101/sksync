@@ -77,7 +77,9 @@ cargo run -- agents doctor
 cargo run -- agents refresh
 cargo run -- doctor
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
+cargo run -- import ~/.agents/skills --agent universal --agent pi
 cargo run -- remove skill-name
+cargo run -- remove skill-a skill-b
 cargo run -- outdated
 cargo run -- install
 cargo run -- update
@@ -121,7 +123,7 @@ global mode (`--global`) で作成されるもの:
 
 `~/.sksync/agents.json` は global / project 両方の agent target directory mapping を持ちます。project config では `project` mapping、global config (`--global`) では `global` mapping を使います。inline config の `agents` override がある場合は、それが最優先です。
 
-bundled mapping には SkillKit-compatible な agent entries を含めています。例:
+bundled mapping には主要な Agent Skills 対応エージェントの entries を含めています。例:
 
 | Agent                   | Global targetDir               | Project targetDir  |
 | ----------------------- | ------------------------------ | ------------------ |
@@ -152,7 +154,7 @@ Antigravity は公式仕様に合わせ、workspace default の `.agents/skills`
 
 ### `sksync add`
 
-SkillKit の `add` に近い操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。途中で install / plan / apply に失敗した場合は、変更前の config に rollback します。
+Agent Skills source を dependency として追加する操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。途中で install / plan / apply に失敗した場合は、変更前の config に rollback します。
 
 ```bash
 cargo run -- add <source> --agent pi [--agent claude-code]
@@ -296,11 +298,12 @@ cargo run -- doctor --global
 
 ### `sksync import`
 
-既存 agent skill directory から skill を copy-only で `.sksync/skills` または `~/.sksync/skills` に取り込み、指定 agent の dependency として config に登録します。元の directory は変更・削除・symlink 置換しません。target への symlink 反映は別途 `plan` / `apply` で確認します。
+既存 agent skill directory から skill を copy-only で `.sksync/skills` または `~/.sksync/skills` に取り込み、指定 agent の dependency として config に登録します。`--agent` は複数指定できます。元の directory は変更・削除・symlink 置換しません。target への symlink 反映は別途 `plan` / `apply` で確認します。
 
 ```bash
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.claude/skills --agent claude-code
+cargo run -- import ~/.agents/skills --agent universal --agent pi
 cargo run -- import ~/.jcode/skills --agent jcode --global
 ```
 
@@ -310,6 +313,7 @@ cargo run -- import ~/.jcode/skills --agent jcode --global
 
 ```bash
 cargo run -- remove cuekit-dogfood
+cargo run -- remove cuekit-dogfood qa-skill review-helper
 cargo run -- remove cuekit-dogfood --global
 cargo run -- remove cuekit-dogfood --keep-files
 cargo run -- remove cuekit-dogfood --config-only
@@ -354,7 +358,7 @@ cargo run -- install --global
 
 ### `sksync update`
 
-`dependencies` に書かれた SkillKit-style source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
+`dependencies` に書かれた Agent Skills source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
 
 ```bash
 cargo run -- update
@@ -365,10 +369,11 @@ cargo run -- update --global
 
 ### `sksync apply`
 
-planner の create symlink action だけを実行し、成功後に `sksync-lock.json` を書き出します。source missing / conflict / drift がある場合は失敗します。
+planner の create symlink action だけを実行し、成功後に `sksync-lock.json` を書き出します。source missing / conflict / drift がある場合は失敗します。`--force` は、既存 target が sksync-managed link で安全に置き換え可能な場合だけ更新を許可します。
 
 ```bash
 cargo run -- apply
+cargo run -- apply --force
 cargo run -- apply --global
 ```
 
@@ -430,10 +435,11 @@ project-local の生成物は `.gitignore` します。
 ### Config / lockfile examples
 
 - [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
-- [`sksync.agents.example.json`](sksync.agents.example.json) - global and project agent target mappings (`~/.sksync/agents.json`) with SkillKit-compatible agent entries
-- [`sksync-lock.example.json`](sksync-lock.example.json) - current lockfile v4 example
+- [`sksync.agents.example.json`](sksync.agents.example.json) - global and project agent target mappings (`~/.sksync/agents.json`) with bundled Agent Skills entries
+- [`sksync-lock.example.json`](sksync-lock.example.json) - current portable lockfile v4 example
 - [`schemas/sksync.schema.json`](schemas/sksync.schema.json) - JSON Schema for `config.json` / `sksync.config.json`
 - [`schemas/sksync.agents.schema.json`](schemas/sksync.agents.schema.json) - JSON Schema for `agents.json`
+- [`schemas/sksync-lock.schema.json`](schemas/sksync-lock.schema.json) - JSON Schema for current portable `sksync-lock.json` v4
 
 ## 今後の予定
 

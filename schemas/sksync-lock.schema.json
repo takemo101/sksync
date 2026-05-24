@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
+  "title": "sksync lockfile",
+  "description": "Current portable sksync lockfile v4 format. v2/v3 are read for compatibility, but new writes use v4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lockfileVersion", "generatedBy", "generatedAt", "root", "skills"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "lockfileVersion": {
+      "const": 4,
+      "description": "Current lockfile format version written by sksync."
+    },
+    "generatedBy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root": {
+      "type": "string",
+      "const": ".",
+      "description": "Portable v4 lockfiles store paths relative to the lockfile directory."
+    },
+    "skills": {
+      "type": "object",
+      "description": "Locked skills keyed by skill name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/lockedSkill"
+      }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lockedSkill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "hash", "files"],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/path",
+          "description": "Skill body path relative to the lockfile directory."
+        },
+        "installSource": {
+          "$ref": "#/$defs/lockedInstallSource"
+        },
+        "hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lockedFile"
+          }
+        }
+      }
+    },
+    "lockedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "hash"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "hash": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "lockedInstallSource": {
+      "oneOf": [
+        { "$ref": "#/$defs/lockedGitInstallSource" },
+        { "$ref": "#/$defs/lockedLocalInstallSource" }
+      ]
+    },
+    "lockedGitInstallSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url", "path"],
+      "properties": {
+        "type": {
+          "const": "git"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    },
+    "lockedLocalInstallSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "const": "local"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    }
+  }
+}
