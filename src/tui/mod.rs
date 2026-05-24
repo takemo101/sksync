@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
+use serde_json::json;
 
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::ConfigStore;
@@ -19,6 +20,7 @@ enum Intent {
     RemoveAgent,
     Status,
     Apply,
+    ConfigureDefaultAgents,
     Quit,
 }
 
@@ -31,6 +33,7 @@ impl fmt::Display for Intent {
             Self::RemoveAgent => "Detach skill from agent",
             Self::Status => "Show status",
             Self::Apply => "Apply links",
+            Self::ConfigureDefaultAgents => "Configure default agents",
             Self::Quit => "Quit",
         };
         formatter.write_str(label)
@@ -101,6 +104,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
                 Intent::RemoveAgent,
                 Intent::Status,
                 Intent::Apply,
+                Intent::ConfigureDefaultAgents,
                 Intent::Quit,
             ],
         )
@@ -114,6 +118,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
             Intent::Status => run_status_flow(&project_root)?,
             Intent::Apply => run_apply_flow(&project_root)?,
+            Intent::ConfigureDefaultAgents => run_configure_default_agents_flow(&project_root)?,
             Intent::Quit => return Ok(()),
         }
     }
@@ -126,7 +131,9 @@ fn run_add_flow(project_root: &Path) -> Result<()> {
         .prompt()
         .context("failed to read name override")?;
     let scope = prompt_config_scope("Where should this dependency be added?")?;
-    let agents = prompt_agents(scope)?;
+    let config = load_optional_config_for_scope(project_root, scope)?;
+    let default_agents = default_agents_from_config(config.as_ref());
+    let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
     let global = scope.is_global();
 
     let mut args = vec!["add".to_owned(), source];
@@ -203,6 +210,17 @@ fn run_remove_agent_flow(project_root: &Path) -> Result<()> {
         "Detach this skill from the selected agent(s)?",
         args,
     )
+}
+
+fn run_configure_default_agents_flow(project_root: &Path) -> Result<()> {
+    let scope = prompt_config_scope("Which config should store default agents?")?;
+    let config = load_optional_config_for_scope(project_root, scope)?;
+    let current_defaults = default_agents_from_config(config.as_ref());
+    let agents = prompt_default_agents(scope, config.as_ref(), &current_defaults)?;
+    let config_path = config_path_for_scope(project_root, scope)?;
+    write_default_agents_config(&config_path, default_skill_dir_for_scope(scope), &agents)?;
+    println!("✓ Updated default agents in {}", config_path.display());
+    Ok(())
 }
 
 fn run_status_flow(project_root: &Path) -> Result<()> {
@@ -313,7 +331,7 @@ fn prompt_agents_not_for_skill(
     let configured_agents = configured_agents_for_skill(config, skill_name)?
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let available_agents = agent_options_for_scope(scope)?
+    let available_agents = agent_options_for_scope(scope, Some(config))?
         .into_iter()
         .filter(|agent| !configured_agents.contains(agent))
         .collect::<Vec<_>>();
@@ -369,6 +387,20 @@ fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<Reso
         .context("failed to load config")
 }
 
+fn load_optional_config_for_scope(
+    project_root: &Path,
+    scope: ConfigScope,
+) -> Result<Option<ResolvedConfig>> {
+    let path = config_path_for_scope(project_root, scope)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    FileConfigStore::new(path)
+        .load()
+        .map(Some)
+        .context("failed to load config")
+}
+
 fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<PathBuf> {
     match scope {
         ConfigScope::Project => Ok(project_root.join("sksync.config.json")),
@@ -376,15 +408,43 @@ fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<Path
     }
 }
 
-fn prompt_agents(scope: ConfigScope) -> Result<Vec<String>> {
-    let selected = MultiSelect::new("Select agent(s)", agent_options_for_scope(scope)?)
+fn prompt_agents(
+    scope: ConfigScope,
+    config: Option<&ResolvedConfig>,
+    default_agents: &[String],
+) -> Result<Vec<String>> {
+    let options = agent_options_for_scope(scope, config)?;
+    let default_indexes = default_agent_indexes(&options, default_agents);
+    let selected = MultiSelect::new("Select agent(s)", options)
+        .with_default(&default_indexes)
         .with_help_message("Use space to select, enter to confirm")
         .prompt()
         .context("failed to read agent selection")?;
 
-    let mut agents = selected;
+    normalize_agent_selection(selected, true)
+}
 
-    if agents.is_empty() {
+fn prompt_default_agents(
+    scope: ConfigScope,
+    config: Option<&ResolvedConfig>,
+    current_defaults: &[String],
+) -> Result<Vec<String>> {
+    let options = agent_options_for_scope(scope, config)?;
+    let default_indexes = default_agent_indexes(&options, current_defaults);
+    let selected = MultiSelect::new("Select default agent(s)", options)
+        .with_default(&default_indexes)
+        .with_help_message("Use space to select defaults, enter to save; empty clears defaults")
+        .prompt()
+        .context("failed to read default agent selection")?;
+
+    normalize_agent_selection(selected, false)
+}
+
+fn normalize_agent_selection(
+    mut agents: Vec<String>,
+    require_non_empty: bool,
+) -> Result<Vec<String>> {
+    if require_non_empty && agents.is_empty() {
         bail!("at least one agent is required");
     }
     agents.sort();
@@ -392,14 +452,93 @@ fn prompt_agents(scope: ConfigScope) -> Result<Vec<String>> {
     Ok(agents)
 }
 
-fn agent_options_for_scope(scope: ConfigScope) -> Result<Vec<String>> {
-    let mappings = merged_agent_mapping_config()?;
+fn default_agent_indexes(options: &[String], default_agents: &[String]) -> Vec<usize> {
+    let defaults = default_agents.iter().collect::<BTreeSet<_>>();
+    options
+        .iter()
+        .enumerate()
+        .filter_map(|(index, agent)| defaults.contains(agent).then_some(index))
+        .collect()
+}
+
+fn agent_options_for_scope(
+    scope: ConfigScope,
+    config: Option<&ResolvedConfig>,
+) -> Result<Vec<String>> {
+    Ok(merge_agent_options(
+        scope,
+        &merged_agent_mapping_config()?,
+        config,
+    ))
+}
+
+fn merge_agent_options(
+    scope: ConfigScope,
+    mappings: &AgentMappingConfig,
+    config: Option<&ResolvedConfig>,
+) -> Vec<String> {
     let mut agents = BTreeSet::new();
     agents.extend(mappings.global.keys().cloned());
     if scope == ConfigScope::Project {
         agents.extend(mappings.project.keys().cloned());
     }
-    Ok(agents.into_iter().collect())
+    if let Some(config) = config {
+        agents.extend(config.agents.keys().cloned());
+    }
+    agents.into_iter().collect()
+}
+
+fn default_agents_from_config(config: Option<&ResolvedConfig>) -> Vec<String> {
+    config
+        .map(|config| {
+            config
+                .default_agents
+                .iter()
+                .map(|agent| agent.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_default_agents_config(
+    config_path: &Path,
+    default_skill_dir: &str,
+    agents: &[String],
+) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut value = if config_path.exists() {
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(config_path)
+                .with_context(|| format!("failed to read {}", config_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", config_path.display()))?
+    } else {
+        json!({
+            "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
+            "skillDir": default_skill_dir,
+            "dependencies": {}
+        })
+    };
+    let object = value
+        .as_object_mut()
+        .context("config root must be a JSON object")?;
+    object.insert("defaultAgents".to_owned(), json!(agents));
+    std::fs::write(
+        config_path,
+        format!("{}\n", serde_json::to_string_pretty(&value)?),
+    )
+    .with_context(|| format!("failed to write {}", config_path.display()))
+}
+
+fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
+    if scope.is_global() {
+        "~/.sksync/skills"
+    } else {
+        "./.sksync/skills"
+    }
 }
 
 fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
@@ -466,8 +605,17 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_path_for_scope, ConfigScope};
-    use std::path::Path;
+    use super::{
+        config_path_for_scope, default_agent_indexes, merge_agent_options,
+        write_default_agents_config, ConfigScope,
+    };
+    use crate::application::config::{ResolvedAgent, ResolvedConfig};
+    use crate::domain::agent::AgentKind;
+    use crate::domain::scope::Scope;
+    use crate::domain::skill::SourcePath;
+    use crate::infrastructure::json::AgentMappingConfig;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn project_scope_uses_project_config_path() {
@@ -475,6 +623,103 @@ mod tests {
             config_path_for_scope(Path::new("/tmp/project"), ConfigScope::Project).unwrap(),
             Path::new("/tmp/project/sksync.config.json")
         );
+    }
+
+    #[test]
+    fn default_agent_indexes_match_available_options() {
+        let options = vec![
+            "claude-code".to_owned(),
+            "pi".to_owned(),
+            "universal".to_owned(),
+        ];
+        let defaults = vec![
+            "universal".to_owned(),
+            "missing".to_owned(),
+            "pi".to_owned(),
+        ];
+
+        assert_eq!(default_agent_indexes(&options, &defaults), vec![1, 2]);
+    }
+
+    #[test]
+    fn agent_options_include_inline_custom_config_agents() {
+        let mappings = AgentMappingConfig {
+            global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/agent/skills"))]),
+            project: BTreeMap::new(),
+        };
+        let config = ResolvedConfig {
+            skill_dir: SourcePath::new(".sksync/skills").expect("skill dir"),
+            agents: BTreeMap::from([(
+                "my-agent".to_owned(),
+                ResolvedAgent {
+                    kind: AgentKind::custom("my-agent").expect("custom agent"),
+                    enabled: true,
+                    scope: Scope::Project,
+                    target_dir: Some(PathBuf::from(".my-agent/skills")),
+                },
+            )]),
+            skills: Vec::new(),
+            default_agents: vec![AgentKind::custom("my-agent").expect("custom agent")],
+        };
+
+        assert_eq!(
+            merge_agent_options(ConfigScope::Project, &mappings, Some(&config)),
+            vec!["my-agent", "pi"]
+        );
+    }
+
+    #[test]
+    fn write_default_agents_config_creates_missing_config() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("sksync.config.json");
+
+        write_default_agents_config(
+            &config_path,
+            "./.sksync/skills",
+            &["universal".to_owned(), "pi".to_owned()],
+        )
+        .expect("write defaults");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(value["skillDir"], "./.sksync/skills");
+        assert_eq!(value["dependencies"], serde_json::json!({}));
+        assert_eq!(
+            value["defaultAgents"],
+            serde_json::json!(["universal", "pi"])
+        );
+    }
+
+    #[test]
+    fn write_default_agents_config_preserves_existing_config_fields() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "skillDir": "skills",
+              "dependencies": {
+                "review": { "source": "./review", "agents": ["pi"] }
+              }
+            }"#,
+        )
+        .expect("write config");
+
+        write_default_agents_config(&config_path, "./.sksync/skills", &["universal".to_owned()])
+            .expect("write defaults");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(value["skillDir"], "skills");
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi"])
+        );
+        assert_eq!(value["defaultAgents"], serde_json::json!(["universal"]));
     }
 
     #[test]

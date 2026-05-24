@@ -23,6 +23,10 @@
         "$ref": "#/$defs/agentConfig"
       }
     },
+    "defaultAgents": {
+      "$ref": "#/$defs/agentList",
+      "description": "Agents selected by default in the wizard when adding a skill. Users can still change the selection before running add."
+    },
     "skills": {
       "type": "object",
       "description": "Legacy/local skill entries. Dependencies are preferred for installable skills.",

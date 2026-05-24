@@ -250,6 +250,7 @@ mod tests {
                 install_source: Some(InstallSource::Local(PathBuf::from("remote/review"))),
                 agents: vec![AgentKind::Pi],
             }],
+            default_agents: Vec::new(),
         }
     }
 

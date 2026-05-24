@@ -98,6 +98,7 @@ mod tests {
                 install_source: Some(source),
                 agents: Vec::new(),
             }],
+            default_agents: Vec::new(),
         }
     }
 
