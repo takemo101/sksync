@@ -10,7 +10,8 @@ use super::skill::{SkillName, SourcePath};
 use super::source::InstallSource;
 use super::target::TargetPath;
 
-pub const SUPPORTED_LOCKFILE_VERSION: u32 = 3;
+pub const SUPPORTED_LOCKFILE_VERSION: u32 = 4;
+pub const LEGACY_LOCKFILE_VERSION: u32 = 3;
 pub const LEGACY_LOCKFILE_VERSION_WITH_TARGETS: u32 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]

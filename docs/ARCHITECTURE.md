@@ -279,7 +279,7 @@ Rust 実装では以下を使い分ける。
 ## 12. Backward Compatibility Governance
 
 `sksync.config.json` と `sksync-lock.json` は公開 API とみなす。
-lockfile v3 は portable な source / hash / resolved install source だけを保存し、machine-local な target path は runtime に config から再計算する。
+lockfile v4 は package-lock 的に portable な source / hash / resolved install source だけを保存し、machine-local な target path は runtime に config から再計算する。v2 / v3 は読み込み互換として維持し、新規書き込みは v4 に統一する。
 破壊的変更を避けるため、以下を守る。
 
 - `lockfileVersion` を必ず持つ

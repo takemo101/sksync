@@ -18,7 +18,7 @@ use crate::application::source::{
 };
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{
-    Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile,
+    Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, LEGACY_LOCKFILE_VERSION,
     LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
 use crate::domain::scope::Scope;
@@ -297,6 +297,20 @@ fn rebase_config_path(path: PathBuf, config_root: Option<&Path>) -> PathBuf {
 fn is_tilde_path(path: &Path) -> bool {
     path.to_str()
         .is_some_and(|value| value == "~" || value.starts_with("~/"))
+}
+
+fn rebase_lockfile_path(path: PathBuf, lockfile_root: &Path) -> PathBuf {
+    if path.is_absolute() || is_tilde_path(&path) {
+        path
+    } else {
+        lockfile_root.join(path)
+    }
+}
+
+fn relativize_lockfile_path(path: &Path, lockfile_root: &Path) -> PathBuf {
+    path.strip_prefix(lockfile_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn upsert_agent(
@@ -839,7 +853,7 @@ enum RawLockedInstallSource {
 }
 
 impl RawLockedInstallSource {
-    fn try_into_domain(self) -> Result<InstallSource, LockfileJsonError> {
+    fn try_into_domain(self, lockfile_root: &Path) -> Result<InstallSource, LockfileJsonError> {
         Ok(match self {
             Self::Git {
                 url,
@@ -850,18 +864,20 @@ impl RawLockedInstallSource {
                 reference,
                 path,
             }),
-            Self::Local { path } => InstallSource::Local(path),
+            Self::Local { path } => InstallSource::Local(rebase_lockfile_path(path, lockfile_root)),
         })
     }
 
-    fn from_domain(source: &InstallSource) -> Self {
+    fn from_domain(source: &InstallSource, lockfile_root: &Path) -> Self {
         match source {
             InstallSource::Git(git) => Self::Git {
                 url: git.url.clone(),
                 reference: git.reference.clone(),
                 path: git.path.clone(),
             },
-            InstallSource::Local(path) => Self::Local { path: path.clone() },
+            InstallSource::Local(path) => Self::Local {
+                path: relativize_lockfile_path(path, lockfile_root),
+            },
         }
     }
 }
@@ -902,7 +918,15 @@ pub fn read_lockfile(path: impl AsRef<Path>) -> Result<Lockfile, LockfileJsonErr
         }
     })?;
 
-    raw.try_into_domain()
+    let lockfile_root = path.parent().unwrap_or_else(|| Path::new("."));
+    raw.try_into_domain(lockfile_root)
+}
+
+fn is_supported_lockfile_version(version: u32) -> bool {
+    matches!(
+        version,
+        SUPPORTED_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION_WITH_TARGETS
+    )
 }
 
 fn reject_unsupported_lockfile_version(value: &serde_json::Value) -> Result<(), LockfileJsonError> {
@@ -914,7 +938,7 @@ fn reject_unsupported_lockfile_version(value: &serde_json::Value) -> Result<(), 
         return Ok(());
     };
 
-    if found != SUPPORTED_LOCKFILE_VERSION && found != LEGACY_LOCKFILE_VERSION_WITH_TARGETS {
+    if !is_supported_lockfile_version(found) {
         return Err(LockfileJsonError::UnsupportedVersion {
             found,
             supported: SUPPORTED_LOCKFILE_VERSION,
@@ -929,7 +953,8 @@ pub fn write_lockfile(
     lockfile: &Lockfile,
 ) -> Result<(), LockfileJsonError> {
     let path = path.as_ref();
-    let raw = RawLockfile::from_domain(lockfile);
+    let lockfile_root = path.parent().unwrap_or_else(|| Path::new("."));
+    let raw = RawLockfile::from_domain(lockfile, lockfile_root);
     let content = serde_json::to_string_pretty(&raw)?;
     std::fs::write(path, format!("{content}\n")).map_err(|source| LockfileJsonError::Write {
         path: display_path(path),
@@ -956,10 +981,8 @@ impl LockfileStore for FileLockfileStore {
 }
 
 impl RawLockfile {
-    fn try_into_domain(self) -> Result<Lockfile, LockfileJsonError> {
-        if self.lockfile_version != SUPPORTED_LOCKFILE_VERSION
-            && self.lockfile_version != LEGACY_LOCKFILE_VERSION_WITH_TARGETS
-        {
+    fn try_into_domain(self, lockfile_root: &Path) -> Result<Lockfile, LockfileJsonError> {
+        if !is_supported_lockfile_version(self.lockfile_version) {
             return Err(LockfileJsonError::UnsupportedVersion {
                 found: self.lockfile_version,
                 supported: SUPPORTED_LOCKFILE_VERSION,
@@ -971,7 +994,8 @@ impl RawLockfile {
             let skill_name = SkillName::new(name.clone()).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill name '{name}': {source}"))
             })?;
-            let source = SourcePath::new(raw_skill.source).map_err(|source| {
+            let source_path = rebase_lockfile_path(raw_skill.source, lockfile_root);
+            let source = SourcePath::new(source_path).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill '{name}' source: {source}"))
             })?;
             let hash = Digest::new(raw_skill.hash).map_err(|source| {
@@ -1027,7 +1051,7 @@ impl RawLockfile {
                     source,
                     install_source: raw_skill
                         .install_source
-                        .map(RawLockedInstallSource::try_into_domain)
+                        .map(|source| source.try_into_domain(lockfile_root))
                         .transpose()?,
                     hash,
                     files,
@@ -1039,12 +1063,16 @@ impl RawLockfile {
         Ok(Lockfile {
             generated_by: self.generated_by,
             generated_at: self.generated_at,
-            root: self.root,
+            root: if self.lockfile_version == SUPPORTED_LOCKFILE_VERSION {
+                PathBuf::from(".")
+            } else {
+                self.root
+            },
             skills,
         })
     }
 
-    fn from_domain(lockfile: &Lockfile) -> Self {
+    fn from_domain(lockfile: &Lockfile, lockfile_root: &Path) -> Self {
         let skills = lockfile
             .skills
             .iter()
@@ -1052,11 +1080,10 @@ impl RawLockfile {
                 (
                     name.as_str().to_owned(),
                     RawLockedSkill {
-                        source: skill.source.as_path().to_path_buf(),
-                        install_source: skill
-                            .install_source
-                            .as_ref()
-                            .map(RawLockedInstallSource::from_domain),
+                        source: relativize_lockfile_path(skill.source.as_path(), lockfile_root),
+                        install_source: skill.install_source.as_ref().map(|source| {
+                            RawLockedInstallSource::from_domain(source, lockfile_root)
+                        }),
                         hash: skill.hash.as_str().to_owned(),
                         files: skill
                             .files
@@ -1076,7 +1103,7 @@ impl RawLockfile {
             lockfile_version: SUPPORTED_LOCKFILE_VERSION,
             generated_by: lockfile.generated_by.clone(),
             generated_at: lockfile.generated_at.clone(),
-            root: lockfile.root.clone(),
+            root: PathBuf::from("."),
             skills,
         }
     }
@@ -1091,10 +1118,12 @@ mod tests {
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::{ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
-    use crate::domain::lockfile::SUPPORTED_LOCKFILE_VERSION;
+    use crate::domain::lockfile::{Digest, LockedSkill, Lockfile, SUPPORTED_LOCKFILE_VERSION};
     use crate::domain::scope::Scope;
-    use crate::domain::source::InstallSource;
-    use std::path::Path;
+    use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::{GitInstallSource, InstallSource};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parses_example_config() {
@@ -1166,6 +1195,220 @@ mod tests {
 
         assert_eq!(store.path(), config_path.as_path());
         assert_eq!(config.skills[0].name.as_str(), "example-skill");
+    }
+
+    #[test]
+    fn write_lockfile_serializes_portable_v4_paths_relative_to_lockfile_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let lockfile_path = root.join("sksync-lock.json");
+        let source = root.join(".sksync/skills/owner/repo/review");
+        let local_source = root.join("vendor/review");
+        let mut skills = BTreeMap::new();
+        skills.insert(
+            SkillName::new("review").expect("skill name"),
+            LockedSkill {
+                source: SourcePath::new(source).expect("source path"),
+                install_source: Some(InstallSource::Local(local_source)),
+                hash: Digest::new("sha256-review").expect("hash"),
+                files: Vec::new(),
+                targets: Vec::new(),
+            },
+        );
+        let lockfile = Lockfile {
+            generated_by: "sksync@test".to_owned(),
+            generated_at: "unix:1".to_owned(),
+            root: root.to_path_buf(),
+            skills,
+        };
+
+        write_lockfile(&lockfile_path, &lockfile).expect("write lockfile");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&lockfile_path).expect("read lockfile"),
+        )
+        .expect("parse lockfile");
+        assert_eq!(value["lockfileVersion"], 4);
+        assert_eq!(value["root"], ".");
+        assert_eq!(
+            value["skills"]["review"]["source"],
+            ".sksync/skills/owner/repo/review"
+        );
+        assert_eq!(
+            value["skills"]["review"]["installSource"]["path"],
+            "vendor/review"
+        );
+    }
+
+    #[test]
+    fn read_lockfile_rebases_v4_relative_paths_from_lockfile_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let lockfile_path = root.join("sksync-lock.json");
+        std::fs::write(
+            &lockfile_path,
+            r#"{
+              "lockfileVersion": 4,
+              "generatedBy": "sksync@test",
+              "generatedAt": "unix:1",
+              "root": ".",
+              "skills": {
+                "review": {
+                  "source": ".sksync/skills/owner/repo/review",
+                  "installSource": {
+                    "type": "local",
+                    "path": "vendor/review"
+                  },
+                  "hash": "sha256-review",
+                  "files": []
+                }
+              }
+            }"#,
+        )
+        .expect("write lockfile");
+
+        let lockfile = read_lockfile(&lockfile_path).expect("read lockfile");
+        let skill = lockfile
+            .skills
+            .get(&SkillName::new("review").expect("skill name"))
+            .expect("locked skill");
+
+        assert_eq!(lockfile.root, Path::new("."));
+        assert_eq!(
+            skill.source.as_path(),
+            root.join(".sksync/skills/owner/repo/review")
+        );
+        assert_eq!(
+            skill.install_source,
+            Some(InstallSource::Local(root.join("vendor/review")))
+        );
+    }
+
+    #[test]
+    fn read_lockfile_keeps_v3_compatibility() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let lockfile_path = root.join("sksync-lock.json");
+        std::fs::write(
+            &lockfile_path,
+            r#"{
+              "lockfileVersion": 3,
+              "generatedBy": "sksync@test",
+              "generatedAt": "unix:1",
+              "root": "/old/machine/project",
+              "skills": {
+                "review": {
+                  "source": ".sksync/skills/review",
+                  "installSource": {
+                    "type": "git",
+                    "url": "https://github.com/owner/repo.git",
+                    "ref": "abc123",
+                    "path": "skills/review"
+                  },
+                  "hash": "sha256-review",
+                  "files": []
+                }
+              }
+            }"#,
+        )
+        .expect("write lockfile");
+
+        let lockfile = read_lockfile(&lockfile_path).expect("read v3 lockfile");
+        let skill = lockfile
+            .skills
+            .get(&SkillName::new("review").expect("skill name"))
+            .expect("locked skill");
+
+        assert_eq!(lockfile.root, Path::new("/old/machine/project"));
+        assert_eq!(skill.source.as_path(), root.join(".sksync/skills/review"));
+        assert!(matches!(skill.install_source, Some(InstallSource::Git(_))));
+    }
+
+    #[test]
+    fn read_lockfile_keeps_v2_targets_compatibility() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let lockfile_path = root.join("sksync-lock.json");
+        std::fs::write(
+            &lockfile_path,
+            r#"{
+              "lockfileVersion": 2,
+              "generatedBy": "sksync@test",
+              "generatedAt": "unix:1",
+              "root": ".",
+              "skills": {
+                "review": {
+                  "source": ".sksync/skills/review",
+                  "hash": "sha256-review",
+                  "files": [],
+                  "targets": [
+                    {
+                      "agent": "pi",
+                      "scope": "project",
+                      "path": ".pi/agent/skills/review",
+                      "linkType": "symlink"
+                    }
+                  ]
+                }
+              }
+            }"#,
+        )
+        .expect("write lockfile");
+
+        let lockfile = read_lockfile(&lockfile_path).expect("read v2 lockfile");
+        let skill = lockfile
+            .skills
+            .get(&SkillName::new("review").expect("skill name"))
+            .expect("locked skill");
+
+        assert_eq!(skill.source.as_path(), root.join(".sksync/skills/review"));
+        assert_eq!(skill.targets.len(), 1);
+        assert_eq!(skill.targets[0].agent, AgentKind::Pi);
+    }
+
+    #[test]
+    fn write_lockfile_keeps_git_install_source_portable() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let lockfile_path = root.join("sksync-lock.json");
+        let mut skills = BTreeMap::new();
+        skills.insert(
+            SkillName::new("review").expect("skill name"),
+            LockedSkill {
+                source: SourcePath::new(root.join(".sksync/skills/owner/repo/review"))
+                    .expect("source path"),
+                install_source: Some(InstallSource::Git(GitInstallSource {
+                    url: "https://github.com/owner/repo.git".to_owned(),
+                    reference: Some("abc123".to_owned()),
+                    path: PathBuf::from("skills/review"),
+                })),
+                hash: Digest::new("sha256-review").expect("hash"),
+                files: Vec::new(),
+                targets: Vec::new(),
+            },
+        );
+        let lockfile = Lockfile {
+            generated_by: "sksync@test".to_owned(),
+            generated_at: "unix:1".to_owned(),
+            root: root.to_path_buf(),
+            skills,
+        };
+
+        write_lockfile(&lockfile_path, &lockfile).expect("write lockfile");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&lockfile_path).expect("read lockfile"),
+        )
+        .expect("parse lockfile");
+        assert_eq!(
+            value["skills"]["review"]["installSource"],
+            serde_json::json!({
+                "type": "git",
+                "url": "https://github.com/owner/repo.git",
+                "ref": "abc123",
+                "path": "skills/review"
+            })
+        );
     }
 
     #[test]
@@ -1632,7 +1875,7 @@ mod tests {
         std::fs::write(
             &lockfile_path,
             include_str!("../../sksync-lock.example.json")
-                .replace("\"lockfileVersion\": 3", "\"lockfileVersion\": 999"),
+                .replace("\"lockfileVersion\": 4", "\"lockfileVersion\": 999"),
         )
         .expect("write lockfile fixture");
 
