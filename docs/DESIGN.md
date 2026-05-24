@@ -223,17 +223,37 @@ Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.js
 
 ファイル名: `sksync-lock.json`
 
-lockfile v3 は portable な情報だけを保持する。agent target path は machine-local なので保存せず、`apply` / `check` / `list` 実行時に config と agent mapping から再計算する。
+lockfile は `package-lock.json` と同じく、別環境で `sksync install` した時に同じ skill body を再構成できる情報だけを保持する。対応 OS は当面 macOS / Linux とし、Windows 固有の path / symlink 差分は対象外にする。
+
+### Portable lockfile v4
+
+lockfile v4 は machine-local な absolute path を保存しない。
+
+- `root` は常に `"."`
+- `skills.<name>.source` は lockfile directory からの relative path
+- `installSource` は再取得可能な exact source を保存する
+  - Git source は `url` + resolved commit ref + repo 内 `path`
+  - `skills.sh` 入力は add 時点で exact GitHub tree URL に正規化され、lockfile では Git source として固定される
+  - project / global root 内 local source は relative path として保存できる
+  - project / global root 外の absolute local source は non-portable として扱う
+- `files[].path` は skill directory 内の relative path
+- agent target path / symlink 状態は保存しない
 
 ```json
 {
-  "lockfileVersion": 3,
+  "lockfileVersion": 4,
   "generatedBy": "sksync@0.1.0",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
-    "reviewer": {
-      "source": ".sksync/skills/reviewer",
+    "but": {
+      "source": ".sksync/skills/gitbutlerapp/gitbutler/crates/but/but",
+      "installSource": {
+        "type": "git",
+        "url": "https://github.com/gitbutlerapp/gitbutler.git",
+        "ref": "abc123resolvedcommit",
+        "path": "crates/but/skill"
+      },
       "hash": "sha256-...",
       "files": [
         {
@@ -246,10 +266,52 @@ lockfile v3 は portable な情報だけを保持する。agent target path は 
 }
 ```
 
+### Project / global の基準 root
+
+lockfile directory を基準 root として relative path を解決する。
+
+| scope | lockfile path | relative base | source example |
+| --- | --- | --- | --- |
+| project | `./sksync-lock.json` | project root | `.sksync/skills/...` |
+| global | `~/.sksync/sksync-lock.json` | `~/.sksync` | `skills/...` |
+
+これにより、同じ project を `/Users/alice/work/app` から `/home/bob/work/app` へ移しても、project lockfile の `source` は `.sksync/skills/...` のまま再解決できる。global lockfile も macOS の `/Users/alice/.sksync` と Linux の `/home/bob/.sksync` の差分を持たない。
+
+### `sksync install` の再現モデル
+
+`install` は lockfile がある場合、lockfile の `installSource` を優先する。
+
+1. 現在環境の config を読む
+2. lockfile の `installSource` で exact source を再取得する
+3. 現在環境の `skillDir` 配下へ skill body を配置する
+4. lockfile の hash / file hash と照合する
+5. 現在環境の agent mapping から target path を再計算して symlink を作る
+
+lockfile の `source` は「現在環境で skill body が配置されるべき相対位置」を表し、過去に生成した machine の absolute path ではない。
+
+### Backward compatibility
+
+既存 lockfile v3 は読み込み可能に残す。v3 に absolute `root` / `source` が含まれる場合は legacy として扱い、次に `install` / `update` / `apply` が lockfile を書くタイミングで v4 relative form に更新する。
+
+### Non-portable local source
+
+local source が project / global root 外の absolute path を指す場合、その source は macOS / Linux 間で再現できない。
+
+```json
+{
+  "installSource": {
+    "type": "local",
+    "path": "/Users/alice/manual-skills/review"
+  }
+}
+```
+
+このケースでは `doctor` が warning を出し、`install` は現在環境で path が存在しない場合に明確な error を返す。自動で別 path を推測しない。
+
 ### Lockfile に入れる情報
 
 - skill 名
-- source path
+- lockfile directory からの relative source path
 - skill ディレクトリ全体の hash
 - ファイルごとの hash
 - install source の resolved ref / version
@@ -534,5 +596,5 @@ src/
 - skill 形式が違う agent 向けに変換レイヤーを入れるか
 - source URL transformer / package manager 的な install をどこまでやるか
 - project scope と user scope の優先順位
-- Windows での symlink 権限と junction 対応
+- Windows での symlink 権限と junction 対応（当面は対象外。macOS / Linux を優先）
 - TUI を初期 MVP に含めるか、CLI MVP 後に追加するか

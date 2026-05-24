@@ -411,7 +411,7 @@ project-local の生成物は `.gitignore` します。
 
 - `.sksync/` - downloaded/copied skill bodies (`.sksync/skills/<skill>`)
 - `skills/` - legacy generated skill store from older defaults
-- `sksync-lock.json` - lockfile v3 は portable ですが、チーム共有方針が固まるまでは project-local state として扱います
+- `sksync-lock.json` - 現行 lockfile は project-local state として扱います。portable lockfile v4 は DESIGN で仕様整理中です。
 
 共有する基本ファイルは `sksync.config.json` です。
 
@@ -419,7 +419,7 @@ project-local の生成物は `.gitignore` します。
 
 - [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
 - [`sksync.agents.example.json`](sksync.agents.example.json) - global and project agent target mappings (`~/.sksync/agents.json`) with SkillKit-compatible agent entries
-- [`sksync-lock.example.json`](sksync-lock.example.json)
+- [`sksync-lock.example.json`](sksync-lock.example.json) - current lockfile v3 example
 - [`schemas/sksync.schema.json`](schemas/sksync.schema.json) - JSON Schema for `config.json` / `sksync.config.json`
 - [`schemas/sksync.agents.schema.json`](schemas/sksync.agents.schema.json) - JSON Schema for `agents.json`
 
