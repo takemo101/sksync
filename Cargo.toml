@@ -1,6 +1,6 @@
 [package]
 name = "sksync"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Synchronize AI agent skill symlinks"
 license = "MIT"
