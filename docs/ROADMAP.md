@@ -1,50 +1,50 @@
 # sksync Roadmap
 
-`sksync` は総合的な skill marketplace ではなく、**安全・再現可能・軽量な Agent Skills deployment / sync tool** に集中する。
+`sksync` focuses on being a **safe, reproducible, lightweight Agent Skills deployment and sync tool**, not a general-purpose skill marketplace.
 
 ## Product focus
 
-優先する価値:
+Prioritized value:
 
-- config / lockfile による再現可能な skill 配置
-- source body と agent target symlink の安全な同期
-- project / global scope の明確な分離
-- agent target mapping の確認・更新
-- 既存手管理 skill からの保守的な移行
+- Reproducible skill placement through config and lockfile.
+- Safe synchronization between source skill bodies and agent target symlinks.
+- Clear separation between project and global scopes.
+- Agent target mapping inspection and refresh.
+- Conservative migration from manually managed skills.
 
-当面やらないこと:
+Explicitly out of scope for now:
 
-- marketplace / large registry
-- recommendation / stack-aware suggestion
-- agent 間 format translation
-- REST / MCP server
-- mesh / messaging
-- `doctor` による自動修復
+- Marketplace or large registry operation.
+- Recommendations or stack-aware skill suggestions.
+- Format translation between agents.
+- REST or MCP server mode.
+- Mesh or messaging features.
+- Automatic repair from `doctor`.
 
 ## Completed baseline
 
-- Rust single-binary CLI
-- project / global config
-- bundled agent mappings, including jcode and universal Agent Skills directories
-- GitHub / skills.sh / local source support
-- `skills.sh` input normalization to exact GitHub tree URLs
-- dependency install/update/apply/check/list/outdated flows
-- portable lockfile v4 for macOS / Linux reproduction
-- lockfile-backed source and symlink checks
-- add / attach / remove / detach workflows
-- prompt wizard as a thin CLI wrapper
-- read-only `doctor`
-- `agents list` / `agents doctor` / `agents refresh`
-- copy-only `import`
-- wizard-configurable `defaultAgents` for Add skill preselection
-- macOS / Linux release assets, with Linux musl binaries for distro portability
-- Docker smoke coverage for Debian / Ubuntu containers
+- Rust single-binary CLI.
+- Project and global config.
+- Bundled agent mappings, including jcode and universal Agent Skills directories.
+- GitHub, `skills.sh`, and local source support.
+- `skills.sh` input normalization to exact GitHub tree URLs.
+- Dependency install/update/apply/check/list/outdated flows.
+- Portable lockfile v4 for macOS / Linux reproduction.
+- Lockfile-backed source and symlink checks.
+- Add / attach / remove / detach workflows.
+- Prompt wizard as a thin CLI wrapper.
+- Read-only `doctor`.
+- `agents list`, `agents doctor`, and `agents refresh`.
+- Copy-only `import`.
+- Wizard-configurable `defaultAgents` for Add skill preselection.
+- macOS / Linux release assets, with Linux musl binaries for distro portability.
+- Docker smoke coverage for Debian / Ubuntu containers.
 
 ## v0.1: Read-only diagnosis and agent mapping UX
 
 Status: implemented.
 
-Goal: 既存機能を増やしすぎず、状態把握と agent mapping 管理を分かりやすくする。
+Goal: improve visibility and agent mapping management without expanding the product scope unnecessarily.
 
 ### `sksync doctor`
 
@@ -70,11 +70,11 @@ Out of scope:
 
 Small command group for mapping visibility and refresh.
 
-- `sksync agents list`: show bundled/user mappings by scope
-- `sksync agents doctor`: read-only targetDir checks
-- `sksync agents refresh`: refresh `~/.sksync/agents.json` from bundled mapping
+- `sksync agents list`: show bundled/user mappings by scope.
+- `sksync agents doctor`: read-only targetDir checks.
+- `sksync agents refresh`: refresh `~/.sksync/agents.json` from bundled mapping.
 
-`init --agents` can remain for compatibility, but should point users toward `agents refresh` once the command exists.
+`init --agents` can remain for compatibility, but documentation should point users toward `agents refresh` for the same operation.
 
 ## v0.2: Conservative import
 
@@ -86,19 +86,19 @@ Goal: give users a safe migration path from manually managed agent skill directo
 
 Import is copy-only.
 
-- scan an existing skill directory such as `.claude/skills` or `~/.jcode/skills`
-- copy selected skills into `.sksync/skills` or `~/.sksync/skills`
-- update config for the specified target agent
-- leave the original directory untouched
-- do not replace original files with symlinks during import
-- require `plan` / `apply` as a separate confirmation step for target changes
+- Scan an existing skill directory such as `.claude/skills` or `~/.jcode/skills`.
+- Copy selected skills into `.sksync/skills` or `~/.sksync/skills`.
+- Update config for the specified target agent.
+- Leave the original directory untouched.
+- Do not replace original files with symlinks during import.
+- Require `plan` / `apply` as a separate confirmation step for target changes.
 
 Required safety behavior:
 
-- `--dry-run` first-class support
-- name collision reporting
-- skip or fail clearly on invalid skill directories
-- no deletion of unmanaged files
+- First-class `--dry-run` support.
+- Name collision reporting.
+- Clear skip/fail behavior for invalid skill directories.
+- No deletion of unmanaged files.
 
 ## Current stabilization notes
 

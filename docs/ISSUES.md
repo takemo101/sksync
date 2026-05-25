@@ -1,451 +1,498 @@
 # sksync Implementation Issues
 
-このファイルは、AIコーディングエージェントが1 issueずつ実装しやすい粒度に分割した実装タスク一覧です。
-各issueは原則として「1〜2時間程度で完了」「明確な受け入れ条件」「触るファイル範囲が限定的」になるようにしています。
+This file breaks the original implementation plan into small tasks that coding agents can pick up independently. Each issue should be small enough to complete in one focused session, have clear acceptance criteria, and touch a limited set of files.
 
 ## Milestone 1: Rust CLI MVP foundation
 
-### Issue 1: Cargoプロジェクトと基本crate構成を作成する
+### Issue 1: Create the Cargo project and base crate structure
 
-**目的**  
-Rust CLIとしてビルド・テストできる最小プロジェクトを作る。
+**Goal**
+Create the smallest Rust CLI project that builds and tests.
 
-**作業内容**
+**Work**
 
-- `Cargo.toml` を作成する
-- `src/main.rs` を作成する
-- 初期module treeを作成する
+- Create `Cargo.toml`.
+- Create `src/main.rs`.
+- Create the initial module tree:
   - `src/cli.rs`
   - `src/application/mod.rs`
   - `src/domain/mod.rs`
   - `src/infrastructure/mod.rs`
-- dependenciesを追加する
+- Add dependencies:
   - runtime: `clap`, `serde`, `serde_json`, `anyhow`, `thiserror`, `dirs`, `shellexpand`, `sha2`, `hex`, `walkdir`
   - dev: `tempfile`
-- `cargo test` が通る状態にする
+- Ensure `cargo test` passes.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- `cargo build` が成功する
-- `cargo test` が成功する
-- `sksync --help` が表示できる
+- `cargo build` succeeds.
+- `cargo test` succeeds.
+- `sksync --help` can be displayed.
 
-**依存**: なし
+**Depends on**: none
 
 ---
 
-### Issue 2: CLI command定義を実装する
+### Issue 2: Implement CLI command definitions
 
-**目的**  
-想定コマンドを `clap` で定義し、未実装でも入口を確保する。
+**Goal**
+Define the expected subcommands with `clap`, even if some handlers are placeholders at first.
 
-**作業内容**
+**Work**
 
-- `src/cli.rs` に command enumを定義する
-- 以下のsubcommandを追加する
+- Define the command enum in `src/cli.rs`.
+- Add subcommands:
   - `init`
   - `plan` / `--dry-run`
   - `apply` / `--force`
   - `check`
   - `list`
-  - `tui` は placeholderでよい
-- `main.rs` からcommand dispatchする
-- 未実装コマンドは明確なエラーメッセージを返す
+  - placeholder `tui`
+- Dispatch commands from `main.rs`.
+- Placeholder commands must return clear errors instead of panicking.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- `sksync init --help` が表示できる
-- `sksync plan --help` が表示できる
-- 未実装placeholderがpanicしない
+- `sksync init --help` works.
+- `sksync plan --help` works.
+- Unimplemented placeholders do not panic.
 
-**依存**: Issue 1
+**Depends on**: Issue 1
 
 ---
 
 ## Milestone 2: Domain model and config parsing
 
-### Issue 3: domain primitiveを定義する
+### Issue 3: Define domain primitives
 
-**目的**  
-重要概念を裸の `String` / `PathBuf` で運ばないための型を作る。
+**Goal**
+Avoid passing important concepts as raw `String` or `PathBuf` values.
 
-**作業内容**
+**Work**
 
-- `src/domain/skill.rs`
+- Add `src/domain/skill.rs`:
   - `SkillName`
   - `SourcePath`
-- `src/domain/agent.rs`
+- Add `src/domain/agent.rs`:
   - `AgentKind`
-  - `AgentName` or custom agent representation
-- `src/domain/scope.rs`
+  - custom agent representation / `AgentName`
+- Add `src/domain/scope.rs`:
   - `Scope::{User, Project}`
-- `src/domain/target.rs`
+- Add `src/domain/target.rs`:
   - `TargetPath`
-- constructorで不変条件を検査する
-  - skill名は空不可
-  - skill名にpath separator不可
-  - scopeは `user` / `project` のみ
+- Validate invariants in constructors:
+  - skill names are not empty
+  - skill names cannot contain path separators
+  - scope is only `user` or `project`
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- 正常系/異常系unit testがある
-- 不正なskill名がdomain type化できない
-- domain moduleがCLI/TUI/filesystemに依存しない
+- Unit tests cover valid and invalid cases.
+- Invalid skill names cannot become domain types.
+- `domain` does not depend on CLI/TUI/filesystem layers.
 
-**依存**: Issue 1
-
----
-
-### Issue 4: config JSON modelとloaderを実装する
-
-**目的**  
-`sksync.config.json` を読み込み、domainで使える設定へ変換する。
-
-**作業内容**
-
-- `src/infrastructure/json.rs` に raw config modelを定義する
-- `src/application/ports.rs` に `ConfigStore` traitを定義する
-- file-based `ConfigStore` 実装を作る
-- `RawConfig` → `ResolvedConfig` 変換を実装する
-- `skills.*.source` 省略時に `skillDir/<skillName>` を使う
-- example configをfixtureとしてtestする
-
-**受け入れ条件**
-
-- `sksync.config.example.json` をparseできる
-- 存在しないagent参照はエラーになる
-- source省略時の補完testがある
-
-**依存**: Issue 3
+**Depends on**: Issue 1
 
 ---
 
-### Issue 5: lockfile modelとwriter/readerを実装する
+### Issue 4: Implement config JSON model and loader
 
-**目的**  
-同期結果を再現可能にするためのlockfile形式を実装する。
+**Goal**
+Load `sksync.config.json` and convert it into a configuration the domain/application layers can use.
 
-**作業内容**
+**Work**
 
-- `src/domain/lockfile.rs` にdomain寄りのlockfile型を定義する
-- `src/infrastructure/json.rs` にJSON reader/writerを追加する
-- `lockfileVersion: 1` を扱う
-- `generatedBy`, `generatedAt`, `root`, `skills` を出力する
-- unknown versionは分かりやすくエラーにする
+- Define raw config models in `src/infrastructure/json.rs`.
+- Define `ConfigStore` in `src/application/ports.rs`.
+- Implement file-backed `ConfigStore`.
+- Implement `RawConfig` → `ResolvedConfig` conversion.
+- If `skills.*.source` is omitted, default it to `skillDir/<skillName>`.
+- Use the example config as a fixture in tests.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- `sksync-lock.example.json` をparseできる
-- lockfileを書いて再読込できるroundtrip testがある
-- unsupported version testがある
+- `sksync.config.example.json` parses.
+- Unknown agent references fail clearly.
+- Source defaulting is tested.
 
-**依存**: Issue 3
+**Depends on**: Issue 3
+
+---
+
+### Issue 5: Implement lockfile model and JSON reader/writer
+
+**Goal**
+Record sync results in a reproducible lockfile format.
+
+**Work**
+
+- Define lockfile domain types in `src/domain/lockfile.rs`.
+- Add JSON reader/writer in `src/infrastructure/json.rs`.
+- Include `lockfileVersion`, `generatedBy`, `generatedAt`, `root`, and `skills`.
+- Return a clear error for unknown versions.
+
+**Acceptance criteria**
+
+- `sksync-lock.example.json` parses.
+- A lockfile can be written and read back.
+- Unsupported version behavior is tested.
+
+**Depends on**: Issue 3
 
 ---
 
 ## Milestone 3: Agent mapping and skill discovery
 
-### Issue 6: built-in agent mappingを実装する
+### Issue 6: Implement built-in agent mapping
 
-**目的**  
-agent + scopeからtarget directoryを解決できるようにする。
+**Goal**
+Resolve a target directory from agent + scope.
 
-**作業内容**
+**Work**
 
-- `src/infrastructure/builtin_agents.rs` を実装する
-- default mappingを定義する
+- Implement `src/infrastructure/builtin_agents.rs`.
+- Add default mappings for:
   - `pi`: user `~/.pi/agent/skills`, project `.pi/agent/skills`
   - `claude-code`: user `~/.claude/skills`, project `.claude/skills`
   - `codex`: user `~/.codex/skills`, project `.codex/skills`
   - `gemini`: user `~/.gemini/skills`, project `.gemini/skills`
   - `opencode`: user `~/.config/opencode/skills`, project `.opencode/skills`
-- `agents.*.targetDir` overrideに備えたAPIにする
-- `~` expansionとproject root相対解決を行う
+- Design the API to allow `agents.*.targetDir` overrides.
+- Expand `~` and resolve project-relative paths against the project root.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- 各agent/scopeのtarget path testがある
-- user scopeの `~` が展開される
-- project scopeがproject root相対になる
+- Tests cover each agent/scope target path.
+- User-scope `~` expansion works.
+- Project-scope paths resolve relative to project root.
 
-**依存**: Issue 4
+**Depends on**: Issue 4
 
 ---
 
-### Issue 7: skill discoveryとSHA-256 hash計算を実装する
+### Issue 7: Implement skill discovery and SHA-256 hashing
 
-**目的**  
-source directoryの内容をlockfileへ記録できるようにする。
+**Goal**
+Record source directory contents in the lockfile.
 
-**作業内容**
+**Work**
 
-- `src/infrastructure/hash.rs` を実装する
-- source directory配下のファイル一覧を安定順で収集する
-- 各ファイルのSHA-256を計算する
-- directory全体のhashを計算する
-- `.git`, target artifactsなどを除外する方針を最小実装する
+- Implement `src/infrastructure/hash.rs`.
+- Collect files under the source directory in stable order.
+- Calculate SHA-256 for each file.
+- Calculate a directory-level hash.
+- Exclude `.git`, target artifacts, and other ignored directories as needed.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- 同じ内容なら同じhashになる
-- ファイル内容変更でhashが変わる
-- ファイル順に依存しないtestがある
+- Same content produces the same hash.
+- File content changes alter the hash.
+- File ordering does not affect the hash.
 
-**依存**: Issue 4
+**Depends on**: Issue 4
 
 ---
 
 ## Milestone 4: Planner and apply
 
-### Issue 8: current target state inspectionを実装する
+### Issue 8: Inspect current target state
 
-**目的**  
-target pathの現在状態を安全に判定する。
+**Goal**
+Safely classify the current state of each target path.
 
-**作業内容**
+**Work**
 
-- `src/application/ports.rs` に `LinkStore` traitを定義する
-- `TargetState` を定義する
+- Define `LinkStore` in `src/application/ports.rs`.
+- Define `TargetState` variants:
   - missing
   - symlink to expected source
   - symlink to unexpected source
   - regular file/directory conflict
   - broken symlink
-- `src/infrastructure/fs.rs` に実装する
-- symlink metadataを正しく読む
+- Implement filesystem inspection in `src/infrastructure/fs.rs`.
+- Read symlink metadata correctly.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- tempdirで各状態のtestがある
-- 通常ファイルをsymlink扱いしない
-- broken symlinkを検出できる
+- Tempdir tests cover each target state.
+- Regular files are not treated as symlinks.
+- Broken symlinks are detected.
 
-**依存**: Issue 6
+**Depends on**: Issue 6
 
 ---
 
-### Issue 9: dry-run plannerを実装する
+### Issue 9: Implement dry-run planner
 
-**目的**  
-configとcurrent stateから、安全な操作計画を作る。
+**Goal**
+Build a safe operation plan from config and current state.
 
-**作業内容**
+**Work**
 
-- `src/domain/link_plan.rs` を定義する
-- plan actionを定義する
+- Define `src/domain/link_plan.rs`.
+- Define plan actions:
   - create symlink
   - already synced
   - conflict
   - drifted symlink
   - source missing
-- `src/application/plan.rs` を実装する
-- plan resultをCLI表示できる形式へ変換する
+- Implement `src/application/plan.rs`.
+- Convert plan results into CLI-friendly output.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- missing targetならcreate actionになる
-- synced targetならno-opになる
-- existing regular fileならconflictになる
-- unexpected symlinkならdriftedになる
-- `sksync plan --dry-run` が操作一覧を表示する
+- Missing target produces a create action.
+- Synced target produces no-op / already-synced output.
+- Existing regular file produces conflict.
+- Unexpected symlink produces drift.
+- `sksync plan --dry-run` displays the operation list.
 
-**依存**: Issue 8
-
----
-
-### Issue 10: safe symlink applyを実装する
-
-**目的**  
-planner結果にもとづいて安全にsymlinkを作成する。
-
-**作業内容**
-
-- `src/application/apply.rs` を実装する
-- create actionのみ実行する
-- parent directoryを必要に応じて作る
-- conflict/driftがある場合は失敗する
-- `--force` なしで既存targetを上書きしない
-- apply後にlockfileを書き出す
-
-**受け入れ条件**
-
-- missing targetにsymlinkが作られる
-- regular file conflictでは失敗する
-- unexpected symlinkは `--force` なしで失敗する
-- apply後に `sksync-lock.json` が作られる
-
-**依存**: Issue 5, Issue 9
+**Depends on**: Issue 8
 
 ---
 
-## Milestone 5: Check/list and usability
+### Issue 10: Implement safe symlink apply
 
-### Issue 11: check commandを実装する
+**Goal**
+Apply only safe planner actions.
 
-**目的**  
-lockfileと現在状態の差分を検出する。
+**Work**
 
-**作業内容**
+- Implement `src/application/apply.rs`.
+- Create parent directories as needed.
+- Create symlinks for create actions.
+- Refuse conflict/drift/source-missing actions.
+- Support `--force` only for explicitly safe replacement cases.
+- Write/update the lockfile after successful apply.
 
-- `src/application/check.rs` を実装する
-- lockfileのsource hashと現在hashを比較する
-- target symlinkの有無/リンク先を検査する
-- broken symlinkを報告する
-- exit codeを成功/問題ありで分ける
+**Acceptance criteria**
 
-**受け入れ条件**
+- Apply creates expected symlinks in a tempdir.
+- Apply refuses regular-file conflicts.
+- Apply refuses unexpected symlink drift without force.
+- Lockfile is written after successful apply.
 
-- synced状態で成功する
-- source変更でdriftを検出する
-- target削除でmissingを検出する
-- broken symlinkを検出する
-
-**依存**: Issue 7, Issue 10
-
----
-
-### Issue 12: list commandを実装する
-
-**目的**  
-管理中skillとagentごとの状態を一覧表示する。
-
-**作業内容**
-
-- `src/application/list.rs` を実装する
-- configベースのskill一覧を表示する
-- agentごとのtarget pathと状態を表示する
-- lockfileがある場合はlocked hashも表示する
-
-**受け入れ条件**
-
-- `sksync list` がskill名を表示する
-- agentごとのtarget pathが表示される
-- missing/synced/conflictなどの状態が分かる
-
-**依存**: Issue 9, Issue 11
+**Depends on**: Issue 9
 
 ---
 
-### Issue 13: init commandを実装する
+## Milestone 5: Check and list
 
-**目的**  
-新規プロジェクトで必要な雛形を生成できるようにする。
+### Issue 11: Implement `sksync check`
 
-**作業内容**
+**Goal**
+Detect drift between config, lockfile, source hashes, and target symlinks.
 
-- `src/application/init.rs` を実装する
-- project mode では `sksync.config.json` を作る
-- project mode では `.sksync/skills/` directoryを作る
-- `--global` では `~/.sksync/config.json` を作る
-- `--global` では `~/.sksync/agents.json` を作る
-- `--global` では `~/.sksync/skills/` directoryを作る
-- 既存configがある場合は上書きしない
-- 既存 `agents.json` は上書きしない
-- `--force` は別issueに回してよい
+**Work**
 
-**受け入れ条件**
+- Load config and lockfile.
+- Recalculate source hashes.
+- Inspect target states.
+- Report missing sources, hash drift, broken symlinks, conflicts, and unexpected symlinks.
+- Exit non-zero when problems are found.
 
-- 空ディレクトリで `sksync init` が成功する
-- temp HOME 配下で `sksync init --global` が成功する
-- config、agents mapping、skills directoryが作られる
-- 既存configがある場合は失敗する
+**Acceptance criteria**
 
-**依存**: Issue 4
+- Clean state exits zero.
+- Hash drift exits non-zero.
+- Broken symlink exits non-zero.
+- Output includes actionable problem descriptions.
+
+**Depends on**: Issues 7, 9, 10
 
 ---
 
-### Issue 14: READMEにCLI MVPの使用方法を追記する
+### Issue 12: Implement `sksync list`
 
-**目的**  
-実装済み機能をユーザーが試せるようにする。
+**Goal**
+Show configured skills and per-agent target status.
 
-**作業内容**
+**Work**
 
-- build手順を追記する
-- `init`, `plan`, `apply`, `check`, `list` の使い方を追記する
-- 安全ルールを短く説明する
-- example config / lockfileへのリンクを維持する
+- Load config and optional lockfile.
+- Build rows for each skill/agent pair.
+- Show source path, target path, status, and locked hash when available.
+- Keep output concise and stable.
 
-**受け入れ条件**
+**Acceptance criteria**
 
-- READMEだけでローカル実行手順が分かる
-- まだ未実装の `install` / `tui` は将来予定として明記する
+- Configured skills are listed.
+- Per-agent target status is displayed.
+- Missing lockfile is handled gracefully.
 
-**依存**: Issue 10, Issue 11, Issue 12, Issue 13
-
----
-
-## Milestone 6: Prompt Wizard MVP
-
-### Issue 15: Prompt wizard shellを追加する
-
-**目的**  
-質問形式で操作できる `sksync wizard` を起動できるようにする。`ask` / `tui` は互換 alias として残す。
-
-**作業内容**
-
-- `src/tui/mod.rs` に prompt / wizard flow を作る
-- `sksync wizard` から起動する
-- 最初に add / remove / remove-agent / check / apply / quit の intent を選ばせる
-- pane / keybinding 中心の常駐型 UI は作らない
-
-**受け入れ条件**
-
-- `sksync wizard` が起動する
-- intent を選んで終了できる
-- filesystem操作はapplication経由のみ
-
-**依存**: Issue 12
+**Depends on**: Issue 9
 
 ---
 
-### Issue 16: Prompt wizardにadd/remove/check/apply操作を接続する
+## Milestone 6: Install/update/source workflows
 
-**目的**  
-CLI MVPで作ったcore logicを質問形式TUIから実行できるようにする。
+### Issue 13: Implement dependency install/update
 
-**作業内容**
+**Goal**
+Fetch/copy dependency sources into `skillDir` and update lockfile state.
 
-- Runtime prompt labels / help / confirmations are English.
-- add: source / name override / agent / global scope を質問する
-- remove: project/global scope を先に選び、config 由来の skill list から skill を選ばせ、Normal removal / keep-files / config-only の削除モードを選ばせる
-- remove-agent: project/global scope を先に選び、config 由来の skill list と選択 skill の agent list から対象を選ばせる
-- check/list: scope と表示詳細を質問する
-- apply: plan summary を表示し、確認後に apply する
+**Work**
 
-**受け入れ条件**
+- Parse GitHub shorthand, GitHub tree URLs, `skills.sh` input, and local paths.
+- Fetch Git sources with the local `git` command.
+- Copy local sources conservatively.
+- Validate `SKILL.md` frontmatter.
+- Store dependency-managed skill bodies under `skillDir`.
+- Update lockfile source/hash/installSource data.
 
-- wizardから安全に add/remove/remove-agent を実行できる
-- 破壊的操作前に確認が必要
-- wizardが直接symlinkやlockfileを書かない
+**Acceptance criteria**
 
-**依存**: Issue 15
+- GitHub source installs into `skillDir`.
+- Local source copies into `skillDir` without mutating the original.
+- Invalid skills fail before replacing destinations.
+- Lockfile records resolved source information.
+
+**Depends on**: Issues 4, 5, 7
 
 ---
 
-## Suggested execution order
+### Issue 14: Implement add/attach/remove workflows
 
-1. Issue 1
-2. Issue 2
-3. Issue 3
-4. Issue 4
-5. Issue 5
-6. Issue 6
-7. Issue 7
-8. Issue 8
-9. Issue 9
-10. Issue 10
-11. Issue 11
-12. Issue 12
-13. Issue 13
-14. Issue 14
-15. Issue 15
-16. Issue 16
+**Goal**
+Provide package-manager-like dependency management commands.
 
-## Notes for AI implementers
+**Work**
 
-- 1 issueにつき、基本的に関連ファイルだけ触ること
-- `cargo test` を毎issueの完了条件に含めること
-- 実ユーザーのhome directoryをtestで触らないこと
-- symlink関連testは必ず `tempfile` 配下で行うこと
-- 不明点がある場合は、既存docsの安全ルールを優先すること
+- `add`: update config, install, plan, and apply; roll back config on failure.
+- `attach`: add agents to an existing dependency-managed skill while preserving source representation.
+- `remove`: remove one or more skills from config, lockfile, installed files, and managed symlinks.
+- `remove --agent`: detach only selected agents.
+- Keep removal conservative and do not delete unmanaged files.
+
+**Acceptance criteria**
+
+- `add` rolls back config on failure.
+- `attach` preserves structured/string source representation.
+- `remove` accepts multiple skill names.
+- `remove --agent` keeps other agents and the skill body unless the last agent is removed.
+
+**Depends on**: Issues 10, 13
+
+---
+
+## Milestone 7: TUI / wizard
+
+### Issue 15: Implement prompt wizard
+
+**Goal**
+Let users perform common actions without remembering CLI flags.
+
+**Work**
+
+- Add `wizard` plus `ask` / `tui` aliases.
+- Use `inquire` for prompts.
+- Implement add, attach, remove, detach, status, apply, and default agents flows.
+- Use CLI/application use cases instead of duplicating core logic.
+- Show confirmations before destructive actions.
+
+**Acceptance criteria**
+
+- Wizard can add and remove a skill.
+- Wizard can attach/detach agents.
+- Wizard can configure `defaultAgents`.
+- Empty detach/remove selections do not accidentally remove skills.
+
+**Depends on**: Issue 14
+
+---
+
+## Milestone 8: Diagnostics, mappings, and import
+
+### Issue 16: Implement `doctor` and `agents`
+
+**Goal**
+Improve visibility into health and target mappings.
+
+**Work**
+
+- `doctor`: read-only comprehensive diagnosis of config, lockfile, sources, targets, and mappings.
+- `agents list`: show effective mappings.
+- `agents doctor`: read-only targetDir diagnostics.
+- `agents refresh`: refresh bundled mappings into `~/.sksync/agents.json`.
+
+**Acceptance criteria**
+
+- `doctor` never mutates files.
+- Missing target directories are warnings, not fatal errors.
+- Suggested next commands are shown for actionable problems.
+- Agent mappings can be refreshed without touching dependency config.
+
+**Depends on**: Issues 6, 11
+
+---
+
+### Issue 17: Implement copy-only import
+
+**Goal**
+Provide a safe migration path from existing manually managed skill directories.
+
+**Work**
+
+- Scan an input directory for valid skill directories.
+- Reject path traversal and invalid skill names.
+- Copy valid skills into `skillDir`.
+- Register dependencies for one or more agents.
+- Support `--dry-run`.
+- Roll back partial copies on copy failure.
+
+**Acceptance criteria**
+
+- Import never mutates, deletes, or symlink-replaces originals.
+- Name conflicts are reported clearly.
+- Invalid directories are skipped or fail clearly.
+- Partial copy failures clean the destination.
+
+**Depends on**: Issues 13, 14
+
+---
+
+## Milestone 9: Release and documentation
+
+### Issue 18: Add schemas, docs, and examples
+
+**Goal**
+Keep user-facing files aligned with implemented behavior.
+
+**Work**
+
+- Add/update JSON Schemas for config, agents, and lockfile.
+- Keep example config, agents, and lockfile files valid.
+- Document CLI commands, source formats, safety rules, and portability.
+- Keep manual/site docs in English.
+
+**Acceptance criteria**
+
+- Schema files are valid JSON.
+- Examples reference the correct schema IDs.
+- Documentation matches current CLI behavior.
+- `bun run docs:build` succeeds when site docs change.
+
+**Depends on**: all user-facing behavior issues
+
+---
+
+### Issue 19: Add Linux release support
+
+**Goal**
+Make releases usable on Debian/Ubuntu-style Linux environments.
+
+**Work**
+
+- Build Linux musl release assets for x86_64 and aarch64.
+- Add Docker smoke tests for Debian and Ubuntu containers.
+- Update `install.sh` to select Linux assets and verify checksums with `sha256sum` or `shasum`.
+- Publish Linux assets without waiting for queued macOS runners.
+
+**Acceptance criteria**
+
+- Linux smoke tests pass on Debian/Ubuntu matrix.
+- `install.sh` selects the right asset for Linux/macOS.
+- Release workflow publishes Linux assets as soon as Linux builds complete.
+- macOS assets can be uploaded later and checksums refreshed.
+
+**Depends on**: stable release workflow

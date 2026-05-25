@@ -1,51 +1,50 @@
 # Rust / Prompt Wizard Implementation Plan
 
-## 方針
+## Direction
 
-`sksync wizard` は質問形式の prompt / wizard として実装する。
-`ask` / `tui` は互換 alias として残す。CLI と prompt wizard は入口だけを分け、同期計画・検査・適用のロジックは共有する。
+`sksync wizard` is implemented as a prompt-style wizard. `ask` and `tui` remain compatible aliases. The CLI and prompt wizard are separate entry points only; synchronization planning, checking, and applying logic is shared.
 
-## 推奨スタック
+## Recommended stack
 
 - CLI: `clap`
-- Prompt wizard: `inquire` による Select / MultiSelect / Text / Confirm
+- Prompt wizard: `inquire` Select / MultiSelect / Text / Confirm
 - config: `serde` + `serde_json`
-- error: `anyhow` + `thiserror`
+- errors: `anyhow` + `thiserror`
 - hashing: `sha2`
 - walking: `walkdir`
 - tests: `tempfile` + `insta`
 
-## 実装順
+## Implementation order
 
-1. Cargo プロジェクト作成
-2. config / lockfile の Rust 型定義
-3. built-in agent mapping
-4. skill discovery / hash 計算
-5. dry-run planner
-6. symlink apply
-7. check / list
-8. prompt wizard shell
-9. prompt wizard から add / remove / remove-agent / check / apply を呼ぶ
+1. Create the Cargo project.
+2. Define Rust types for config and lockfile.
+3. Add built-in agent mappings.
+4. Add skill discovery and hash calculation.
+5. Add the dry-run planner.
+6. Add symlink apply.
+7. Add check / list.
+8. Add the prompt wizard shell.
+9. Call add / remove / remove-agent / check / apply from the prompt wizard.
 
 ## Prompt Wizard MVP
 
-- Runtime prompt labels / help / confirmations are shown in English for international users.
-- 最初に intent を質問する
+- Runtime prompt labels, help, and confirmations are shown in English for international users.
+- Ask for the user's intent first:
   - Add skill
   - Remove skill
   - Detach skill from agent
   - Show status
   - Apply links
-- intent ごとに必要な値を順番に質問する
-- remove / remove-agent は project/global scope を先に選び、config から読み込んだ skill list から対象を選択する
-- remove は `Normal removal (no option)` / `--keep-files` / `--config-only` の削除モードを単一選択する
-- remove-agent は選択した skill に設定済みの agent list から外す agent を選択する
-- 破壊的操作前に summary / dry-run を表示する
-- 明示確認後に CLI と同じ application usecase を呼ぶ
+- Ask for the required values for each intent in order.
+- Remove / remove-agent flows select project/global scope first, then choose from skill and agent lists loaded from config.
+- Remove mode is a single-select choice: `Normal removal (no option)`, `--keep-files`, or `--config-only`.
+- Remove-agent selects agents from the selected skill's configured agent list.
+- Show a summary / dry-run before destructive actions.
+- After explicit confirmation, call the same application use case as the CLI.
 
-## 注意点
+## Notes
 
-- pane / keybinding 中心の常駐型 UI は実装しない
-- TUI から直接ファイル操作を実装しない
-- 永続状態は config / lockfile / local state のみに保存する
-- 質問途中の入力値だけを TUI state として持つ
+- Do not implement a persistent pane/keybinding-driven UI.
+- Do not implement direct filesystem operations in the TUI.
+- Persist state only in config, lockfile, or local state.
+- TUI state should contain only temporary answers while a prompt flow is in progress.
