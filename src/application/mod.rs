@@ -6,6 +6,7 @@
 
 pub mod add;
 pub mod apply;
+pub mod bundle;
 pub mod check;
 pub mod config;
 pub mod discovery;

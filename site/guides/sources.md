@@ -1,6 +1,6 @@
 # Sources & Discovery
 
-A skill source tells sksync where to fetch a skill body from. The same source forms are accepted by `sksync add`, `sksync attach`, and (via stored config) `sksync update` / `install`. sksync infers the source type from the string — there is no `--provider` flag and `registry:<host>/<package>` is not supported.
+A skill source tells sksync where to fetch a skill body from. The same source forms are accepted by `sksync add`, bundle entries, `sksync attach`, and (via stored config) `sksync update` / `install`. sksync infers the source type from the string — there is no `--provider` flag and `registry:<host>/<package>` is not supported.
 
 ## Source formats
 
@@ -110,5 +110,6 @@ sksync add ./local-skill --agent pi --agent gemini
 ## Related
 
 - [Project Config](/guides/project-config) — where sources are stored.
+- [Bundles](/guides/bundles) — manifest-relative sources and bundle provenance.
 - [Lockfile & Sync](/guides/lockfile) — how stored sources are re-fetched.
-- [Commands → add](/reference/commands#sksync-add) and [import](/reference/commands#sksync-import).
+- [Commands → add](/reference/commands#sksync-add), [bundle](/reference/commands#sksync-bundle), and [import](/reference/commands#sksync-import).

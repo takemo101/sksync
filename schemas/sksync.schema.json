@@ -102,6 +102,34 @@
             { "$ref": "#/$defs/agentList" },
             { "minItems": 1 }
           ]
+        },
+        "bundles": {
+          "type": "array",
+          "description": "Local provenance for bundles that installed or adopted this dependency.",
+          "items": {
+            "$ref": "#/$defs/bundleProvenance"
+          },
+          "uniqueItems": true
+        },
+        "managedByBundles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this dependency should be removed when its last bundle provenance is removed."
+        }
+      }
+    },
+    "bundleProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

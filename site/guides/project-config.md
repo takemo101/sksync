@@ -38,6 +38,8 @@ sksync init --agents        # only force-refresh ~/.sksync/agents.json
 | `skillDir` | Directory where fetched skill bodies are stored. Defaults to `./.sksync/skills` (project) or `~/.sksync/skills` (global). |
 | `defaultAgents` | Agents pre-selected in the wizard's *Add skill* step. Does **not** change CLI behavior. |
 | `dependencies.<name>` | One managed skill: a `source` and the list of `agents` it links into. |
+| `dependencies.<name>.bundles` | Optional local provenance for bundles that installed or adopted the dependency. |
+| `dependencies.<name>.managedByBundles` | Optional boolean. Defaults to `false`; `true` means bundle removal can delete the dependency when its last bundle provenance is removed. |
 
 ## Sources
 
@@ -64,6 +66,27 @@ Use the structured form when you need an explicit provider, for example to clone
 ::: info
 sksync has no `--token` / `--github-token` option and never stores credentials in config. Private repositories work whenever `git clone <repo>` already works in your environment — auth is delegated to your Git credential helper, GitHub CLI, or PAT. See [Sources → Private repositories](/guides/sources#private-repositories).
 :::
+
+## Bundle provenance
+
+`bundle add` records provenance on dependencies instead of creating bundle folders:
+
+```json
+{
+  "dependencies": {
+    "review": {
+      "source": "https://github.com/org/repo/tree/main/skills/review",
+      "agents": ["pi"],
+      "bundles": [
+        { "name": "review-workflow", "source": "./bundles/review-workflow" }
+      ],
+      "managedByBundles": true
+    }
+  }
+}
+```
+
+Manual dependencies adopted by a bundle keep `managedByBundles: false`, so `bundle remove` detaches provenance but keeps the dependency.
 
 ## Default wizard agents
 
@@ -105,4 +128,5 @@ The file you share is `sksync.config.json`. The lockfile is portable and *can* b
 
 - [Agent Mappings](/guides/agent-mappings) — `agents.json` and the bundled target directories.
 - [Sources & Discovery](/guides/sources) — every `source` form.
-- [Commands](/reference/commands) — `init`, `add`, `plan`, `apply`.
+- [Bundles](/guides/bundles) — curated install sets and provenance.
+- [Commands](/reference/commands) — `init`, `add`, `bundle`, `plan`, `apply`.

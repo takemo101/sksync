@@ -76,6 +76,9 @@ If those capabilities become necessary, they should be external integrations or 
 | skill | Reusable instructions, tool descriptions, or templates loaded by an agent. |
 | source | Install source such as GitHub / `skills.sh` / local directory, or the concrete skill body directory. |
 | dependency | Config entry describing where a skill comes from and which agents receive links. |
+| bundle | Curated install set whose entries expand into normal dependencies. Bundles are not runtime folders. |
+| bundle entry | Skill reference inside a bundle. The key is the resulting skill name; the entry source points to the skill body. |
+| bundle provenance | Local dependency metadata recording which bundle(s) installed or adopted a dependency. |
 | target | Directory where an agent reads skills. |
 | mapping | Agent-to-target-directory configuration. |
 | lockfile | File that pins synchronized skill content, source version, and hashes. |
@@ -116,6 +119,8 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 Source strings should stay compact. `sksync add <source> --agent <agent>` updates `dependencies` and then runs install/apply behavior. With `--global`, it updates `~/.sksync/config.json`.
 
 `defaultAgents` is used only by the wizard to preselect agents in the `Add skill` flow. CLI `add` still requires explicit `--agent` arguments for compatibility and clarity.
+
+Bundle-added dependencies may include `bundles` provenance and `managedByBundles`. Missing `managedByBundles` means `false`. Manual dependencies keep `managedByBundles: false` when a bundle with the same source adopts them, so `sksync bundle remove` only detaches provenance instead of deleting the dependency.
 
 #### Source formats
 
@@ -177,6 +182,26 @@ https://www.skills.sh/gitbutlerapp/gitbutler/but
 If validation fails, sksync does not replace the destination and removes the staging directory.
 
 Internally, source URL transformers run in order. `sksync update` fetches from dependencies and updates the lockfile. `sksync install` prefers lockfile sources when a lockfile exists.
+
+### Bundles
+
+A bundle is a curated install set stored as `sksync.bundle.json` at the root of a bundle source. It contains a name, description, and entries keyed by the final skill name.
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json",
+  "name": "review-workflow",
+  "description": "Skills for review and QA workflows.",
+  "entries": {
+    "review": { "source": "./skills/review" },
+    "qa": { "source": "github:org/qa-skills/skills/qa#main" }
+  }
+}
+```
+
+Bundle manifests do not contain agents. `sksync bundle add <source> --agent ...` expands entries into normal dependencies, union-merges agents when an existing dependency has the same source, and conflicts when the same skill name already points at a different source. `sksync bundle remove <name>` uses local config provenance only; it does not refetch the remote manifest.
+
+Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance.
 
 ### Agent target mapping
 

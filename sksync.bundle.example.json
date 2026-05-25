@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json",
+  "name": "review-workflow",
+  "description": "Skills for review and QA workflows.",
+  "entries": {
+    "review": {
+      "source": "./skills/review"
+    },
+    "qa": {
+      "source": "github:org/qa-skills/skills/qa#main"
+    }
+  }
+}
