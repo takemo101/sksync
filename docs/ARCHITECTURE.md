@@ -1,8 +1,8 @@
 # sksync Architecture
 
-このドキュメントは、`okite-ai/skills` のアーキテクチャ系スキルから、`sksync` に取り入れる設計原則を整理したものです。
+This document summarizes the architecture principles used for `sksync`.
 
-対象にした主な考え方:
+Primary influences:
 
 - Clean Architecture
 - Package Design / Package Refactoring
@@ -15,10 +15,9 @@
 - Error Handling / Error Classification
 - Backward Compatibility Governance
 
-## 1. アーキテクチャ方針
+## 1. Architecture direction
 
-`sksync` は Rust 製の CLI/TUI アプリケーションだが、中心にあるのは「skill 同期のドメインロジック」である。
-CLI/TUI/ファイルシステム操作は入口・出口として扱い、同期計画の判断は core 層に閉じ込める。
+`sksync` is a Rust CLI/TUI application, but its center is the domain logic for skill synchronization. CLI, TUI, and filesystem operations are entry/exit adapters. Decisions about what should be linked where belong in the core layers.
 
 ```text
 ┌─────────────────────────────────────────────┐
@@ -57,18 +56,18 @@ CLI/TUI/ファイルシステム操作は入口・出口として扱い、同期
 └─────────────────────────────────────────────┘
 ```
 
-## 2. 依存方向
+## 2. Dependency direction
 
-Clean Architecture の依存ルールに従う。
+Follow Clean Architecture dependency rules:
 
-- `domain` は他層に依存しない
-- `application` は `domain` に依存する
-- `cli` / `tui` は `application` を呼ぶだけにする
-- `infrastructure` は `application` が定義した port / trait を実装する
-- TUI から直接 symlink 作成・lockfile 書き込みをしない
-- TUI が config preference (`defaultAgents`) を更新する場合は、既存 config JSON を保持する薄い adapter に限定する
+- `domain` does not depend on other layers.
+- `application` depends on `domain`.
+- `cli` / `tui` only call `application`.
+- `infrastructure` implements ports/traits defined by `application`.
+- TUI does not directly create symlinks or write lockfiles.
+- If the TUI updates config preferences such as `defaultAgents`, that update must stay a thin adapter that preserves existing config JSON fields.
 
-依存方向:
+Dependency direction:
 
 ```text
 cli/tui ──▶ application ──▶ domain
@@ -78,7 +77,7 @@ cli/tui ──▶ application ──▶ domain
 infrastructure ┘
 ```
 
-## 3. Rust モジュール構成案
+## 3. Rust module structure
 
 ```text
 src/
@@ -124,14 +123,15 @@ src/
     builtin_agents.rs
 ```
 
-## 4. Package Design 原則
+The current implementation may use fewer files where responsibilities are still small. Split modules by responsibility, not by technical fashion.
 
-### 技術名だけで分けない
+## 4. Package design principles
 
-`models`, `utils`, `helpers` のような技術・雑多な名前を避ける。
-責務・変更理由でモジュールを分ける。
+### Avoid purely technical buckets
 
-良い分割:
+Avoid names such as `models`, `utils`, `helpers`, or `services` when they hide responsibilities. Prefer names that describe the reason the module changes.
+
+Good boundaries:
 
 - `domain::skill`
 - `domain::agent`
@@ -139,57 +139,54 @@ src/
 - `application::apply`
 - `infrastructure::builtin_agents`
 
-避ける分割:
+Avoid:
 
 - `utils`
 - `types`
 - `services`
 - `managers`
 
-### 公開インターフェースを小さくする
+### Keep public interfaces small
 
-各 module は `mod.rs` で公開する型・関数を絞る。
-内部実装は `pub(crate)` または private を優先する。
+Each module should expose only the types/functions it wants other modules to rely on. Prefer private or `pub(crate)` implementation details.
 
 ## 5. Domain Model First
 
-実装は以下の順序で進める。
+Implementation should proceed from the domain outward:
 
-1. ドメイン型を定義する
-2. ドメイン型の不変条件をテストする
-3. dry-run の `LinkPlan` を作る
-4. application usecase を作る
-5. CLI/TUI を接続する
-6. filesystem 実装を接続する
+1. Define domain types.
+2. Test domain invariants.
+3. Build the dry-run `LinkPlan`.
+4. Build application use cases.
+5. Connect CLI/TUI.
+6. Connect filesystem infrastructure.
 
-最初から TUI やファイル操作を中心にしない。
-`sksync` の核は「何をどこへリンクすべきか」「現在状態との差分は何か」を安全に判断すること。
+Do not start from TUI or filesystem operations. The core question is: what should be linked where, and how does current state differ from desired state?
 
 ## 6. Parse, Don't Validate
 
-外部入力は、読み込んだ後に何度も `if valid` で検査し続けない。
-config / lockfile / CLI args は、境界で parse して妥当な domain 型へ変換する。
+External input should be parsed once at the boundary. Avoid repeatedly checking raw strings throughout the core.
 
-例:
+Examples:
 
-- raw string の agent 名 → `AgentKind`
-- raw string の scope → `Scope`
+- raw agent name → `AgentKind`
+- raw scope → `Scope`
 - raw path → `SourcePath` / `TargetPath`
-- JSON config → `Config` → `ResolvedConfig`
+- JSON config → `RawConfig` → `ResolvedConfig`
 
 ```text
 JSON / CLI args / filesystem
   ↓ parse
-valid domain types
+valid domain/application types
   ↓ use
 planner / apply / check
 ```
 
-## 7. Domain Primitives / Always-Valid Domain Model
+## 7. Domain primitives / always-valid domain model
 
-Rust の newtype を使い、意味のある値をプリミティブ型のまま運ばない。
+Use Rust newtypes for important concepts instead of passing primitive `String` / `PathBuf` values everywhere.
 
-候補:
+Candidates:
 
 ```rust
 struct SkillName(String);
@@ -201,20 +198,19 @@ struct TargetPath(PathBuf);
 struct Sha256Digest(String);
 ```
 
-不変条件の例:
+Example invariants:
 
-- `SkillName` は空文字を許可しない
-- `SkillName` に path separator を許可しない
-- `TargetPath` は agent mapping から解決済みである
-- `ResolvedConfig` は存在しない agent 参照を含まない
-- `LinkPlan` は source と target が同一 path になる操作を含まない
+- `SkillName` is not empty.
+- `SkillName` cannot contain path separators.
+- `TargetPath` has been resolved from agent mapping.
+- `ResolvedConfig` contains no references to unknown agents.
+- `LinkPlan` does not include operations where source and target are the same path.
 
 ## 8. Tell, Don't Ask
 
-状態を外に取り出して呼び出し側で判断しすぎない。
-判断は対象オブジェクトの振る舞いとして持たせる。
+Do not pull state out of objects and make decisions externally when the object can expose a behavior.
 
-避けたい形:
+Avoid:
 
 ```rust
 if entry.is_symlink && entry.target == expected {
@@ -222,7 +218,7 @@ if entry.is_symlink && entry.target == expected {
 }
 ```
 
-望ましい形:
+Prefer:
 
 ```rust
 match current_link.compare_with(expected_link) {
@@ -233,70 +229,67 @@ match current_link.compare_with(expected_link) {
 
 ## 9. Law of Demeter
 
-深い構造を辿って判断しない。
-特に TUI / CLI から domain の内部構造へ直接アクセスしない。
+Avoid deep structural navigation, especially from CLI/TUI into domain internals.
 
-避けたい形:
+Avoid:
 
 ```rust
 app.config.skills[skill].agents[agent].target.path
 ```
 
-望ましい形:
+Prefer:
 
 ```rust
 let rows = app.view_model().skill_rows();
 ```
 
-TUI は表示用 ViewModel を受け取り、domain 内部を知りすぎない。
+TUI should receive view models and should not need to know internal domain structure.
 
-## 10. Intent-based Deduplication
+## 10. Intent-based deduplication
 
-字面が似ているだけで共通化しない。
-意図が同じものだけ共通化する。
+Do not merge code only because it looks similar. Merge it when it represents the same intent.
 
-例:
+Examples:
 
-- `SourcePath` と `TargetPath` はどちらも `PathBuf` だが意図が違うので別型にする
-- `ConfigSkill` と `LockedSkill` は似ていても役割が違うので分ける
-- CLI 表示用 row と TUI 表示用 row は同じに見えても、変更理由が違うなら別型にする
+- `SourcePath` and `TargetPath` both wrap `PathBuf`, but their intent differs, so they should be separate types.
+- `ConfigSkill` and `LockedSkill` may look similar, but their roles differ.
+- CLI display rows and TUI display rows may change for different reasons; keep them separate unless their intent is truly shared.
 
-## 11. Error Handling / Error Classification
+## 11. Error handling / classification
 
-エラーは「回復可能か」「ユーザーが直せるか」「プログラム欠陥か」で分類する。
+Classify errors by how users and the program can respond.
 
-| 種類        | 例                                       | 対応                           |
-| ----------- | ---------------------------------------- | ------------------------------ |
-| UserFixable | config 不正、source 不存在、target 衝突  | 分かりやすいメッセージを出す   |
-| Environment | symlink 権限なし、ホームディレクトリ不明 | OS 別の解決策を提示する        |
-| Drift       | lockfile hash 差分、壊れた symlink       | `check` / TUI で修復候補を出す |
-| Bug         | 到達不能状態、parse 済み型の不変条件違反 | internal error として扱う      |
+| Kind | Examples | Response |
+| --- | --- | --- |
+| UserFixable | invalid config, missing source, target conflict | clear message and suggested command |
+| Environment | symlink permission denied, missing home directory | OS-specific guidance |
+| Drift | lockfile hash mismatch, broken symlink | report through `check` / TUI with repair candidates |
+| Bug | unreachable state, violated invariant after parsing | internal error |
 
-Rust 実装では以下を使い分ける。
+Rust implementation guidance:
 
-- library/domain error: `thiserror`
-- CLI/TUI entrypoint: `anyhow`
-- ユーザー表示: context 付きの短い説明
+- library/domain errors: `thiserror`
+- CLI/TUI entrypoints: `anyhow`
+- user display: short messages with context
 
-## 12. Backward Compatibility Governance
+## 12. Backward compatibility governance
 
-`sksync.config.json` と `sksync-lock.json` は公開 API とみなす。
-lockfile v4 は package-lock 的に portable な source / hash / resolved install source だけを保存し、machine-local な target path は runtime に config から再計算する。v2 / v3 は読み込み互換として維持し、新規書き込みは v4 に統一する。
-破壊的変更を避けるため、以下を守る。
+`sksync.config.json` and `sksync-lock.json` are public APIs. Lockfile v4 stores only portable source/hash/resolved install-source data and recomputes machine-local target paths from current config. v2/v3 remain read-compatible; new writes use v4.
 
-- `lockfileVersion` を必ず持つ
-- config schema の version 導入を検討する
-- 古い lockfile は migrate できるようにする
-- v2 lockfile の `targets` は読み込み互換のみ維持し、新規書き込みでは出力しない
-- 互換層は `infrastructure::json` または専用 migration module に閉じ込める
-- domain model 内に過去形式の都合を持ち込まない
+Rules:
 
-## 13. Repository / Port Placement
+- Lockfiles must include `lockfileVersion`.
+- Consider introducing an explicit config schema version if needed.
+- Old lockfiles must remain migratable/readable.
+- v2 `targets` are read-compatible only and are not written by new lockfiles.
+- Compatibility logic belongs in `infrastructure::json` or a dedicated migration module.
+- Do not leak legacy format concerns into the domain model.
 
-永続化・ファイルシステム操作の trait は application 層に置く。
-domain 層は永続化を知らない。
+## 13. Repository / port placement
 
-例:
+Persistence and filesystem traits belong in the application layer. Domain must not know about persistence.
+
+Example:
 
 ```rust
 trait ConfigStore {
@@ -310,27 +303,27 @@ trait LinkStore {
 }
 ```
 
-## 14. TUI 設計原則
+## 14. TUI design principles
 
-TUI は application の thin adapter とする。ここでの TUI は質問形式の wizard / prompt UI とする。
+The TUI is a thin adapter around application use cases. It is a prompt-style wizard, not a persistent application UI.
 
-- TUI は `AddUseCase`, `AttachUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, `CheckUseCase` を呼ぶ
-- TUI は symlink / source install / lockfile 操作の filesystem を直接触らない
-- wizard preference の config 更新は、既存 JSON fields を保持する adapter として扱う
-- TUI state は質問途中の回答、選択中 option、確認待ちだけにする
-- 追加・削除・agent 変更・default agents 設定は質問フローで必要情報を集める
-- 破壊的操作は dry-run summary を表示し、明示確認後に実行する
-- 常駐型の一覧画面は持たず、必要な状態確認は `list` / `check` の summary として表示する
+- TUI calls `AddUseCase`, `AttachUseCase`, `RemoveUseCase`, `PlanUseCase`, `ApplyUseCase`, and `CheckUseCase`.
+- TUI does not directly perform symlink, source install, or lockfile filesystem operations.
+- Wizard preference config updates preserve existing JSON fields and stay adapter-level.
+- TUI state contains only in-progress prompt answers, current selections, and confirmation state.
+- Add / remove / agent changes / default agents configuration collect required values through prompt flows.
+- Destructive operations show a dry-run summary and require explicit confirmation.
+- No persistent list screen; status should be shown as `list` / `check` summaries.
 
-## 15. 設計チェックリスト
+## 15. Design review checklist
 
-実装レビュー時は以下を確認する。
+When reviewing implementation, check:
 
-- [ ] domain が CLI/TUI/filesystem crate に依存していない
-- [ ] config は境界で parse され、core では valid type を使っている
-- [ ] `String` / `PathBuf` の裸利用が domain の重要概念に残っていない
-- [ ] `utils` 的な雑多 module が増えていない
-- [ ] TUI から直接 symlink / lockfile 操作をしていない
-- [ ] lockfile/config の互換性方針を破っていない
-- [ ] 既存ファイルを `--force` なしで上書きしない
-- [ ] エラーがユーザー修正可能か internal bug か分類されている
+- [ ] `domain` does not depend on CLI/TUI/filesystem crates.
+- [ ] Config is parsed at the boundary and core uses valid types.
+- [ ] Important domain concepts are not left as raw `String` / `PathBuf`.
+- [ ] No miscellaneous `utils` module has become a dumping ground.
+- [ ] TUI does not directly perform symlink or lockfile operations.
+- [ ] Config/lockfile compatibility rules are preserved.
+- [ ] Existing files are not overwritten without `--force`.
+- [ ] Errors are classified as user-fixable, environment, drift, or internal bug where appropriate.

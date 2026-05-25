@@ -1,26 +1,24 @@
 # sksync Implementation Plan
 
-## 現状分析
+## Current state analysis
 
-このリポジトリは現在、実装コードをまだ持たない設計ベースライン段階です。
-既存ファイルは以下です。
+This document records the original implementation plan from the design-baseline stage. At that point the repository did not yet contain the production implementation. The planned baseline files were:
 
-- `README.md`: 目的・初期スコープ・想定コマンド
-- `docs/DESIGN.md`: 機能設計、設定/lockfile形式、CLI/TUI案、安全ルール
-- `docs/ARCHITECTURE.md`: Clean Architecture、Domain Model First、エラー分類、TUI原則
-- `docs/ROADMAP.md`: Phase 0〜4 のロードマップ
-- `docs/RUST_TUI_PLAN.md`: Rust/TUI 実装順と推奨crate
-- `sksync.config.example.json`: config例
-- `sksync-lock.example.json`: lockfile例
+- `README.md`: purpose, initial scope, and expected commands.
+- `docs/DESIGN.md`: feature design, config/lockfile formats, CLI/TUI shape, and safety rules.
+- `docs/ARCHITECTURE.md`: Clean Architecture, Domain Model First, error classification, and TUI principles.
+- `docs/ROADMAP.md`: phased roadmap.
+- `docs/RUST_TUI_PLAN.md`: Rust/TUI implementation order and recommended crates.
+- `sksync.config.example.json`: example config.
+- `sksync-lock.example.json`: example lockfile.
 
-したがって、最初の実装対象は「Rust CLI MVP」です。TUIやinstall/source URL integrationsは、coreが安定した後に分離して進めます。
+The first implementation target was the Rust CLI MVP. TUI and install/source URL integrations were intentionally deferred until the core was stable.
 
-## 実装方針
+## Implementation direction
 
-### 1. CLI MVPを先に作る
+### 1. Build the CLI MVP first
 
-TUIは魅力的ですが、`sksync` の核は「設定から期待リンク状態を作り、現在状態との差分を安全に判定・適用すること」です。
-そのため、最初は以下のCLIだけを動かします。
+The TUI is useful, but the core of `sksync` is to derive the desired link state from config, safely compare it with current filesystem state, and apply the resulting plan. The initial CLI surface was:
 
 ```bash
 sksync init
@@ -30,14 +28,13 @@ sksync check
 sksync list
 ```
 
-`install` と `tui` は後続フェーズに回します。
+`install` and `tui` were deferred to later phases.
 
-### 2. core logicをUIから分離する
+### 2. Separate core logic from UI
 
-`cli` は application layer を呼ぶだけにします。
-filesystem / symlink / JSON I/O は infrastructure layer に閉じ込めます。
+`cli` should only call the application layer. Filesystem, symlink, and JSON I/O details should be contained in the infrastructure layer.
 
-推奨初期構成:
+Recommended initial structure:
 
 ```text
 src/
@@ -68,9 +65,9 @@ src/
     json.rs
 ```
 
-### 3. Parse, Don't Validate を守る
+### 3. Follow Parse, Don't Validate
 
-JSONをそのままcoreで扱わず、境界で以下へ変換します。
+Do not pass raw JSON directly into the core. Parse it at the boundary into valid domain/application types:
 
 - `RawConfig` → `ResolvedConfig`
 - raw agent name → `AgentKind`
@@ -78,73 +75,73 @@ JSONをそのままcoreで扱わず、境界で以下へ変換します。
 - raw path → `SourcePath` / `TargetPath`
 - raw lockfile → version-aware `Lockfile`
 
-### 4. 安全性をMVP要件に含める
+### 4. Treat safety as an MVP requirement
 
-`apply` は便利機能ではなく危険操作です。最初から以下を必須にします。
+`apply` is a potentially destructive operation, not a convenience feature. The MVP must include these protections:
 
-- 通常ファイルを上書きしない
-- 予期しない既存symlinkを勝手に差し替えない
-- `--force` なしで破壊的変更をしない
-- `plan` で事前に操作一覧を見られる
-- lockfileを生成/更新する
+- Do not overwrite regular files.
+- Do not silently replace unexpected existing symlinks.
+- Do not perform destructive changes without `--force`.
+- Let users inspect planned operations through `plan`.
+- Generate/update the lockfile.
 
-## フェーズ計画
+## Phase plan
 
 ## Phase 1: Rust CLI MVP
 
-目的: 設計済みの基本同期フローを、テスト付きで動作させる。
+Goal: implement the basic designed sync flow with tests.
 
-1. Cargo project / CI / lint / format の土台を作る
-2. config / lockfile / domain primitive を定義する
-3. built-in agent mapping を実装する
-4. skill discovery とhash計算を実装する
-5. dry-run plannerを実装する
-6. symlink applyとlockfile生成を実装する
-7. check/list CLIを実装する
-8. READMEに実行手順を追加する
+1. Create the Cargo project, CI, lint, and formatting baseline.
+2. Define config, lockfile, and domain primitives.
+3. Implement built-in agent mappings.
+4. Implement skill discovery and hash calculation.
+5. Implement the dry-run planner.
+6. Implement symlink apply and lockfile generation.
+7. Implement check/list CLI commands.
+8. Add execution instructions to the README.
 
-完了条件:
+Completion criteria:
 
-- `cargo test` が通る
-- example configを使って `plan/check/list` が動く
-- temp directory上で `apply` の安全ルールがテストされている
+- `cargo test` passes.
+- `plan`, `check`, and `list` work with the example config.
+- Safety rules for `apply` are tested in temporary directories.
 
 ## Phase 2: Prompt Wizard MVP
 
-目的: CLIと同じcore logicを利用して、質問形式で skill の追加・削除・確認を実行できるようにする。
+Goal: use the same core logic as the CLI to add, remove, inspect, and apply skills through a prompt flow.
 
-1. prompt / wizard の intent 選択を実装
-2. add / remove / remove-agent / check / apply に必要な値を順番に質問する
-3. remove / remove-agent は scope 選択後に config 由来の skill list / agent list から選ばせる
-4. 破壊的操作前に summary / dry-run を表示する
-5. 明示確認後に CLI と同じ application usecase を呼ぶ
+1. Implement prompt / wizard intent selection.
+2. Ask for the values needed by add / remove / remove-agent / check / apply.
+3. For remove / remove-agent, choose from skill and agent lists loaded from config after scope selection.
+4. Show a summary / dry-run before destructive operations.
+5. After explicit confirmation, call the same application use case as the CLI.
 
-完了条件:
+Completion criteria:
 
-- wizardがfilesystemを直接触らない
-- pane / keybinding 中心の常駐型 UI を持たない
-- apply / remove 前に確認が必要
-- CLIとwizardでplan結果が一致する
+- The wizard does not directly touch the filesystem.
+- There is no persistent pane/keybinding-style UI.
+- Apply / remove require confirmation.
+- CLI and wizard produce consistent plan results.
 
 ## Phase 3: Portability / install workflow
 
-目的: 実利用の幅を広げる。
+Goal: broaden real-world usage.
 
-1. custom agent mapping
-2. config/lockfile migration
-3. Windows symlink/junction strategy
-4. `install/update/remove` workflow
+1. Custom agent mapping.
+2. Config/lockfile migration.
+3. Windows symlink/junction strategy.
+4. `install/update/remove` workflow.
 
-## 優先順位
+## Priorities
 
-1. **最優先**: config parse、domain model、planner、safe apply
-2. **次点**: check/list、lockfile drift検出
-3. **後続**: TUI、install、source URL integrations、Windows特殊対応
+1. **Highest priority**: config parsing, domain model, planner, safe apply.
+2. **Next**: check/list and lockfile drift detection.
+3. **Later**: TUI, install, source URL integrations, and Windows-specific behavior.
 
-## 実装上の注意
+## Implementation notes
 
-- `domain` から `clap`, `serde_json`, `std::fs`, prompt UI crate に依存しない
-- `SourcePath` と `TargetPath` を同じ `PathBuf` として扱わない
-- `ConfigSkill` と `LockedSkill` を安易に共通化しない
-- testでは `tempfile` を使い、実ユーザーディレクトリを触らない
-- snapshot testは plan/check の表示安定後に `insta` で導入する
+- `domain` must not depend on `clap`, `serde_json`, `std::fs`, or prompt UI crates.
+- Do not treat `SourcePath` and `TargetPath` as interchangeable `PathBuf`s.
+- Do not over-deduplicate `ConfigSkill` and `LockedSkill`; they have different roles.
+- Use `tempfile` in tests and never touch real user directories.
+- Add `insta` snapshot tests after plan/check output stabilizes.

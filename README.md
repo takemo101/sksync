@@ -1,31 +1,31 @@
 # sksync
 
-`sksync` は、複数のコーディングエージェントでばらばらになりがちな Agent Skills の配置先を、1つの設定ファイルから同期する CLI ツールです。
+`sksync` is a CLI tool that syncs Agent Skills target directories for multiple coding agents from a single configuration file.
 
-## 目的
+## Purpose
 
-- エージェントごとに異なる skills ディレクトリへ、共通の skill 実体からシンボリックリンクを作成する
-- skill の元データを `.sksync/skills/` に集約し、agent 側へ安全に symlink する
-- bundled agent mapping で Claude Code / Codex / Gemini / jcode / OpenCode / Pi / Antigravity など主要エージェントの配置先に対応する
-- GitHub / local directory / skills.sh URL から skill を追加し、lockfile で再現可能にする
+- Create symlinks from one shared skill body into each agent's expected skills directory.
+- Keep source skill bodies under `.sksync/skills/` and safely link them into agent directories.
+- Support bundled target mappings for major agents such as Claude Code, Codex, Gemini, jcode, OpenCode, Pi, and Antigravity.
+- Add skills from GitHub, local directories, or `skills.sh` URLs and make them reproducible with a lockfile.
 
 ## CLI
 
 ### Install on macOS / Linux
 
-GitHub Releases の prebuilt binary を `~/.local/bin/sksync` にインストールできます。macOS は Apple Silicon / Intel、Linux は x86_64 / aarch64 の musl binary を使います。
+Install a prebuilt binary from GitHub Releases to `~/.local/bin/sksync`. macOS uses Apple Silicon / Intel assets; Linux uses x86_64 / aarch64 musl assets.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | sh
 ```
 
-インストール先を変える場合:
+Choose a different install directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/takemo101/sksync/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
-installer は以下の release asset を自動選択します。
+The installer automatically selects one of these release assets:
 
 | OS | Architecture | Asset target |
 | --- | --- | --- |
@@ -34,23 +34,23 @@ installer は以下の release asset を自動選択します。
 | Linux | x86_64 / amd64 | `x86_64-unknown-linux-musl` |
 | Linux | arm64 / aarch64 | `aarch64-unknown-linux-musl` |
 
-Linux は Debian / Ubuntu など複数 distro で動かしやすいよう、installer では musl target を選びます。Linux assets はこの対応を含む release 以降で利用できます。`latest` が古い場合は source build するか、新しい `VERSION=v...` を指定してください。Windows は現時点では未対応です。
+Linux uses musl assets so the same binary works across multiple distributions such as Debian and Ubuntu. Linux assets are available from releases that include this support. If `latest` predates them, build from source or set `VERSION=v...` to a newer tag. Windows is not supported yet.
 
 ### Uninstall
 
-`install.sh` で入れた場合は、インストールした binary を削除します。
+If you installed with `install.sh`, remove the installed binary:
 
 ```bash
 rm -f ~/.local/bin/sksync
 ```
 
-`INSTALL_DIR` を変えてインストールした場合は、その場所の binary を削除してください。
+If you used a custom `INSTALL_DIR`, delete the binary from that directory instead:
 
 ```bash
 rm -f /usr/local/bin/sksync
 ```
 
-clone した repository から `just install` で入れた場合は、同じ `INSTALL_DIR` を指定して uninstall できます。
+If you installed from a repository clone with `just install`, use the same `INSTALL_DIR` with `just uninstall`:
 
 ```bash
 just uninstall
@@ -58,7 +58,7 @@ just uninstall
 INSTALL_DIR=/usr/local/bin just uninstall
 ```
 
-global config / agent mapping / installed global skills も削除して完全に初期化する場合は、binary に加えて `~/.sksync` を削除します。
+To fully reset global config, agent mappings, and installed global skills, remove `~/.sksync` as well:
 
 ```bash
 rm -f ~/.local/bin/sksync
@@ -73,7 +73,7 @@ cargo test
 cargo run -- --help
 ```
 
-ローカルでコマンドを実行する場合は、以下のように `cargo run --` 経由で起動できます。
+Run commands locally through `cargo run --`:
 
 ```bash
 cargo run -- init
@@ -99,11 +99,11 @@ cargo run -- list
 cargo run -- wizard
 ```
 
-ビルド済みバイナリを使う場合は `cargo build` 後に `./target/debug/sksync ...` を実行してください。
+After `cargo build`, you can also run `./target/debug/sksync ...`.
 
 ### `sksync init`
 
-新規プロジェクト用の雛形を作成します。
+Create a starter config for a new project.
 
 ```bash
 cargo run -- init
@@ -113,45 +113,45 @@ cargo run -- init --global
 cargo run -- init --agents
 ```
 
-project mode で作成されるもの:
+Project mode creates:
 
 - `sksync.config.json`
 - `.sksync/skills/`
 
-global mode (`--global`) で作成されるもの:
+Global mode (`--global`) creates:
 
 - `~/.sksync/config.json`
 - `~/.sksync/agents.json`
 - `~/.sksync/skills/`
 
-既に対象 config が存在する場合は上書きせず失敗します。global mode で `agents.json` が既にある場合は上書きしません。
+If the target config already exists, `init` fails instead of overwriting it. In global mode, an existing `agents.json` is also left untouched.
 
-`init --agents` は config / skills directory には触らず、bundled default mapping で `~/.sksync/agents.json` だけを強制的に上書きします。新しい agent mapping を取り込む場合に使います。通常は同じ目的で `sksync agents refresh` も使えます。
+`init --agents` does not touch config files or skills directories. It only overwrites `~/.sksync/agents.json` with the bundled default mappings. Use it to pick up new agent mappings. `sksync agents refresh` provides the same refresh behavior.
 
 #### Agent target mappings
 
-`~/.sksync/agents.json` は global / project 両方の agent target directory mapping を持ちます。project config では `project` mapping、global config (`--global`) では `global` mapping を使います。inline config の `agents` override がある場合は、それが最優先です。
+`~/.sksync/agents.json` stores both global and project agent target directory mappings. Project config uses `project` mappings, while global config (`--global`) uses `global` mappings. Inline `agents` overrides in `sksync.config.json` take highest priority.
 
-bundled mapping には主要な Agent Skills 対応エージェントの entries を含めています。例:
+The bundled mappings include entries for major Agent Skills-compatible agents. Examples:
 
-| Agent                   | Global targetDir               | Project targetDir  |
-| ----------------------- | ------------------------------ | ------------------ |
-| `pi`                    | `~/.pi/agent/skills`           | `.pi/agent/skills` |
-| `claude-code`           | `~/.claude/skills`             | `.claude/skills`   |
-| `codex`                 | `~/.codex/skills`              | `.codex/skills`    |
-| `jcode`                 | `~/.jcode/skills`              | `.jcode/skills`    |
-| `gemini` / `gemini-cli` | `~/.gemini/skills`             | `.gemini/skills`   |
-| `opencode`              | `~/.config/opencode/skills`    | `.opencode/skills` |
-| `antigravity`           | `~/.gemini/antigravity/skills` | `.agents/skills`   |
-| `universal`             | `~/.agents/skills`             | `.agents/skills`   |
+| Agent | Global targetDir | Project targetDir |
+| --- | --- | --- |
+| `pi` | `~/.pi/agent/skills` | `.pi/agent/skills` |
+| `claude-code` | `~/.claude/skills` | `.claude/skills` |
+| `codex` | `~/.codex/skills` | `.codex/skills` |
+| `jcode` | `~/.jcode/skills` | `.jcode/skills` |
+| `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
+| `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
+| `antigravity` | `~/.gemini/antigravity/skills` | `.agents/skills` |
+| `universal` | `~/.agents/skills` | `.agents/skills` |
 
-Antigravity は公式仕様に合わせ、workspace default の `.agents/skills` を使います。`.agent/skills` は Antigravity 側では後方互換として扱われますが、sksync の bundled default は `.agents/skills` です。
+Antigravity uses the official workspace default `.agents/skills`. Antigravity treats `.agent/skills` as a backward-compatible directory, but sksync's bundled default is `.agents/skills`.
 
-`universal` は Agent Skills ecosystem の canonical directory です。global は `~/.agents/skills`、project は `.agents/skills` に配置します。
+`universal` is the canonical Agent Skills ecosystem directory. It maps to `~/.agents/skills` globally and `.agents/skills` in projects.
 
 #### Default wizard agents
 
-`defaultAgents` を config に書くと、wizard の `Add skill` で agent selection が初期選択されます。CLI の `sksync add` では引き続き `--agent` の明示指定が必要です。
+Set `defaultAgents` in config to preselect agents in the wizard's `Add skill` flow. CLI `sksync add` still requires explicit `--agent` arguments.
 
 ```json
 {
@@ -159,17 +159,17 @@ Antigravity は公式仕様に合わせ、workspace default の `.agents/skills`
 }
 ```
 
-`defaultAgents` は wizard の `Configure default agents` からも設定できます。
+You can also set `defaultAgents` from the wizard's `Configure default agents` flow.
 
 ### `sksync add`
 
-Agent Skills source を dependency として追加する操作です。source と複数 agent を指定すると dependency config に追記し、skill を取得して symlink まで作成します。途中で install / plan / apply に失敗した場合は、変更前の config に rollback します。
+Add an Agent Skills source as a dependency. Given a source and one or more agents, sksync updates dependency config, installs the skill, and creates symlinks. If install / plan / apply fails, the config is rolled back.
 
 ```bash
 cargo run -- add <source> --agent pi [--agent claude-code]
 ```
 
-よく使う例:
+Common examples:
 
 ```bash
 # GitHub shorthand / prefix / tree URL
@@ -177,7 +177,7 @@ cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
 cargo run -- add github:owner/repo/path/to/skill#main --agent pi
 cargo run -- add https://github.com/owner/repo/tree/main/path/to/skill --agent pi
 
-# repo root から SKILL.md を discovery して選択
+# Discover and select SKILL.md files from a repo root
 cargo run -- add owner/repo --agent pi
 cargo run -- add owner/repo --name skill-name --agent pi
 
@@ -192,24 +192,24 @@ cargo run -- add ./local-skill --agent pi --agent gemini
 
 #### Source formats
 
-| Format                                                 | Meaning                                                                                         |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `owner/repo/path/to/skill#ref`                         | GitHub shorthand. `owner/repo` を clone し、`path/to/skill` を skill directory として使います。 |
-| `github:owner/repo/path/to/skill#ref`                  | GitHub shorthand を明示します。                                                                 |
-| `https://github.com/owner/repo/tree/ref/path/to/skill` | GitHub tree URL。`ref` と path をそのまま使います。                                             |
-| `owner/repo#ref`                                       | repo root / 親ディレクトリとして扱い、配下の `SKILL.md` を discovery します。                   |
-| `skills.sh/owner/repo[/skill-or-path]#ref`             | skills.sh source。内部的には GitHub repo に変換します。                                         |
-| `https://www.skills.sh/owner/repo[/skill-or-path]#ref` | skills.sh URL。direct URL の推測 path が外れた場合も repo root discovery で探します。           |
-| `./local-skill`, `../skills/foo`, `/abs/path`          | local directory。相対 path は config file のある directory から解決します。                     |
+| Format | Meaning |
+| --- | --- |
+| `owner/repo/path/to/skill#ref` | GitHub shorthand. Clones `owner/repo` and uses `path/to/skill` as the skill directory. |
+| `github:owner/repo/path/to/skill#ref` | Explicit GitHub shorthand. |
+| `https://github.com/owner/repo/tree/ref/path/to/skill` | GitHub tree URL. Uses the given `ref` and path as-is. |
+| `owner/repo#ref` | Treats the source as a repo root / parent directory and discovers `SKILL.md` files underneath it. |
+| `skills.sh/owner/repo[/skill-or-path]#ref` | `skills.sh` source. Internally transformed to a GitHub repo source. |
+| `https://www.skills.sh/owner/repo[/skill-or-path]#ref` | `skills.sh` URL. If the guessed direct path is wrong, sksync falls back to repo-root discovery. |
+| `./local-skill`, `../skills/foo`, `/abs/path` | Local directory. Relative paths resolve from the config file directory. |
 
-`registry:<host>/<package>` と `--provider` はサポートしていません。source URL transformer は source 文字列から自動判定します。
+`registry:<host>/<package>` and `--provider` are not supported. Source URL transformers are inferred from the source string.
 
 #### Private repositories
 
-private Git repository は sksync 独自の token 管理ではなく、ローカルの `git` 認証設定に委譲します。つまり、その環境で `git clone <repo>` が通る source であれば sksync でも利用できます。
+Private Git repositories use your local `git` authentication. sksync does not manage tokens. If `git clone <repo>` works in the current environment, sksync can use the same source.
 
-- GitHub shorthand (`owner/repo/path#ref`) は `https://github.com/owner/repo.git` に変換します。private repo の場合は Git credential helper / GitHub CLI / PAT などで HTTPS 認証済みにしてください。
-- SSH URL を使いたい場合は structured source を使います。
+- GitHub shorthand (`owner/repo/path#ref`) is converted to `https://github.com/owner/repo.git`. For private repositories, configure HTTPS auth through a Git credential helper, GitHub CLI, PAT, or equivalent.
+- Use structured sources for SSH URLs.
 
 ```json
 {
@@ -227,23 +227,23 @@ private Git repository は sksync 独自の token 管理ではなく、ローカ
 }
 ```
 
-sksync は `--token` / `--github-token` のような認証オプションを持たず、credentials を config に保存しません。認証エラーは underlying `git` command のエラーとして表示されます。`skills.sh` URL は基本的に public source 前提です。
+sksync has no `--token` or `--github-token` option and never stores credentials in config. Auth failures are reported as underlying `git` command errors. `skills.sh` URLs are generally expected to point to public sources.
 
 #### Discovery behavior
 
-source が直接 `SKILL.md` を持たない repo root / 親ディレクトリを指す場合、配下の `SKILL.md` を最大 depth 5 で探索します。
+When a source points to a repo root or parent directory without a direct `SKILL.md`, sksync searches for `SKILL.md` up to depth 5.
 
-- 1件だけ見つかった場合: 自動選択します。
-- 複数見つかった場合: 対話環境では複数選択プロンプトを表示します。
-- 非対話環境で複数見つかった場合: エラーにして `--name <skill>` またはより具体的な source を案内します。
-- `--name` 指定時: frontmatter `name` または directory name に一致する discovered skill を1件だけ自動選択します。
-- `.git` / `node_modules` / `.sksync` は探索対象から除外します。
+- One match: automatically selected.
+- Multiple matches in an interactive terminal: prompt for one or more selections.
+- Multiple matches in a non-interactive environment: error with guidance to pass `--name <skill>` or a more specific source.
+- With `--name`: automatically select exactly one discovered skill whose frontmatter `name` or directory name matches.
+- `.git`, `node_modules`, and `.sksync` are excluded from discovery.
 
-複数選択プロンプトでは skill 名を太字・シアンで表示します。
+The multi-select prompt displays skill names in bold cyan.
 
 #### skills.sh mapping
 
-`skills.sh` は registry としてではなく、GitHub source への URL transformer として扱います。入力には `skills.sh` URL / shorthand を使えますが、config には選択後の実 GitHub path を `https://github.com/<owner>/<repo>/tree/<ref>/<path>` として保存します。
+`sksync` treats `skills.sh` as a URL transformer to GitHub sources, not as a registry. You can pass `skills.sh` URLs or shorthands, but config stores the selected skill as an exact GitHub tree URL: `https://github.com/<owner>/<repo>/tree/<ref>/<path>`.
 
 ```text
 https://www.skills.sh/vercel-labs/skills/find-skills
@@ -252,7 +252,7 @@ https://www.skills.sh/vercel-labs/skills/find-skills
 → source saved as https://github.com/vercel-labs/skills/tree/HEAD/skills/find-skills
 ```
 
-`skills.sh` の URL slug と GitHub repo 内 path が一致しない場合も、repo root discovery で実際の path を探し、その exact GitHub tree URL を config に保存します。
+If the `skills.sh` URL slug does not match the actual path inside the GitHub repo, sksync uses repo-root discovery to find the real path and saves the exact GitHub tree URL.
 
 ```text
 https://www.skills.sh/gitbutlerapp/gitbutler/but
@@ -262,16 +262,16 @@ https://www.skills.sh/gitbutlerapp/gitbutler/but
 
 #### Skill validation
 
-取得した skill は install 前に検証します。
+Fetched skills are validated before install:
 
-- `SKILL.md` が存在する
-- `SKILL.md` がファイルである
-- YAML frontmatter が存在する
-- frontmatter に non-empty string の `name` / `description` がある
+- `SKILL.md` exists.
+- `SKILL.md` is a file.
+- YAML frontmatter exists.
+- Frontmatter contains non-empty string `name` and `description` fields.
 
-検証に失敗した場合は destination を置き換えず、staging directory を削除してエラーにします。
+If validation fails, sksync does not replace the destination and deletes the staging directory.
 
-`--global` を付けると `~/.sksync/config.json` に追加し、グローバル設定として扱います。
+Pass `--global` to add the dependency to `~/.sksync/config.json` as a global dependency.
 
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --global
@@ -279,7 +279,7 @@ cargo run -- add owner/repo/path/to/skill --agent pi --global
 
 ### `sksync attach`
 
-既存の dependency-managed skill を追加 agent に紐づけ、既存 source 表現を保ったまま skill 取得と symlink 作成まで実行します。
+Attach an existing dependency-managed skill to additional agents. sksync preserves the existing source representation, installs the skill, and creates symlinks.
 
 ```bash
 cargo run -- attach cuekit-dogfood --agent claude-code
@@ -288,7 +288,7 @@ cargo run -- attach cuekit-dogfood --agent pi --agent gemini --global
 
 ### `sksync agents`
 
-agent target mapping を確認・更新します。`doctor` は read-only で targetDir の存在や書き込み可否を診断します。
+Inspect and update agent target mappings. `doctor` is read-only and checks whether target directories exist and are writable.
 
 ```bash
 cargo run -- agents list
@@ -298,7 +298,7 @@ cargo run -- agents refresh
 
 ### `sksync doctor`
 
-config / lockfile / source / target / agent mapping を read-only で総合診断し、問題がある場合は次に試すコマンドを表示して非ゼロ終了します。自動修復や directory 作成は行いません。
+Run a read-only diagnosis across config, lockfile, sources, targets, and agent mappings. If problems are found, sksync prints suggested next commands and exits non-zero. It does not auto-fix problems or create directories.
 
 ```bash
 cargo run -- doctor
@@ -307,7 +307,7 @@ cargo run -- doctor --global
 
 ### `sksync import`
 
-既存 agent skill directory から skill を copy-only で `.sksync/skills` または `~/.sksync/skills` に取り込み、指定 agent の dependency として config に登録します。`--agent` は複数指定できます。元の directory は変更・削除・symlink 置換しません。target への symlink 反映は別途 `plan` / `apply` で確認します。
+Copy existing agent skill directories into `.sksync/skills` or `~/.sksync/skills` and register them as dependencies for the specified agents. `--agent` can be passed multiple times. The original directory is never changed, deleted, or replaced with symlinks. Review target symlink changes separately with `plan` / `apply`.
 
 ```bash
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
@@ -318,7 +318,7 @@ cargo run -- import ~/.jcode/skills --agent jcode --global
 
 ### `sksync remove`
 
-指定した skill を dependency config / installed skill directory / managed symlink / lockfile から削除します。installed skill directory は configured `skillDir` 配下の sksync-managed directory の場合だけ削除し、local / legacy の unmanaged source directory は削除しません。
+Remove one or more skills from dependency config, installed skill directories, managed symlinks, and lockfile entries. Installed skill directories are deleted only when they are sksync-managed directories under the configured `skillDir`; unmanaged local or legacy source directories are left untouched.
 
 ```bash
 cargo run -- remove cuekit-dogfood
@@ -328,18 +328,18 @@ cargo run -- remove cuekit-dogfood --keep-files
 cargo run -- remove cuekit-dogfood --config-only
 ```
 
-`--agent` を指定すると対象 agent の link だけを外します。
+Pass `--agent` to detach only the selected agent links.
 
 ```bash
 cargo run -- remove cuekit-dogfood --agent pi
 cargo run -- remove cuekit-dogfood --agent pi --agent claude-code
 ```
 
-この場合は `dependencies.<skill>.agents` と lockfile targets から指定 agent だけを外し、他 agent の link と `.sksync/skills/<skill>` 本体は残します。最後の agent を外した場合は skill 全体の削除と同じ扱いにします。
+In agent-specific removal, sksync removes the selected agents from `dependencies.<skill>.agents` and lockfile targets while keeping the skill body and other agent links. If the last agent is removed, sksync falls back to full skill removal.
 
 ### `sksync outdated`
 
-lockfile と upstream を比較して、更新可能な skill を表示します。Git source は remote ref の HEAD と lockfile の resolved commit を比較します。
+Compare the lockfile with upstream and show skills that can be updated. Git sources compare the remote ref HEAD with the lockfile's resolved commit.
 
 ```bash
 cargo run -- outdated
@@ -349,7 +349,7 @@ cargo run -- outdated --json
 
 ### `sksync plan --dry-run`
 
-`sksync.config.json` を読み込み、現在の target 状態を検査して、作成予定・同期済み・衝突・drift などを表示します。
+Read `sksync.config.json`, inspect current target state, and show planned creates, already-synced links, conflicts, drift, and other states.
 
 ```bash
 cargo run -- plan --dry-run
@@ -358,7 +358,7 @@ cargo run -- plan --global
 
 ### `sksync install`
 
-`sksync-lock.json` があれば lockfile に記録された source を優先して skill を再構成し、symlink まで作成します。lockfile がなければ config から取得して lockfile を作成します。
+If `sksync-lock.json` exists, reconstruct skills from lockfile sources first, then create symlinks. Without a lockfile, install fetches from config and creates one.
 
 ```bash
 cargo run -- install
@@ -367,18 +367,18 @@ cargo run -- install --global
 
 ### `sksync update`
 
-`dependencies` に書かれた Agent Skills source から最新または指定versionの skill を `skillDir` にダウンロード / コピーし、`sksync-lock.json` を更新します。取得した skill は `SKILL.md` と YAML frontmatter の `name` / `description` を検証します。
+Download or copy the latest or pinned skills from `dependencies` sources into `skillDir`, then update `sksync-lock.json`. Fetched skills are validated with `SKILL.md` and YAML frontmatter `name` / `description` checks.
 
 ```bash
 cargo run -- update
 cargo run -- update --global
 ```
 
-対応する source は `sksync add` と同じです。repo root / 親ディレクトリの discovery は `add` 時に選択済み path として config に保存されるため、`update` / `install` は保存済み source を再取得します。
+Supported sources are the same as `sksync add`. Repo-root / parent-directory discovery happens during `add` and is saved as a selected path, so `update` / `install` re-fetch the saved source.
 
 ### `sksync apply`
 
-planner の create symlink action だけを実行し、成功後に `sksync-lock.json` を書き出します。source missing / conflict / drift がある場合は失敗します。`--force` は、既存 target が sksync-managed link で安全に置き換え可能な場合だけ更新を許可します。
+Run only the planner's create-symlink actions, then write `sksync-lock.json`. `apply` fails on missing sources, conflicts, or drift. `--force` only allows replacement when the existing target is a sksync-managed link that is safe to update.
 
 ```bash
 cargo run -- apply
@@ -388,7 +388,7 @@ cargo run -- apply --global
 
 ### `sksync check`
 
-`sksync-lock.json` と現在状態を比較し、source hash drift、target missing、broken symlink などを検出します。source hash は lockfile から、target health は現在の config / agent mapping から再計算した target path から確認します。問題がある場合は非ゼロ終了します。
+Compare `sksync-lock.json` with the current state and detect source hash drift, missing targets, broken symlinks, and related problems. Source hashes come from the lockfile; target health is recalculated from current config and agent mappings. Problems cause a non-zero exit.
 
 ```bash
 cargo run -- check
@@ -397,7 +397,7 @@ cargo run -- check --global
 
 ### `sksync list`
 
-設定済み skill と agent ごとの target path / 状態を一覧表示します。`sksync-lock.json` がある場合は locked hash も表示します。
+List configured skills and each agent's target path / state. If `sksync-lock.json` exists, locked hashes are shown too.
 
 ```bash
 cargo run -- list
@@ -406,7 +406,7 @@ cargo run -- list --global
 
 ### `sksync wizard`
 
-質問形式の prompt wizard で、add / attach / detach / remove / default agents 設定 / list+check / plan+apply を対話的に実行できます。`ask` と `tui` は互換 alias です。
+Launch an interactive prompt wizard for add / attach / detach / remove / default agents configuration / list+check / plan+apply flows. `ask` and `tui` are compatible aliases.
 
 ```bash
 cargo run -- wizard
@@ -416,30 +416,30 @@ cargo run -- tui
 
 ### Safety rules
 
-- 既存の通常ファイルは上書きしません。
-- `add` は失敗時に dependency config を rollback します。
-- `remove` は sksync が管理している symlink だけを削除します。
-- `remove` が installed files を削除するのは configured `skillDir` 配下にある場合だけです。
-- Git source の subpath は absolute path / `..` を拒否し、clone directory 外へ出ないことを確認します。
-- project scope の agent targetDir は project root 外へ出られません。
-- `outdated` は Git source の remote ref と lockfile commit を比較します。
-- `install` は lockfile があれば lockfile の resolved source を優先します。
-- `update` は dependencies から最新を取得して lockfile を更新します。
-- `apply` は create symlink action のみ実行します。
-- project config は project scope、`--global` config は user scope として target を解決します。
-- conflict / drift / source missing がある場合、`apply` は失敗します。
-- target path の親ディレクトリは必要に応じて作成します。
-- テスト・実行例では一時ディレクトリを使うと安全です。
+- Never overwrite existing regular files.
+- `add` rolls back dependency config on failure.
+- `remove` deletes only symlinks managed by sksync.
+- `remove` deletes installed files only when they are under the configured `skillDir`.
+- Git source subpaths reject absolute paths and `..`, and must stay inside the clone directory.
+- Project-scope agent `targetDir` paths cannot escape the project root.
+- `outdated` compares Git remote refs with lockfile commits.
+- `install` prefers lockfile resolved sources when a lockfile exists.
+- `update` fetches from dependencies and refreshes the lockfile.
+- `apply` runs create-symlink actions only.
+- Project config resolves targets as project scope; `--global` config resolves targets as user scope.
+- `apply` fails on conflict, drift, or missing source states.
+- Parent directories for target paths are created as needed.
+- Use temporary directories for tests and examples when possible.
 
 ### Generated files and gitignore
 
-project-local の生成物は `.gitignore` します。
+Project-local generated files are git-ignored:
 
 - `.sksync/` - downloaded/copied skill bodies (`.sksync/skills/<skill>`)
 - `skills/` - legacy generated skill store from older defaults
-- `sksync-lock.json` - portable lockfile v4。project-local の生成物ですが、共有すれば macOS / Linux 間で `sksync install` による再現に使えます。
+- `sksync-lock.json` - portable lockfile v4. It is project-local generated state, but if shared, it can reproduce skills across macOS / Linux with `sksync install`.
 
-共有する基本ファイルは `sksync.config.json` です。
+The primary file to share is `sksync.config.json`.
 
 ### Config / lockfile examples
 
@@ -452,30 +452,30 @@ project-local の生成物は `.gitignore` します。
 
 ## Linux / Docker compatibility
 
-Linux release asset は `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` を提供します。CI では Docker 上の Debian / Ubuntu image で x86_64 musl binary を起動し、local source の `init` / `add` / `plan` / `apply` / `check` / `list` / `remove` smoke test を実行します。
+Linux release assets are available for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. CI runs the x86_64 musl binary inside Debian / Ubuntu Docker images and smoke-tests a local source through `init` / `add` / `plan` / `apply` / `check` / `list` / `remove`.
 
-現在の smoke coverage:
+Current smoke coverage:
 
 - `debian:bookworm`
 - `debian:trixie`
 - `ubuntu:22.04`
 - `ubuntu:24.04`
 
-Windows は当面対象外です。macOS / Linux の symlink behavior を優先して安定化します。
+Windows is out of scope for now. sksync prioritizes stable symlink behavior on macOS and Linux.
 
-## 今後の予定
+## Roadmap
 
-npm-like な依存管理コマンド体系をベースに、source integration と portability を広げていきます。
+The command model follows npm-like dependency management while source integrations and portability mature.
 
 - Additional source URL transformers beyond `skills.sh`
 - GitLab / gist support
-- Lockfile sharing policy の確定
-- Cross-platform symlink / junction behavior の強化
+- Finalize the lockfile sharing policy
+- Improve cross-platform symlink / junction behavior
 
-`ci` 相当の専用コマンドは現時点では追加しません。lockfile 再現は `sksync install` に集約します。
+There is intentionally no dedicated `ci` command. Reproducible reconstruction is consolidated into `sksync install`.
 
-詳細は以下を参照してください。
+For more detail, see:
 
-- [`docs/DESIGN.md`](docs/DESIGN.md) - 機能設計
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - アーキテクチャ設計原則
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) - 開発ロードマップ
+- [`docs/DESIGN.md`](docs/DESIGN.md) - feature design
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - architecture principles
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) - development roadmap

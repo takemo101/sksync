@@ -1,5 +1,5 @@
 # CLAUDE.md
 
-このリポジトリで作業する Claude (および互換エージェント) 向けのガイドラインは [`AGENTS.md`](AGENTS.md) を正とします。
+Guidelines for Claude and compatible agents working in this repository are centralized in [`AGENTS.md`](AGENTS.md).
 
-新しい設計方針・落とし穴・パッケージ境界の更新は `AGENTS.md` 側で行ってください。このファイルは入口を統一するためのリダイレクトのみで、ガイドライン本体は重複させません。
+Add new design guidance, pitfalls, and package-boundary updates to `AGENTS.md`. This file is only a redirect so the guidance has one canonical source and does not get duplicated.
