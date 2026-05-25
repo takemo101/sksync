@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod agent;
+pub mod bundle;
 pub mod link_plan;
 pub mod lockfile;
 pub mod removal;

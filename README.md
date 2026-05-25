@@ -87,6 +87,9 @@ cargo run -- agents refresh
 cargo run -- doctor
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.agents/skills --agent universal --agent pi
+cargo run -- bundle inspect ./bundle-dir
+cargo run -- bundle add ./bundle-dir --agent pi --dry-run
+cargo run -- bundle remove bundle-name --dry-run
 cargo run -- remove skill-name
 cargo run -- remove skill-a skill-b
 cargo run -- outdated
@@ -276,6 +279,32 @@ Pass `--global` to add the dependency to `~/.sksync/config.json` as a global dep
 ```bash
 cargo run -- add owner/repo/path/to/skill --agent pi --global
 ```
+
+### `sksync bundle`
+
+Bundles are curated install sets described by `sksync.bundle.json`. A bundle is not an installed runtime folder: `bundle add` expands entries into normal dependencies, using agents you choose at add time, and records local provenance so `bundle remove` can later detach or remove those dependencies safely.
+
+```bash
+cargo run -- bundle inspect <source>
+cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run]
+cargo run -- bundle remove <name> [--source <exact-source>] [--dry-run]
+```
+
+Example manifest:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json",
+  "name": "review-workflow",
+  "description": "Skills for review and QA workflows.",
+  "entries": {
+    "review": { "source": "./skills/review" },
+    "qa": { "source": "github:org/qa-skills/skills/qa#main" }
+  }
+}
+```
+
+Bundle entry keys are final skill names. Entry sources may be local, GitHub, `skills.sh`, or manifest-relative paths. Bundle manifests never choose target agents.
 
 ### `sksync attach`
 

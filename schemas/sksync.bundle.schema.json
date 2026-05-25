@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json",
+  "title": "sksync bundle manifest",
+  "description": "Curated install set of sksync skill dependencies.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "description", "entries"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?$",
+      "description": "Bundle name used for local provenance and bundle remove."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "entries": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Bundle entries keyed by final skill name.",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/bundleEntry"
+      }
+    }
+  },
+  "$defs": {
+    "bundleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Skill source for this entry. Relative sources resolve from the bundle manifest directory."
+        }
+      }
+    }
+  }
+}

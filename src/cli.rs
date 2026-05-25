@@ -9,6 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
+use crate::application::bundle::{
+    load_bundle_from_source, BundleAddPlan, BundleRemovePlan, BundleRemoveStatus,
+};
 use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
@@ -23,6 +26,7 @@ use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{DependencyConfigStore, LockfileStore};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
+use crate::domain::bundle::BundleName;
 use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
@@ -67,6 +71,8 @@ enum Command {
     Doctor(DoctorArgs),
     /// Import existing skill directories into sksync without touching originals.
     Import(ImportArgs),
+    /// Inspect, add, and remove curated bundle install sets.
+    Bundle(BundleArgs),
     /// Remove a dependency, installed skill, managed symlinks, and lock entry.
     Remove(RemoveArgs),
     /// Show dependencies that can be updated.
@@ -159,6 +165,58 @@ struct ImportArgs {
     #[arg(long)]
     global: bool,
     /// Show what would be imported without writing files or config.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct BundleArgs {
+    #[command(subcommand)]
+    command: BundleCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum BundleCommand {
+    /// Inspect a bundle manifest without changing config or files.
+    Inspect(BundleInspectArgs),
+    /// Add all entries from a bundle to selected agents.
+    Add(BundleAddArgs),
+    /// Remove local dependency provenance for a bundle.
+    Remove(BundleRemoveArgs),
+}
+
+#[derive(Debug, Args)]
+struct BundleInspectArgs {
+    /// Bundle source directory containing sksync.bundle.json.
+    source: String,
+}
+
+#[derive(Debug, Args)]
+struct BundleAddArgs {
+    /// Bundle source directory containing sksync.bundle.json.
+    source: String,
+    /// Agent to link bundle entries into. Can be passed multiple times.
+    #[arg(short, long = "agent", required = true)]
+    agents: Vec<String>,
+    /// Use ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Show what would change without writing files or config.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct BundleRemoveArgs {
+    /// Bundle name to remove from local provenance.
+    name: String,
+    /// Exact stored bundle source to disambiguate duplicate bundle names.
+    #[arg(long)]
+    source: Option<String>,
+    /// Use ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
 }
@@ -262,6 +320,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Agents(args) => run_agents(args),
         Command::Doctor(args) => run_doctor(args),
         Command::Import(args) => run_import(args),
+        Command::Bundle(args) => run_bundle(args),
         Command::Remove(args) => run_remove(args),
         Command::Outdated(args) => run_outdated(args),
         Command::Plan(args) => run_plan(args),
@@ -526,6 +585,255 @@ fn run_import(args: ImportArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_bundle(args: BundleArgs) -> Result<()> {
+    match args.command {
+        BundleCommand::Inspect(args) => run_bundle_inspect(args),
+        BundleCommand::Add(args) => run_bundle_add(args),
+        BundleCommand::Remove(args) => run_bundle_remove(args),
+    }
+}
+
+fn run_bundle_inspect(args: BundleInspectArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let bundle = load_bundle_from_source(&args.source, &current_dir)?;
+
+    print_section("Bundle");
+    println!("Name: {}", bundle.manifest.name);
+    println!("Description: {}", bundle.manifest.description);
+    println!("Source: {}", bundle.provenance.source);
+    print_section_with_count("Entries", bundle.entries.len());
+    for entry in &bundle.entries {
+        println!(
+            "- {}: {} -> {}",
+            entry.skill_name, entry.original_source, entry.normalized_source
+        );
+    }
+    Ok(())
+}
+
+fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
+    parse_agent_kinds(&args.agents)?;
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let bundle = load_bundle_from_source(&args.source, &root_dir)?;
+    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    let plan = store.plan_bundle_add(&bundle.entries, &args.agents, &bundle.provenance)?;
+    print_bundle_add_plan(&plan);
+
+    if args.dry_run {
+        if plan.has_conflicts() {
+            bail!("bundle add has conflict(s)");
+        }
+        return Ok(());
+    }
+    if plan.has_conflicts() {
+        bail!("bundle add has conflict(s); rerun with --dry-run for details")
+    }
+
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let lockfile_backup = ConfigFileBackup::capture(&lockfile_path)?;
+    let created_skill_names = plan
+        .items
+        .iter()
+        .filter(|item| item.status == crate::application::bundle::BundleAddStatus::Create)
+        .map(|item| item.skill_name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut created_skill_dirs = Vec::new();
+    let mut created_link_targets = Vec::new();
+    let add_result = (|| -> Result<()> {
+        store.apply_bundle_add(&plan)?;
+        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+        created_skill_dirs = config
+            .skills
+            .iter()
+            .filter(|skill| created_skill_names.contains(skill.name.as_str()))
+            .filter_map(|skill| {
+                let path = skill.source.as_path();
+                if path.exists() {
+                    None
+                } else {
+                    Some(path.to_path_buf())
+                }
+            })
+            .collect();
+        let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+        apply_update_report_sources(&mut config, &update_report);
+        let fs_store = FileSystemLinkStore;
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+        let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+        created_link_targets = link_plan
+            .items
+            .iter()
+            .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
+            .map(|item| item.target.as_path().to_path_buf())
+            .filter(|target| !target.exists())
+            .collect();
+        let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+        apply_link_plan(
+            &link_plan,
+            &lockfile,
+            &fs_store,
+            &FileLockfileStore::new(&lockfile_path),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: true,
+            },
+        )?;
+        print_success(format!("Added bundle: {}", bundle.manifest.name));
+        print_update_report(update_report);
+        print_plan(&link_plan);
+        Ok(())
+    })();
+
+    if let Err(error) = add_result {
+        cleanup_bundle_add_artifacts(&created_link_targets, &created_skill_dirs);
+        let config_restore = config_backup.restore();
+        let lockfile_restore = lockfile_backup.restore();
+        if let Err(restore_error) = config_restore.and(lockfile_restore) {
+            return Err(error.context(format!(
+                "sksync bundle add failed and rollback failed: {restore_error}"
+            )));
+        }
+        return Err(
+            error.context("sksync bundle add failed; restored previous config and lockfile")
+        );
+    }
+
+    Ok(())
+}
+
+fn cleanup_bundle_add_artifacts(link_targets: &[PathBuf], skill_dirs: &[PathBuf]) {
+    for target in link_targets.iter().rev() {
+        if fs::symlink_metadata(target)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(target);
+        }
+    }
+    for dir in skill_dirs.iter().rev() {
+        if dir.is_dir() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+}
+
+fn run_bundle_remove(args: BundleRemoveArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let bundle_name = BundleName::new(args.name.clone()).context("invalid bundle name")?;
+    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    let plan = store.plan_bundle_remove(&bundle_name, args.source.as_deref())?;
+    print_bundle_remove_plan(&plan);
+
+    if args.dry_run {
+        if plan.is_ambiguous() {
+            bail!("bundle remove is ambiguous; pass --source <exact-source>");
+        }
+        return Ok(());
+    }
+    if plan.is_ambiguous() {
+        bail!("bundle remove is ambiguous; pass --source <exact-source>")
+    }
+    if plan.is_not_found() {
+        bail!("bundle provenance not found")
+    }
+
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let lockfile_backup = ConfigFileBackup::capture(&lockfile_path)?;
+    let remove_result = (|| -> Result<()> {
+        let config = load_config_for_scope(args.global, &current_dir)?;
+        let skill_dir = config.skill_dir.as_path().to_path_buf();
+        let mut lockfile = read_lockfile(&lockfile_path).ok();
+        let (_config, removal_plan, _root_dir) =
+            build_plan_from_config(config.clone(), args.global, &current_dir)?;
+        let runtime = RemoveRuntime {
+            config_path: &config_path,
+            skill_dir: &skill_dir,
+            lockfile_path: &lockfile_path,
+            removal_plan: &removal_plan,
+        };
+        store.detach_bundle_provenance(&plan)?;
+        let remove_args = RemoveArgs {
+            skills: Vec::new(),
+            global: args.global,
+            config_only: false,
+            agents: Vec::new(),
+            keep_files: false,
+        };
+        for item in &plan.items {
+            if item.status == BundleRemoveStatus::Remove {
+                let skill = config
+                    .skills
+                    .iter()
+                    .find(|skill| skill.name.as_str() == item.skill_name);
+                remove_entire_skill(
+                    &remove_args,
+                    &item.skill_name,
+                    skill.map(|skill| skill.source.as_path().to_path_buf()),
+                    &mut lockfile,
+                    &runtime,
+                )?;
+            }
+        }
+        print_success(format!("Removed bundle provenance: {bundle_name}"));
+        Ok(())
+    })();
+
+    if let Err(error) = remove_result {
+        let config_restore = config_backup.restore();
+        let lockfile_restore = lockfile_backup.restore();
+        if let Err(restore_error) = config_restore.and(lockfile_restore) {
+            return Err(error.context(format!(
+                "sksync bundle remove failed and rollback failed: {restore_error}"
+            )));
+        }
+        return Err(
+            error.context("sksync bundle remove failed; restored previous config and lockfile")
+        );
+    }
+
+    Ok(())
+}
+
+fn print_bundle_add_plan(plan: &BundleAddPlan) {
+    print_section_with_count("Bundle add plan", plan.items.len());
+    for item in &plan.items {
+        println!(
+            "{} {} <- {}",
+            item.status.as_str(),
+            item.skill_name,
+            item.source
+        );
+        if let Some(message) = &item.message {
+            println!("  ! {message}");
+        }
+    }
+}
+
+fn print_bundle_remove_plan(plan: &BundleRemovePlan) {
+    print_section_with_count("Bundle remove plan", plan.items.len());
+    for item in &plan.items {
+        let source = item
+            .source
+            .as_deref()
+            .or(plan.source.as_deref())
+            .unwrap_or("*");
+        println!("{} {} ({source})", item.status.as_str(), item.skill_name);
+        if let Some(message) = &item.message {
+            println!("  ! {message}");
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2039,8 +2347,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "init", "add", "attach", "agents", "doctor", "import", "remove", "outdated",
-                "plan", "apply", "install", "update", "check", "list", "wizard",
+                "init", "add", "attach", "agents", "doctor", "import", "bundle", "remove",
+                "outdated", "plan", "apply", "install", "update", "check", "list", "wizard",
             ]
         );
     }

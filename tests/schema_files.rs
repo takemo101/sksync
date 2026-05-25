@@ -6,12 +6,15 @@ const AGENTS_SCHEMA_ID: &str =
     "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json";
 const LOCK_SCHEMA_ID: &str =
     "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json";
+const BUNDLE_SCHEMA_ID: &str =
+    "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json";
 
 #[test]
 fn schema_files_are_valid_json() {
     parse_json(include_str!("../schemas/sksync.schema.json"));
     parse_json(include_str!("../schemas/sksync.agents.schema.json"));
     parse_json(include_str!("../schemas/sksync-lock.schema.json"));
+    parse_json(include_str!("../schemas/sksync.bundle.schema.json"));
 }
 
 #[test]
@@ -19,10 +22,12 @@ fn examples_point_to_repository_schemas() {
     let config = parse_json(include_str!("../sksync.config.example.json"));
     let agents = parse_json(include_str!("../sksync.agents.example.json"));
     let lockfile = parse_json(include_str!("../sksync-lock.example.json"));
+    let bundle = parse_json(include_str!("../sksync.bundle.example.json"));
 
     assert_eq!(config["$schema"], CONFIG_SCHEMA_ID);
     assert_eq!(agents["$schema"], AGENTS_SCHEMA_ID);
     assert_eq!(lockfile["$schema"], LOCK_SCHEMA_ID);
+    assert_eq!(bundle["$schema"], BUNDLE_SCHEMA_ID);
 }
 
 #[test]
@@ -30,10 +35,12 @@ fn schema_ids_match_example_references() {
     let config_schema = parse_json(include_str!("../schemas/sksync.schema.json"));
     let agents_schema = parse_json(include_str!("../schemas/sksync.agents.schema.json"));
     let lock_schema = parse_json(include_str!("../schemas/sksync-lock.schema.json"));
+    let bundle_schema = parse_json(include_str!("../schemas/sksync.bundle.schema.json"));
 
     assert_eq!(config_schema["$id"], CONFIG_SCHEMA_ID);
     assert_eq!(agents_schema["$id"], AGENTS_SCHEMA_ID);
     assert_eq!(lock_schema["$id"], LOCK_SCHEMA_ID);
+    assert_eq!(bundle_schema["$id"], BUNDLE_SCHEMA_ID);
 }
 
 #[test]
@@ -51,6 +58,32 @@ fn config_schema_covers_supported_top_level_fields() {
     ] {
         assert!(properties.contains_key(field), "missing field {field}");
     }
+}
+
+#[test]
+fn config_schema_allows_bundle_provenance_on_dependencies() {
+    let schema = parse_json(include_str!("../schemas/sksync.schema.json"));
+    let dependency = &schema["$defs"]["dependencyConfig"];
+
+    assert!(dependency["properties"].get("bundles").is_some());
+    assert!(dependency["properties"].get("managedByBundles").is_some());
+    assert_eq!(
+        dependency["properties"]["bundles"]["items"],
+        serde_json::json!({ "$ref": "#/$defs/bundleProvenance" })
+    );
+    assert_eq!(
+        dependency["properties"]["managedByBundles"]["default"],
+        false
+    );
+}
+
+#[test]
+fn bundle_schema_rejects_unknown_entry_fields() {
+    let schema = parse_json(include_str!("../schemas/sksync.bundle.schema.json"));
+    let entry = &schema["$defs"]["bundleEntry"];
+
+    assert_eq!(entry["additionalProperties"], false);
+    assert_eq!(entry["required"], serde_json::json!(["source"]));
 }
 
 #[test]

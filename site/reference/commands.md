@@ -48,6 +48,33 @@ sksync attach <skill> --agent <agent> [--agent <agent> …]
 sksync attach <skill> --agent <agent> --global
 ```
 
+## `sksync bundle`
+
+Inspect, add, and remove curated bundle install sets. Bundles expand into normal dependencies; they are not runtime folders.
+
+```sh
+sksync bundle inspect <source>
+sksync bundle add <source> --agent <agent> [--agent <agent> …]
+sksync bundle add <source> --agent <agent> --dry-run
+sksync bundle remove <name> [--source <exact-source>]
+sksync bundle remove <name> --dry-run
+```
+
+| Subcommand | Meaning |
+|---|---|
+| `inspect` | Read a bundle manifest and print normalized entry sources. Read-only. |
+| `add` | Add every bundle entry to the selected agents. Aborts on any conflict. |
+| `remove` | Remove local bundle provenance and delete only bundle-managed dependencies whose last provenance is removed. |
+
+| Flag | Meaning |
+|---|---|
+| `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`. |
+| `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove`. |
+| `--dry-run` | Show planned `create` / `merge` / `conflict` / `skipped` or `remove` / `detach-provenance` / `ambiguous` / `not-found` statuses without writing. |
+| `--global` | Operate on the global config. |
+
+See [Bundles](/guides/bundles).
+
 ## `sksync agents`
 
 Inspect and update agent target mappings (`~/.sksync/agents.json`).
@@ -192,6 +219,8 @@ sksync tui
 
 - Existing plain files are never overwritten.
 - `add` rolls back the dependency config on failure.
+- `bundle add` aborts on any conflict and rolls back config/lockfile writes on failure.
+- `bundle remove` uses local provenance only and cannot delete manual dependencies solely because they once belonged to a bundle.
 - `remove` deletes only sksync-managed symlinks, and installed files only when inside the configured `skillDir`.
 - Git source subpaths reject absolute paths and `..`, and must stay inside the clone directory.
 - Project-scope agent target directories cannot escape the project root.

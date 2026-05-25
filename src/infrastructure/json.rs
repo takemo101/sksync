@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
+use crate::application::bundle::{
+    BundleAddPlan, BundleAddPlanItem, BundleAddStatus, BundleRemovePlan, BundleRemovePlanItem,
+    BundleRemoveStatus, LoadedBundleEntry,
+};
 use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
@@ -17,6 +21,7 @@ use crate::application::source::{
     git_url_from_repo, parse_install_source_string as parse_source_string, validate_git_subpath,
 };
 use crate::domain::agent::AgentKind;
+use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName, BundleNameError};
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, LEGACY_LOCKFILE_VERSION,
     LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
@@ -67,6 +72,33 @@ pub struct RawDependencyConfig {
     pub source: RawInstallSource,
     #[serde(default)]
     pub agents: Vec<String>,
+    #[serde(default)]
+    pub bundles: Vec<RawBundleProvenance>,
+    #[serde(default)]
+    pub managed_by_bundles: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct RawBundleProvenance {
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RawBundleManifest {
+    #[serde(rename = "$schema")]
+    pub schema: Option<String>,
+    pub name: String,
+    pub description: String,
+    pub entries: BTreeMap<String, RawBundleEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RawBundleEntry {
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -132,6 +164,105 @@ pub enum AgentMappingJsonError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+#[derive(Debug, Error)]
+pub enum BundleManifestJsonError {
+    #[error("failed to read bundle manifest at {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse bundle manifest at {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("invalid bundle name '{name}': {source}")]
+    InvalidName {
+        name: String,
+        #[source]
+        source: BundleNameError,
+    },
+    #[error("bundle description must not be empty")]
+    EmptyDescription,
+    #[error("bundle entries must not be empty")]
+    EmptyEntries,
+    #[error("invalid bundle entry skill name '{name}': {source}")]
+    InvalidEntryName {
+        name: String,
+        #[source]
+        source: crate::domain::skill::SkillNameError,
+    },
+    #[error("bundle entry '{name}' duplicates another entry after name normalization")]
+    DuplicateEntryName { name: String },
+    #[error("bundle entry '{name}' source must not be empty")]
+    EmptyEntrySource { name: String },
+}
+
+pub fn read_bundle_manifest(
+    path: impl AsRef<Path>,
+) -> Result<BundleManifest, BundleManifestJsonError> {
+    let path = path.as_ref();
+    let content =
+        std::fs::read_to_string(path).map_err(|source| BundleManifestJsonError::Read {
+            path: display_path(path),
+            source,
+        })?;
+    parse_bundle_manifest(&content, &display_path(path))
+}
+
+pub fn parse_bundle_manifest(
+    content: &str,
+    path: &str,
+) -> Result<BundleManifest, BundleManifestJsonError> {
+    let raw = serde_json::from_str::<RawBundleManifest>(content).map_err(|source| {
+        BundleManifestJsonError::Parse {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    let name = BundleName::new(raw.name.clone()).map_err(|source| {
+        BundleManifestJsonError::InvalidName {
+            name: raw.name,
+            source,
+        }
+    })?;
+    if raw.description.trim().is_empty() {
+        return Err(BundleManifestJsonError::EmptyDescription);
+    }
+    if raw.entries.is_empty() {
+        return Err(BundleManifestJsonError::EmptyEntries);
+    }
+
+    let mut entries = Vec::with_capacity(raw.entries.len());
+    let mut seen_entries = BTreeSet::new();
+    for (entry_name, entry) in raw.entries {
+        let skill_name = SkillName::new(entry_name.clone()).map_err(|source| {
+            BundleManifestJsonError::InvalidEntryName {
+                name: entry_name.clone(),
+                source,
+            }
+        })?;
+        if !seen_entries.insert(skill_name.clone()) {
+            return Err(BundleManifestJsonError::DuplicateEntryName { name: entry_name });
+        }
+        if entry.source.trim().is_empty() {
+            return Err(BundleManifestJsonError::EmptyEntrySource { name: entry_name });
+        }
+        entries.push(BundleEntry {
+            skill_name,
+            source: entry.source,
+        });
+    }
+
+    Ok(BundleManifest {
+        name,
+        description: raw.description,
+        entries,
+    })
 }
 
 pub fn default_agent_mapping_config() -> Result<AgentMappingConfig, AgentMappingJsonError> {
@@ -684,15 +815,231 @@ impl DependencyConfigStore for FileDependencyConfigStore {
 }
 
 impl FileDependencyConfigStore {
-    fn load_or_default(&self) -> Result<serde_json::Value, DependencyConfigStoreError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| {
-                DependencyConfigStoreError::CreateDir {
-                    path: display_path(parent),
-                    source,
-                }
-            })?;
+    pub fn plan_bundle_add(
+        &self,
+        entries: &[LoadedBundleEntry],
+        agents: &[String],
+        provenance: &crate::domain::bundle::BundleProvenance,
+    ) -> Result<BundleAddPlan, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let empty_dependencies = serde_json::Map::new();
+        let dependencies = value
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.as_object())
+            .unwrap_or(&empty_dependencies);
+        let agents = normalize_agent_names(agents);
+        let items = entries
+            .iter()
+            .map(|entry| {
+                let existing = dependencies.get(&entry.skill_name);
+                let status = match existing {
+                    None => BundleAddStatus::Create,
+                    Some(existing) => {
+                        if !dependency_source_matches(
+                            existing,
+                            &entry.skill_name,
+                            &entry.normalized_source,
+                        )? {
+                            BundleAddStatus::Conflict
+                        } else {
+                            let existing_agents =
+                                dependency_agents(Some(existing), &entry.skill_name)?;
+                            let existing_bundles = dependency_bundles(existing, &entry.skill_name)?;
+                            let has_all_agents = agents.iter().all(|agent| {
+                                existing_agents
+                                    .iter()
+                                    .map(|existing| normalize_agent_name(existing))
+                                    .any(|existing| existing == *agent)
+                            });
+                            let has_provenance = existing_bundles.iter().any(|bundle| {
+                                bundle.name == provenance.name.as_str()
+                                    && bundle.source == provenance.source
+                            });
+                            if has_all_agents && has_provenance {
+                                BundleAddStatus::Skipped
+                            } else {
+                                BundleAddStatus::Merge
+                            }
+                        }
+                    }
+                };
+                let message = if status == BundleAddStatus::Conflict {
+                    existing
+                        .and_then(|existing| dependency_source(existing, &entry.skill_name).ok())
+                        .map(|source| {
+                            format!(
+                            "existing dependency source {source:?} differs from bundle source {:?}",
+                            entry.normalized_source
+                        )
+                        })
+                } else {
+                    None
+                };
+                Ok(BundleAddPlanItem {
+                    skill_name: entry.skill_name.clone(),
+                    source: entry.normalized_source.clone(),
+                    agents: agents.clone(),
+                    provenance: provenance.clone(),
+                    status,
+                    message,
+                })
+            })
+            .collect::<Result<Vec<_>, DependencyConfigStoreError>>()?;
+        Ok(BundleAddPlan { items })
+    }
+
+    pub fn apply_bundle_add(&self, plan: &BundleAddPlan) -> Result<(), DependencyConfigStoreError> {
+        if plan.has_conflicts() {
+            return Err(DependencyConfigStoreError::InvalidField(
+                "bundle add plan contains conflicts".to_owned(),
+            ));
         }
+        let mut value = self.load_or_default()?;
+        let dependencies = dependencies_object_mut(&mut value)?;
+        for item in &plan.items {
+            if item.status == BundleAddStatus::Skipped {
+                continue;
+            }
+            let existing = dependencies.get_mut(&item.skill_name);
+            match existing {
+                Some(dependency) => merge_bundle_dependency(dependency, item)?,
+                None => {
+                    dependencies.insert(
+                        item.skill_name.clone(),
+                        json!({
+                            "source": item.source,
+                            "agents": item.agents,
+                            "bundles": [{
+                                "name": item.provenance.name.as_str(),
+                                "source": item.provenance.source,
+                            }],
+                            "managedByBundles": true,
+                        }),
+                    );
+                }
+            }
+        }
+        self.write_value(&value)
+    }
+
+    pub fn plan_bundle_remove(
+        &self,
+        bundle_name: &crate::domain::bundle::BundleName,
+        source: Option<&str>,
+    ) -> Result<BundleRemovePlan, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let empty_dependencies = serde_json::Map::new();
+        let dependencies = value
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.as_object())
+            .unwrap_or(&empty_dependencies);
+        let mut matching_sources = BTreeSet::new();
+        for (skill_name, dependency) in dependencies {
+            for bundle in dependency_bundles(dependency, skill_name)? {
+                if bundle.name == bundle_name.as_str() {
+                    matching_sources.insert(bundle.source);
+                }
+            }
+        }
+        let ambiguous_sources = if source.is_none() && matching_sources.len() > 1 {
+            matching_sources.iter().cloned().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if !ambiguous_sources.is_empty() {
+            return Ok(BundleRemovePlan {
+                bundle: bundle_name.clone(),
+                source: source.map(str::to_owned),
+                items: vec![BundleRemovePlanItem {
+                    skill_name: bundle_name.as_str().to_owned(),
+                    status: BundleRemoveStatus::Ambiguous,
+                    source: None,
+                    message: Some(format!(
+                        "bundle name matches multiple sources: {}",
+                        ambiguous_sources.join(", ")
+                    )),
+                }],
+                ambiguous_sources,
+            });
+        }
+
+        let mut items = Vec::new();
+        for (skill_name, dependency) in dependencies {
+            let bundles = dependency_bundles(dependency, skill_name)?;
+            let matching = bundles.iter().any(|bundle| {
+                bundle.name == bundle_name.as_str()
+                    && source.is_none_or(|source| bundle.source == source)
+            });
+            if !matching {
+                continue;
+            }
+            let remaining = bundles
+                .iter()
+                .filter(|bundle| {
+                    !(bundle.name == bundle_name.as_str()
+                        && source.is_none_or(|source| bundle.source == source))
+                })
+                .count();
+            let managed = dependency_managed_by_bundles(dependency, skill_name)?;
+            let status = if remaining == 0 && managed {
+                BundleRemoveStatus::Remove
+            } else {
+                BundleRemoveStatus::DetachProvenance
+            };
+            items.push(BundleRemovePlanItem {
+                skill_name: skill_name.clone(),
+                status,
+                source: source.map(str::to_owned),
+                message: None,
+            });
+        }
+
+        if items.is_empty() {
+            items.push(BundleRemovePlanItem {
+                skill_name: bundle_name.as_str().to_owned(),
+                status: BundleRemoveStatus::NotFound,
+                source: source.map(str::to_owned),
+                message: Some("no dependency has matching bundle provenance".to_owned()),
+            });
+        }
+
+        Ok(BundleRemovePlan {
+            bundle: bundle_name.clone(),
+            source: source.map(str::to_owned),
+            items,
+            ambiguous_sources,
+        })
+    }
+
+    pub fn detach_bundle_provenance(
+        &self,
+        plan: &BundleRemovePlan,
+    ) -> Result<(), DependencyConfigStoreError> {
+        if plan.is_ambiguous() {
+            return Err(DependencyConfigStoreError::InvalidField(
+                "bundle remove plan is ambiguous".to_owned(),
+            ));
+        }
+        let mut value = self.load_or_default()?;
+        let dependencies = dependencies_object_mut(&mut value)?;
+        for item in &plan.items {
+            if item.status != BundleRemoveStatus::DetachProvenance {
+                continue;
+            }
+            let Some(dependency) = dependencies.get_mut(&item.skill_name) else {
+                continue;
+            };
+            remove_bundle_from_dependency(
+                dependency,
+                &plan.bundle,
+                plan.source.as_deref(),
+                &item.skill_name,
+            )?;
+        }
+        self.write_value(&value)
+    }
+
+    fn load_or_default(&self) -> Result<serde_json::Value, DependencyConfigStoreError> {
         if self.path.exists() {
             let content = std::fs::read_to_string(&self.path).map_err(|source| {
                 DependencyConfigStoreError::Read {
@@ -716,6 +1063,14 @@ impl FileDependencyConfigStore {
     }
 
     fn write_value(&self, value: &serde_json::Value) -> Result<(), DependencyConfigStoreError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| {
+                DependencyConfigStoreError::CreateDir {
+                    path: display_path(parent),
+                    source,
+                }
+            })?;
+        }
         let content = serde_json::to_string_pretty(value)?;
         std::fs::write(&self.path, format!("{content}\n")).map_err(|source| {
             DependencyConfigStoreError::Write {
@@ -739,6 +1094,31 @@ fn dependencies_object_mut(
     dependencies.as_object_mut().ok_or_else(|| {
         DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
     })
+}
+
+fn dependencies_object(
+    value: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>, DependencyConfigStoreError> {
+    let Some(dependencies) = value.get("dependencies") else {
+        return Err(DependencyConfigStoreError::InvalidField(
+            "dependencies must be an object".to_owned(),
+        ));
+    };
+    dependencies.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
+    })
+}
+
+fn normalize_agent_names(agents: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = BTreeSet::new();
+    for agent in agents {
+        let agent = normalize_agent_name(agent);
+        if seen.insert(agent.clone()) {
+            normalized.push(agent);
+        }
+    }
+    normalized
 }
 
 fn normalize_agent_name(agent: &str) -> String {
@@ -777,6 +1157,189 @@ fn dependency_agents(
             })
         })
         .collect()
+}
+
+fn dependency_source(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<String, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let source = dependency.get("source").ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.source is required"
+        ))
+    })?;
+    if let Some(source) = source.as_str() {
+        Ok(source.to_owned())
+    } else {
+        serde_json::to_string(source).map_err(DependencyConfigStoreError::Serialize)
+    }
+}
+
+fn dependency_source_matches(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+    candidate: &str,
+) -> Result<bool, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let source = dependency.get("source").ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.source is required"
+        ))
+    })?;
+    if source.as_str() == Some(candidate) {
+        return Ok(true);
+    }
+    let candidate = match parse_source_string(candidate) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok(false),
+    };
+    let existing = if let Some(existing) = source.as_str() {
+        parse_source_string(existing).ok()
+    } else {
+        serde_json::from_value::<RawInstallSource>(source.clone())
+            .ok()
+            .and_then(|raw| parse_install_source(skill_name, raw, None).ok())
+    };
+    Ok(existing.is_some_and(|existing| install_sources_equivalent(&existing, &candidate)))
+}
+
+fn install_sources_equivalent(left: &InstallSource, right: &InstallSource) -> bool {
+    match (left, right) {
+        (InstallSource::Git(left), InstallSource::Git(right)) => {
+            left.url == right.url
+                && left.path == right.path
+                && git_references_equivalent(left.reference.as_deref(), right.reference.as_deref())
+        }
+        (InstallSource::Local(left), InstallSource::Local(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn git_references_equivalent(left: Option<&str>, right: Option<&str>) -> bool {
+    let left = left.unwrap_or("HEAD");
+    let right = right.unwrap_or("HEAD");
+    left == right
+}
+
+fn dependency_bundles(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<Vec<RawBundleProvenance>, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let Some(bundles) = dependency.get("bundles") else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_value(bundles.clone()).map_err(|error| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.bundles is invalid: {error}"
+        ))
+    })
+}
+
+fn dependency_managed_by_bundles(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<bool, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    match dependency.get("managedByBundles") {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{skill_name}.managedByBundles must be a boolean"
+            ))
+        }),
+        None => Ok(false),
+    }
+}
+
+fn merge_bundle_dependency(
+    dependency: &mut serde_json::Value,
+    item: &BundleAddPlanItem,
+) -> Result<(), DependencyConfigStoreError> {
+    let object = dependency.as_object_mut().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{} must be an object",
+            item.skill_name
+        ))
+    })?;
+    let mut merged_agents = dependency_agents(
+        Some(&serde_json::Value::Object(object.clone())),
+        &item.skill_name,
+    )?;
+    let mut seen_agents = merged_agents
+        .iter()
+        .map(|agent| normalize_agent_name(agent))
+        .collect::<BTreeSet<_>>();
+    for agent in &item.agents {
+        if seen_agents.insert(agent.clone()) {
+            merged_agents.push(agent.clone());
+        }
+    }
+    object.insert("agents".to_owned(), json!(merged_agents));
+
+    let bundles_value = object.entry("bundles").or_insert_with(|| json!([]));
+    let mut bundles = serde_json::from_value::<Vec<RawBundleProvenance>>(bundles_value.clone())
+        .map_err(|error| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{}.bundles is invalid: {error}",
+                item.skill_name
+            ))
+        })?;
+    let provenance = RawBundleProvenance {
+        name: item.provenance.name.as_str().to_owned(),
+        source: item.provenance.source.clone(),
+    };
+    if !bundles.iter().any(|bundle| bundle == &provenance) {
+        bundles.push(provenance);
+    }
+    object.insert("bundles".to_owned(), json!(bundles));
+    Ok(())
+}
+
+fn remove_bundle_from_dependency(
+    dependency: &mut serde_json::Value,
+    bundle_name: &BundleName,
+    source: Option<&str>,
+    skill_name: &str,
+) -> Result<(), DependencyConfigStoreError> {
+    let object = dependency.as_object_mut().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let bundles_value = object.get("bundles").cloned().unwrap_or_else(|| json!([]));
+    let mut bundles =
+        serde_json::from_value::<Vec<RawBundleProvenance>>(bundles_value).map_err(|error| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{skill_name}.bundles is invalid: {error}"
+            ))
+        })?;
+    bundles.retain(|bundle| {
+        !(bundle.name == bundle_name.as_str()
+            && source.is_none_or(|source| bundle.source == source))
+    });
+    if bundles.is_empty() {
+        object.remove("bundles");
+    } else {
+        object.insert("bundles".to_owned(), json!(bundles));
+    }
+    Ok(())
 }
 
 impl ConfigStore for FileConfigStore {
@@ -1129,8 +1692,9 @@ impl RawLockfile {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agent_mapping_config, read_lockfile, write_lockfile, FileConfigStore,
-        FileDependencyConfigStore, LockfileJsonError, RawConfig,
+        parse_agent_mapping_config, parse_bundle_manifest, read_lockfile, write_lockfile,
+        BundleManifestJsonError, FileConfigStore, FileDependencyConfigStore, LockfileJsonError,
+        RawConfig,
     };
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::{ConfigStore, DependencyConfigStore};
@@ -1184,6 +1748,122 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["universal", "claude-code", "pi"]
         );
+    }
+
+    #[test]
+    fn bundle_manifest_parses_valid_manifest() {
+        let manifest = parse_bundle_manifest(
+            r#"{
+              "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json",
+              "name": "review-workflow",
+              "description": "Review workflow skills.",
+              "entries": {
+                "review": { "source": "./skills/review" },
+                "qa": { "source": "github:org/qa-skills/skills/qa#main" }
+              }
+            }"#,
+            "inline",
+        )
+        .expect("manifest parses");
+
+        assert_eq!(manifest.name.as_str(), "review-workflow");
+        assert_eq!(manifest.entries.len(), 2);
+        assert_eq!(manifest.entries[0].skill_name.as_str(), "qa");
+        assert_eq!(manifest.entries[1].skill_name.as_str(), "review");
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_unknown_top_level_field() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": { "review": { "source": "./skills/review" } },
+                  "unexpected": true
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_agents_in_entry() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": { "review": { "source": "./skills/review", "agents": ["pi"] } }
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_empty_entries() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": {}
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::EmptyEntries)
+        ));
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_invalid_entry_name() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": { "team/review": { "source": "./skills/review" } }
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::InvalidEntryName { .. })
+        ));
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_empty_entry_source() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": { "review": { "source": "  " } }
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::EmptyEntrySource { .. })
+        ));
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_duplicate_entry_after_name_trimming() {
+        assert!(matches!(
+            parse_bundle_manifest(
+                r#"{
+                  "name": "review-workflow",
+                  "description": "Review workflow skills.",
+                  "entries": {
+                    "review": { "source": "./skills/review" },
+                    " review ": { "source": "./skills/other-review" }
+                  }
+                }"#,
+                "inline"
+            ),
+            Err(BundleManifestJsonError::DuplicateEntryName { .. })
+        ));
     }
 
     #[test]
@@ -1546,6 +2226,261 @@ mod tests {
         assert_eq!(
             value["dependencies"]["review"]["agents"],
             serde_json::json!(["claude-code"])
+        );
+    }
+
+    #[test]
+    fn bundle_add_plan_classifies_create_merge_conflict_and_skipped() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "merge-me": {
+                  "source": {
+                    "provider": "git",
+                    "repo": "org/repo",
+                    "path": "skills/merge-me"
+                  },
+                  "agents": ["pi"]
+                },
+                "skip-me": {
+                  "source": "./skip",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/baseline" }],
+                  "managedByBundles": true
+                },
+                "conflict-me": {
+                  "source": "./other",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/baseline".to_owned(),
+        };
+        let entries = vec![
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "new-skill".to_owned(),
+                original_source: "./new".to_owned(),
+                normalized_source: "./new".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "merge-me".to_owned(),
+                original_source: "github:org/repo/skills/merge-me".to_owned(),
+                normalized_source: "https://github.com/org/repo/tree/HEAD/skills/merge-me"
+                    .to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "skip-me".to_owned(),
+                original_source: "./skip".to_owned(),
+                normalized_source: "./skip".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "conflict-me".to_owned(),
+                original_source: "./same".to_owned(),
+                normalized_source: "./same".to_owned(),
+            },
+        ];
+
+        let plan = store
+            .plan_bundle_add(
+                &entries,
+                &["pi".to_owned(), "claude".to_owned()],
+                &provenance,
+            )
+            .unwrap();
+
+        assert_eq!(
+            plan.items[0].status,
+            crate::application::bundle::BundleAddStatus::Create
+        );
+        assert_eq!(
+            plan.items[1].status,
+            crate::application::bundle::BundleAddStatus::Merge
+        );
+        assert_eq!(
+            plan.items[2].status,
+            crate::application::bundle::BundleAddStatus::Merge
+        );
+        assert_eq!(
+            plan.items[3].status,
+            crate::application::bundle::BundleAddStatus::Conflict
+        );
+    }
+
+    #[test]
+    fn bundle_add_apply_merges_agents_and_preserves_manual_management() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "review": {
+                  "source": "./review",
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/baseline".to_owned(),
+        };
+        let entries = vec![
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "review".to_owned(),
+                original_source: "./review".to_owned(),
+                normalized_source: "./review".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "qa".to_owned(),
+                original_source: "./qa".to_owned(),
+                normalized_source: "./qa".to_owned(),
+            },
+        ];
+        let plan = store
+            .plan_bundle_add(&entries, &["claude".to_owned()], &provenance)
+            .unwrap();
+
+        store.apply_bundle_add(&plan).unwrap();
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi", "claude-code"])
+        );
+        assert_eq!(
+            value["dependencies"]["review"]["managedByBundles"],
+            serde_json::Value::Null
+        );
+        assert_eq!(value["dependencies"]["qa"]["managedByBundles"], true);
+    }
+
+    #[test]
+    fn bundle_add_plan_does_not_create_missing_config_parent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("missing-parent/sksync.config.json");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/baseline".to_owned(),
+        };
+        let entries = vec![crate::application::bundle::LoadedBundleEntry {
+            skill_name: "review".to_owned(),
+            original_source: "./review".to_owned(),
+            normalized_source: "./review".to_owned(),
+        }];
+
+        store
+            .plan_bundle_add(&entries, &["pi".to_owned()], &provenance)
+            .unwrap();
+
+        assert!(!config_path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn bundle_remove_plan_classifies_remove_detach_ambiguous_and_not_found() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "bundle-only": {
+                  "source": "./one",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
+                "manual": {
+                  "source": "./two",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }]
+                },
+                "other-source": {
+                  "source": "./three",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/b" }]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let name = crate::domain::bundle::BundleName::new("baseline").unwrap();
+
+        let ambiguous = store.plan_bundle_remove(&name, None).unwrap();
+        assert!(ambiguous.is_ambiguous());
+
+        let plan = store
+            .plan_bundle_remove(&name, Some("./bundles/a"))
+            .unwrap();
+        assert_eq!(
+            plan.items[0].status,
+            crate::application::bundle::BundleRemoveStatus::Remove
+        );
+        assert_eq!(
+            plan.items[1].status,
+            crate::application::bundle::BundleRemoveStatus::DetachProvenance
+        );
+
+        let missing = store
+            .plan_bundle_remove(
+                &crate::domain::bundle::BundleName::new("missing").unwrap(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            missing.items[0].status,
+            crate::application::bundle::BundleRemoveStatus::NotFound
+        );
+    }
+
+    #[test]
+    fn bundle_detach_provenance_keeps_manual_dependency() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "review": {
+                  "source": "./review",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let name = crate::domain::bundle::BundleName::new("baseline").unwrap();
+        let plan = store
+            .plan_bundle_remove(&name, Some("./bundles/a"))
+            .unwrap();
+
+        store.detach_bundle_provenance(&plan).unwrap();
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert!(value["dependencies"]["review"].is_object());
+        assert_eq!(
+            value["dependencies"]["review"]["bundles"],
+            serde_json::Value::Null
         );
     }
 
