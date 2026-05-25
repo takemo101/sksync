@@ -1,0 +1,3 @@
+# Bundles are install sets, not runtime objects
+
+Bundle support will model a bundle as a curated install set made of bundle entries that expand into normal dependencies when a user runs `sksync bundle add`. Agents still see flat skills, not bundle folders; bundle membership is stored only as dependency provenance (`bundles`) plus `managedByBundles` so `sksync bundle remove` can perform safe local bulk removal without treating a bundle as an installed object. This preserves the existing dependency lifecycle model while still supporting shared bundle manifests, atomic add, dry-run planning, and provenance-based removal.
