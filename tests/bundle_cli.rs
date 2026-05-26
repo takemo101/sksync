@@ -214,6 +214,33 @@ fn bundle_add_adopts_manual_same_source_without_bundle_managing_it() {
 }
 
 #[test]
+fn add_preserves_bundle_provenance_for_existing_same_source_dependency() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    assert_success(sksync(
+        root,
+        &["add", "./bundle/skills/review", "--agent", "pi"],
+    ));
+
+    let config = read_project_config(root);
+    let review = &config["dependencies"]["review"];
+    assert_eq!(review["source"], "./bundle/skills/review");
+    assert_eq!(review["managedByBundles"], true);
+    assert_eq!(
+        review["bundles"],
+        serde_json::json!([{ "name": "review-workflow", "source": "./bundle" }])
+    );
+    assert_eq!(review["agents"], serde_json::json!(["universal", "pi"]));
+}
+
+#[test]
 fn bundle_export_writes_manifest_only_bundle() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
