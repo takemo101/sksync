@@ -205,6 +205,18 @@ Bundle add planning reports `create`, `merge`, `conflict`, and `skipped`. Any co
 
 Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance. Bundle provenance is local UX/config metadata, not content reproducibility state.
 
+#### Planned bundle export
+
+Bundle consumption needs a matching creation workflow. The planned command is:
+
+```sh
+sksync bundle export <name> --output <dir> [--global] [--snapshot] [--skill <name>...] [--dry-run] [--force]
+```
+
+Default export is manifest-only: it reads current project/global dependencies and writes `sksync.bundle.json` with the existing dependency source strings. Snapshot export copies the currently installed skill bodies into `<dir>/skills/<name>` and writes manifest-relative sources such as `./skills/review`.
+
+Export never writes agents, existing bundle provenance, or `managedByBundles` into the bundle manifest. It should be read-only with respect to the source config, lockfile, and installed skill store. Existing output is not overwritten unless `--force` is passed.
+
 ### Agent target mapping
 
 Schema: [`schemas/sksync.agents.schema.json`](../schemas/sksync.agents.schema.json)
