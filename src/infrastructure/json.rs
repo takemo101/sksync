@@ -7,8 +7,8 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::application::bundle::{
-    BundleAddPlan, BundleAddPlanItem, BundleAddStatus, BundleRemovePlan, BundleRemovePlanItem,
-    BundleRemoveStatus, LoadedBundleEntry,
+    git_source_to_config_string, BundleAddPlan, BundleAddPlanItem, BundleAddStatus,
+    BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus, LoadedBundleEntry,
 };
 use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
@@ -85,7 +85,7 @@ pub struct RawBundleProvenance {
     pub source: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawBundleManifest {
     #[serde(rename = "$schema")]
@@ -95,7 +95,7 @@ pub struct RawBundleManifest {
     pub entries: BTreeMap<String, RawBundleEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawBundleEntry {
     pub source: String,
@@ -117,6 +117,12 @@ pub struct RawStructuredInstallSource {
     #[serde(rename = "ref")]
     pub reference: Option<String>,
     pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleExportDependencyConfig {
+    pub name: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,11 +180,29 @@ pub enum BundleManifestJsonError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to create bundle manifest directory {path}: {source}")]
+    CreateDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to parse bundle manifest at {path}: {source}")]
     Parse {
         path: String,
         #[source]
         source: serde_json::Error,
+    },
+    #[error("failed to serialize bundle manifest at {path}: {source}")]
+    Serialize {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to write bundle manifest at {path}: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
     },
     #[error("invalid bundle name '{name}': {source}")]
     InvalidName {
@@ -212,6 +236,50 @@ pub fn read_bundle_manifest(
             source,
         })?;
     parse_bundle_manifest(&content, &display_path(path))
+}
+
+pub fn write_bundle_manifest(
+    path: impl AsRef<Path>,
+    manifest: &BundleManifest,
+) -> Result<(), BundleManifestJsonError> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| BundleManifestJsonError::CreateDir {
+            path: display_path(parent),
+            source,
+        })?;
+    }
+    let entries = manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.skill_name.as_str().to_owned(),
+                RawBundleEntry {
+                    source: entry.source.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let raw = RawBundleManifest {
+        schema: Some(
+            "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json"
+                .to_owned(),
+        ),
+        name: manifest.name.as_str().to_owned(),
+        description: manifest.description.clone(),
+        entries,
+    };
+    let content = serde_json::to_string_pretty(&raw).map_err(|source| {
+        BundleManifestJsonError::Serialize {
+            path: display_path(path),
+            source,
+        }
+    })?;
+    std::fs::write(path, format!("{content}\n")).map_err(|source| BundleManifestJsonError::Write {
+        path: display_path(path),
+        source,
+    })
 }
 
 pub fn parse_bundle_manifest(
@@ -700,6 +768,32 @@ impl FileDependencyConfigStore {
             default_skill_dir: default_skill_dir.into(),
         }
     }
+
+    pub fn load_bundle_export_dependencies(
+        &self,
+    ) -> Result<Vec<BundleExportDependencyConfig>, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let Some(dependencies) = value.get("dependencies") else {
+            return Ok(Vec::new());
+        };
+        let dependencies = dependencies.as_object().ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField("dependencies must be an object".to_owned())
+        })?;
+        let mut exported = Vec::with_capacity(dependencies.len());
+        for (name, dependency) in dependencies {
+            SkillName::new(name.clone()).map_err(|source| {
+                DependencyConfigStoreError::InvalidField(format!(
+                    "invalid dependency name '{name}': {source}"
+                ))
+            })?;
+            exported.push(BundleExportDependencyConfig {
+                name: name.clone(),
+                source: dependency_export_source(dependency, name)?,
+            });
+        }
+        exported.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(exported)
+    }
 }
 
 impl DependencyConfigStore for FileDependencyConfigStore {
@@ -1125,6 +1219,44 @@ fn normalize_agent_name(agent: &str) -> String {
     AgentKind::from_str(agent)
         .map(|agent| agent.as_str().to_owned())
         .unwrap_or_else(|_| agent.trim().to_ascii_lowercase())
+}
+
+fn dependency_export_source(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<String, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let source = dependency.get("source").ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.source is required"
+        ))
+    })?;
+    if let Some(source) = source.as_str() {
+        parse_source_string(source).map_err(|error| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{skill_name}.source is invalid: {error}"
+            ))
+        })?;
+        return Ok(source.to_owned());
+    }
+    let raw = serde_json::from_value::<RawInstallSource>(source.clone()).map_err(|error| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.source is invalid: {error}"
+        ))
+    })?;
+    let install_source = parse_install_source(skill_name, raw, None).map_err(|error| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.source is invalid: {error}"
+        ))
+    })?;
+    Ok(match install_source {
+        InstallSource::Git(git) => git_source_to_config_string(&git),
+        InstallSource::Local(path) => path.to_string_lossy().replace('\\', "/"),
+    })
 }
 
 fn dependency_agents(
@@ -1692,13 +1824,14 @@ impl RawLockfile {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agent_mapping_config, parse_bundle_manifest, read_lockfile, write_lockfile,
-        BundleManifestJsonError, FileConfigStore, FileDependencyConfigStore, LockfileJsonError,
-        RawConfig,
+        parse_agent_mapping_config, parse_bundle_manifest, read_lockfile, write_bundle_manifest,
+        write_lockfile, BundleManifestJsonError, FileConfigStore, FileDependencyConfigStore,
+        LockfileJsonError, RawConfig,
     };
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::{ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
+    use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile, SUPPORTED_LOCKFILE_VERSION};
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
@@ -1770,6 +1903,46 @@ mod tests {
         assert_eq!(manifest.entries.len(), 2);
         assert_eq!(manifest.entries[0].skill_name.as_str(), "qa");
         assert_eq!(manifest.entries[1].skill_name.as_str(), "review");
+    }
+
+    #[test]
+    fn write_bundle_manifest_outputs_schema_and_sorted_entries() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("sksync.bundle.json");
+        let manifest = BundleManifest {
+            name: BundleName::new("team-baseline").unwrap(),
+            description: "Exported from sksync project config.".to_owned(),
+            entries: vec![
+                BundleEntry {
+                    skill_name: SkillName::new("review").unwrap(),
+                    source: "./skills/review".to_owned(),
+                },
+                BundleEntry {
+                    skill_name: SkillName::new("qa").unwrap(),
+                    source: "./skills/qa".to_owned(),
+                },
+            ],
+        };
+
+        write_bundle_manifest(&path, &manifest).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let value = serde_json::from_str::<serde_json::Value>(&content).unwrap();
+        assert_eq!(
+            value["$schema"],
+            "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.bundle.schema.json"
+        );
+        assert_eq!(
+            value["entries"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["qa".to_owned(), "review".to_owned()]
+        );
+        parse_bundle_manifest(&content, path.to_string_lossy().as_ref())
+            .expect("written manifest should parse");
     }
 
     #[test]
@@ -1864,6 +2037,64 @@ mod tests {
             ),
             Err(BundleManifestJsonError::DuplicateEntryName { .. })
         ));
+    }
+
+    #[test]
+    fn bundle_export_dependencies_preserve_shorthand_sources_and_ignore_provenance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "review": {
+                  "source": "github:org/repo/skills/review#main",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundle" }],
+                  "managedByBundles": true
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+
+        let dependencies = store.load_bundle_export_dependencies().unwrap();
+
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].name, "review");
+        assert_eq!(dependencies[0].source, "github:org/repo/skills/review#main");
+    }
+
+    #[test]
+    fn bundle_export_dependencies_convert_structured_git_sources_to_tree_urls() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "review": {
+                  "source": {
+                    "provider": "git",
+                    "repo": "org/repo",
+                    "path": "skills/review",
+                    "ref": "main"
+                  },
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+
+        let dependencies = store.load_bundle_export_dependencies().unwrap();
+
+        assert_eq!(
+            dependencies[0].source,
+            "https://github.com/org/repo/tree/main/skills/review"
+        );
     }
 
     #[test]

@@ -1,13 +1,20 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use thiserror::Error;
 
 use crate::application::source::parse_install_source_string;
-use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
+use crate::domain::bundle::{
+    BundleEntry, BundleManifest, BundleName, BundleNameError, BundleProvenance,
+};
 use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::infrastructure::git::GitClient;
-use crate::infrastructure::json::read_bundle_manifest;
+use crate::infrastructure::json::{
+    read_bundle_manifest, write_bundle_manifest, BundleExportDependencyConfig,
+    BundleManifestJsonError,
+};
 
 pub const BUNDLE_MANIFEST_FILE: &str = "sksync.bundle.json";
 
@@ -112,6 +119,402 @@ impl BundleRemovePlan {
             .iter()
             .all(|item| item.status == BundleRemoveStatus::NotFound)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleExportMode {
+    ManifestOnly,
+    Snapshot,
+}
+
+impl BundleExportMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManifestOnly => "manifest-only",
+            Self::Snapshot => "snapshot",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BundleExportPlanInput {
+    pub name: String,
+    pub description: Option<String>,
+    pub output: PathBuf,
+    pub mode: BundleExportMode,
+    pub selected_skills: Vec<String>,
+    pub dependencies: Vec<BundleExportDependencyConfig>,
+    pub resolved_skills: Vec<BundleExportResolvedSkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleExportResolvedSkill {
+    pub name: String,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleExportPlanItem {
+    pub skill_name: String,
+    pub manifest_source: String,
+    pub source_path: Option<PathBuf>,
+    pub snapshot_destination: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleExportPlan {
+    pub manifest: BundleManifest,
+    pub output: PathBuf,
+    pub mode: BundleExportMode,
+    pub items: Vec<BundleExportPlanItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundleExportApplyOptions {
+    pub force: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum BundleExportError {
+    #[error("invalid bundle name '{name}': {source}")]
+    InvalidBundleName {
+        name: String,
+        #[source]
+        source: BundleNameError,
+    },
+    #[error("invalid skill name '{name}': {source}")]
+    InvalidSkillName {
+        name: String,
+        #[source]
+        source: crate::domain::skill::SkillNameError,
+    },
+    #[error("selected skill '{0}' is not a dependency")]
+    UnknownSelectedSkill(String),
+    #[error("no dependencies selected for export")]
+    EmptySelection,
+    #[error("invalid dependency source for '{skill}': {message}")]
+    InvalidDependencySource { skill: String, message: String },
+    #[error("snapshot source for '{skill}' is missing from resolved config")]
+    MissingResolvedSkill { skill: String },
+    #[error("snapshot source for '{skill}' does not exist: {path}")]
+    MissingSnapshotSource { skill: String, path: String },
+    #[error("snapshot source for '{skill}' is not a directory: {path}")]
+    SnapshotSourceNotDirectory { skill: String, path: String },
+    #[error("snapshot source for '{skill}' is invalid SKILL.md: {message}")]
+    InvalidSnapshotSkill { skill: String, message: String },
+    #[error("bundle export output already exists: {0}")]
+    OutputExists(String),
+    #[error("failed to create export directory {path}: {source}")]
+    CreateDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to copy snapshot skill {skill} from {from} to {to}: {message}")]
+    CopySnapshotSkill {
+        skill: String,
+        from: String,
+        to: String,
+        message: String,
+    },
+    #[error("failed to replace export output {path}: {source}")]
+    ReplaceOutput {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write bundle export manifest: {0}")]
+    WriteManifest(#[from] BundleManifestJsonError),
+}
+
+pub fn build_bundle_export_plan(
+    input: BundleExportPlanInput,
+) -> std::result::Result<BundleExportPlan, BundleExportError> {
+    let bundle_name = BundleName::new(input.name.clone()).map_err(|source| {
+        BundleExportError::InvalidBundleName {
+            name: input.name.clone(),
+            source,
+        }
+    })?;
+    let selected = input
+        .selected_skills
+        .iter()
+        .map(|skill| skill.trim().to_owned())
+        .filter(|skill| !skill.is_empty())
+        .collect::<BTreeSet<_>>();
+    let dependencies = input
+        .dependencies
+        .into_iter()
+        .map(|dependency| (dependency.name.clone(), dependency))
+        .collect::<BTreeMap<_, _>>();
+
+    for selected_skill in &selected {
+        if !dependencies.contains_key(selected_skill) {
+            return Err(BundleExportError::UnknownSelectedSkill(
+                selected_skill.clone(),
+            ));
+        }
+    }
+
+    let resolved = input
+        .resolved_skills
+        .into_iter()
+        .map(|skill| (skill.name.clone(), skill.source_path))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut items = Vec::new();
+    let mut entries = Vec::new();
+    for (name, dependency) in dependencies {
+        if !selected.is_empty() && !selected.contains(&name) {
+            continue;
+        }
+        let skill_name = crate::domain::skill::SkillName::new(name.clone()).map_err(|source| {
+            BundleExportError::InvalidSkillName {
+                name: name.clone(),
+                source,
+            }
+        })?;
+        parse_install_source_string(&dependency.source).map_err(|error| {
+            BundleExportError::InvalidDependencySource {
+                skill: name.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        let manifest_source = match input.mode {
+            BundleExportMode::ManifestOnly => dependency.source.clone(),
+            BundleExportMode::Snapshot => format!("./skills/{name}"),
+        };
+        let source_path = match input.mode {
+            BundleExportMode::ManifestOnly => None,
+            BundleExportMode::Snapshot => Some(resolved.get(&name).cloned().ok_or_else(|| {
+                BundleExportError::MissingResolvedSkill {
+                    skill: name.clone(),
+                }
+            })?),
+        };
+        let snapshot_destination = source_path
+            .as_ref()
+            .map(|_| input.output.join("skills").join(&name));
+        entries.push(BundleEntry {
+            skill_name: skill_name.clone(),
+            source: manifest_source.clone(),
+        });
+        items.push(BundleExportPlanItem {
+            skill_name: skill_name.as_str().to_owned(),
+            manifest_source,
+            source_path,
+            snapshot_destination,
+        });
+    }
+
+    if items.is_empty() {
+        return Err(BundleExportError::EmptySelection);
+    }
+
+    Ok(BundleExportPlan {
+        manifest: BundleManifest {
+            name: bundle_name,
+            description: input
+                .description
+                .unwrap_or_else(|| "Exported from sksync config.".to_owned()),
+            entries,
+        },
+        output: input.output,
+        mode: input.mode,
+        items,
+    })
+}
+
+pub fn validate_snapshot_export_source(
+    skill: &str,
+    path: &Path,
+) -> std::result::Result<(), BundleExportError> {
+    if !path.exists() {
+        return Err(BundleExportError::MissingSnapshotSource {
+            skill: skill.to_owned(),
+            path: path.display().to_string(),
+        });
+    }
+    if !path.is_dir() {
+        return Err(BundleExportError::SnapshotSourceNotDirectory {
+            skill: skill.to_owned(),
+            path: path.display().to_string(),
+        });
+    }
+    let skill_md = path.join("SKILL.md");
+    let content = std::fs::read_to_string(&skill_md).map_err(|error| {
+        BundleExportError::InvalidSnapshotSkill {
+            skill: skill.to_owned(),
+            message: error.to_string(),
+        }
+    })?;
+    crate::domain::skill_manifest::parse_skill_manifest(&content).map_err(|error| {
+        BundleExportError::InvalidSnapshotSkill {
+            skill: skill.to_owned(),
+            message: error.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
+pub fn validate_bundle_export_plan(
+    plan: &BundleExportPlan,
+) -> std::result::Result<(), BundleExportError> {
+    if plan.mode == BundleExportMode::Snapshot {
+        for item in &plan.items {
+            let source = item.source_path.as_ref().ok_or_else(|| {
+                BundleExportError::MissingResolvedSkill {
+                    skill: item.skill_name.clone(),
+                }
+            })?;
+            validate_snapshot_export_source(&item.skill_name, source)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn apply_bundle_export_plan(
+    plan: &BundleExportPlan,
+    options: BundleExportApplyOptions,
+) -> std::result::Result<(), BundleExportError> {
+    if plan.output.exists() && !options.force {
+        return Err(BundleExportError::OutputExists(
+            plan.output.display().to_string(),
+        ));
+    }
+    let parent = plan.output.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|source| BundleExportError::CreateDir {
+        path: parent.display().to_string(),
+        source,
+    })?;
+    let staging = temporary_bundle_export_staging_dir(&plan.output);
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|source| BundleExportError::ReplaceOutput {
+            path: staging.display().to_string(),
+            source,
+        })?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|source| BundleExportError::CreateDir {
+        path: staging.display().to_string(),
+        source,
+    })?;
+
+    let result = (|| -> std::result::Result<(), BundleExportError> {
+        validate_bundle_export_plan(plan)?;
+        if plan.mode == BundleExportMode::Snapshot {
+            for item in &plan.items {
+                let source = item.source_path.as_ref().ok_or_else(|| {
+                    BundleExportError::MissingResolvedSkill {
+                        skill: item.skill_name.clone(),
+                    }
+                })?;
+                let destination = staging.join("skills").join(&item.skill_name);
+                copy_dir_all_for_bundle_export(source, &destination, &item.skill_name)?;
+            }
+        }
+        write_bundle_manifest(staging.join(BUNDLE_MANIFEST_FILE), &plan.manifest)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
+    if let Err(error) = replace_bundle_export_output(&staging, &plan.output) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn replace_bundle_export_output(
+    staging: &Path,
+    output: &Path,
+) -> std::result::Result<(), BundleExportError> {
+    if output.exists() {
+        if output.is_dir() {
+            std::fs::remove_dir_all(output).map_err(|source| BundleExportError::ReplaceOutput {
+                path: output.display().to_string(),
+                source,
+            })?;
+        } else {
+            std::fs::remove_file(output).map_err(|source| BundleExportError::ReplaceOutput {
+                path: output.display().to_string(),
+                source,
+            })?;
+        }
+    }
+    std::fs::rename(staging, output).map_err(|source| BundleExportError::ReplaceOutput {
+        path: output.display().to_string(),
+        source,
+    })
+}
+
+fn copy_dir_all_for_bundle_export(
+    from: &Path,
+    to: &Path,
+    skill: &str,
+) -> std::result::Result<(), BundleExportError> {
+    std::fs::create_dir_all(to).map_err(|source| BundleExportError::CreateDir {
+        path: to.display().to_string(),
+        source,
+    })?;
+    for entry in std::fs::read_dir(from).map_err(|source| BundleExportError::CopySnapshotSkill {
+        skill: skill.to_owned(),
+        from: from.display().to_string(),
+        to: to.display().to_string(),
+        message: source.to_string(),
+    })? {
+        let entry = entry.map_err(|source| BundleExportError::CopySnapshotSkill {
+            skill: skill.to_owned(),
+            from: from.display().to_string(),
+            to: to.display().to_string(),
+            message: source.to_string(),
+        })?;
+        let source_path = entry.path();
+        let target_path = to.join(entry.file_name());
+        let file_type =
+            entry
+                .file_type()
+                .map_err(|source| BundleExportError::CopySnapshotSkill {
+                    skill: skill.to_owned(),
+                    from: source_path.display().to_string(),
+                    to: target_path.display().to_string(),
+                    message: source.to_string(),
+                })?;
+        if file_type.is_dir() {
+            copy_dir_all_for_bundle_export(&source_path, &target_path, skill)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&source_path, &target_path).map_err(|source| {
+                BundleExportError::CopySnapshotSkill {
+                    skill: skill.to_owned(),
+                    from: source_path.display().to_string(),
+                    to: target_path.display().to_string(),
+                    message: source.to_string(),
+                }
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn temporary_bundle_export_staging_dir(output: &Path) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let file_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bundle-export");
+    output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            ".{file_name}.sksync-export-staging-{}-{nonce}",
+            std::process::id()
+        ))
 }
 
 pub fn load_bundle_from_source(raw_source: &str, config_root: &Path) -> Result<LoadedBundle> {
@@ -350,9 +753,15 @@ fn temporary_bundle_clone_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        git_source_to_config_string, load_bundle_from_source, normalize_bundle_entry_source,
+        apply_bundle_export_plan, build_bundle_export_plan, git_source_to_config_string,
+        load_bundle_from_source, normalize_bundle_entry_source, validate_snapshot_export_source,
+        BundleExportApplyOptions, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
+        BundleExportPlanItem, BundleExportResolvedSkill,
     };
+    use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
+    use crate::domain::skill::SkillName;
     use crate::domain::source::GitInstallSource;
+    use crate::infrastructure::json::BundleExportDependencyConfig;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -409,5 +818,190 @@ mod tests {
         });
 
         assert_eq!(source, "https://github.com/org/repo/tree/v1/skills/review");
+    }
+
+    #[test]
+    fn manifest_only_export_plan_preserves_dependency_sources() {
+        let dependencies = vec![
+            BundleExportDependencyConfig {
+                name: "review".to_owned(),
+                source: "github:org/repo/skills/review#main".to_owned(),
+            },
+            BundleExportDependencyConfig {
+                name: "qa".to_owned(),
+                source: "./vendor/qa".to_owned(),
+            },
+        ];
+        let plan = build_bundle_export_plan(BundleExportPlanInput {
+            name: "team-baseline".to_owned(),
+            description: None,
+            output: PathBuf::from("./bundles/team-baseline"),
+            mode: BundleExportMode::ManifestOnly,
+            selected_skills: Vec::new(),
+            dependencies,
+            resolved_skills: Vec::new(),
+        })
+        .unwrap();
+
+        assert_eq!(plan.manifest.name.as_str(), "team-baseline");
+        assert_eq!(plan.items[0].skill_name, "qa");
+        assert_eq!(plan.items[0].manifest_source, "./vendor/qa");
+        assert_eq!(plan.items[1].skill_name, "review");
+        assert_eq!(
+            plan.items[1].manifest_source,
+            "github:org/repo/skills/review#main"
+        );
+    }
+
+    #[test]
+    fn export_plan_rejects_selected_skill_not_in_dependencies() {
+        let error = build_bundle_export_plan(BundleExportPlanInput {
+            name: "team-baseline".to_owned(),
+            description: None,
+            output: PathBuf::from("./bundles/team-baseline"),
+            mode: BundleExportMode::ManifestOnly,
+            selected_skills: vec!["missing".to_owned()],
+            dependencies: Vec::new(),
+            resolved_skills: Vec::new(),
+        })
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("selected skill 'missing' is not a dependency"));
+    }
+
+    #[test]
+    fn snapshot_export_plan_rewrites_sources_to_manifest_relative_paths() {
+        let dependencies = vec![BundleExportDependencyConfig {
+            name: "review".to_owned(),
+            source: "github:org/repo/skills/review#main".to_owned(),
+        }];
+        let resolved_skills = vec![BundleExportResolvedSkill {
+            name: "review".to_owned(),
+            source_path: PathBuf::from("./.sksync/skills/org/repo/review"),
+        }];
+
+        let plan = build_bundle_export_plan(BundleExportPlanInput {
+            name: "team-baseline".to_owned(),
+            description: None,
+            output: PathBuf::from("./bundles/team-baseline"),
+            mode: BundleExportMode::Snapshot,
+            selected_skills: Vec::new(),
+            dependencies,
+            resolved_skills,
+        })
+        .unwrap();
+
+        assert_eq!(plan.items[0].manifest_source, "./skills/review");
+        assert_eq!(
+            plan.items[0].source_path.as_deref(),
+            Some(Path::new("./.sksync/skills/org/repo/review"))
+        );
+        assert_eq!(
+            plan.items[0].snapshot_destination.as_deref(),
+            Some(Path::new("./bundles/team-baseline/skills/review"))
+        );
+    }
+
+    #[test]
+    fn validate_snapshot_export_source_requires_valid_skill_manifest() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp.path().join("review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Missing frontmatter\n").unwrap();
+
+        let error = validate_snapshot_export_source("review", &skill_dir).unwrap_err();
+
+        assert!(error.to_string().contains("invalid SKILL.md"));
+    }
+
+    #[test]
+    fn validate_snapshot_export_source_accepts_valid_skill_manifest() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp.path().join("review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review skill\n---\n# Review\n",
+        )
+        .unwrap();
+
+        validate_snapshot_export_source("review", &skill_dir).unwrap();
+    }
+
+    #[test]
+    fn apply_manifest_only_export_refuses_existing_output_without_force() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output = temp.path().join("bundle");
+        fs::create_dir_all(&output).unwrap();
+        let plan = export_plan_for_test(output.clone(), BundleExportMode::ManifestOnly);
+
+        let error =
+            apply_bundle_export_plan(&plan, BundleExportApplyOptions { force: false }).unwrap_err();
+
+        assert!(error.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn apply_manifest_only_export_writes_manifest_without_skills_dir() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let output = temp.path().join("bundle");
+        let plan = export_plan_for_test(output.clone(), BundleExportMode::ManifestOnly);
+
+        apply_bundle_export_plan(&plan, BundleExportApplyOptions { force: false }).unwrap();
+
+        assert!(output.join("sksync.bundle.json").is_file());
+        assert!(!output.join("skills").exists());
+    }
+
+    #[test]
+    fn apply_snapshot_export_copies_skills_and_manifest() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let source = temp.path().join("installed/review");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: review\ndescription: Review skill\n---\n# Review\n",
+        )
+        .unwrap();
+        let output = temp.path().join("bundle");
+        let mut plan = export_plan_for_test(output.clone(), BundleExportMode::Snapshot);
+        plan.items[0].source_path = Some(source.clone());
+        plan.items[0].snapshot_destination = Some(output.join("skills/review"));
+
+        apply_bundle_export_plan(&plan, BundleExportApplyOptions { force: false }).unwrap();
+
+        assert!(output.join("sksync.bundle.json").is_file());
+        assert!(output.join("skills/review/SKILL.md").is_file());
+    }
+
+    fn export_plan_for_test(output: PathBuf, mode: BundleExportMode) -> BundleExportPlan {
+        let manifest_source = match mode {
+            BundleExportMode::ManifestOnly => "github:org/repo/skills/review#main".to_owned(),
+            BundleExportMode::Snapshot => "./skills/review".to_owned(),
+        };
+        BundleExportPlan {
+            manifest: BundleManifest {
+                name: BundleName::new("team-baseline").unwrap(),
+                description: "Exported from sksync config.".to_owned(),
+                entries: vec![BundleEntry {
+                    skill_name: SkillName::new("review").unwrap(),
+                    source: manifest_source.clone(),
+                }],
+            },
+            output: output.clone(),
+            mode,
+            items: vec![BundleExportPlanItem {
+                skill_name: "review".to_owned(),
+                manifest_source,
+                source_path: None,
+                snapshot_destination: if mode == BundleExportMode::Snapshot {
+                    Some(output.join("skills/review"))
+                } else {
+                    None
+                },
+            }],
+        }
     }
 }

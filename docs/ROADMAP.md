@@ -107,16 +107,7 @@ Required safety behavior:
 - `skills.sh` remains input-only; persisted config should use exact GitHub tree URLs after add-time discovery.
 - Linux installer defaults to musl release assets (`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`) so Debian / Ubuntu users do not depend on the build runner's glibc version.
 - Docker smoke tests cover `debian:bookworm`, `debian:trixie`, `ubuntu:22.04`, and `ubuntu:24.04`; Windows remains out of scope for now.
-
-## Planned: bundle export
-
-Bundle consumption is implemented through `bundle inspect/add/remove`. The next bundle authoring improvement is a generator command:
-
-```sh
-sksync bundle export <name> --output <dir> [--global] [--snapshot] [--skill <name>...] [--dry-run] [--force]
-```
-
-Default export should be manifest-only and preserve dependency source references. `--snapshot` should copy currently installed skill bodies into the bundle directory and write manifest-relative sources. Export must not write agents, existing bundle provenance, or `managedByBundles` to the bundle manifest.
+- Bundle consumption and authoring are available through `bundle inspect/add/remove/export`. Default export preserves dependency source references; `--snapshot` creates a self-contained bundle directory from installed skill bodies.
 
 ## Later only if needed
 

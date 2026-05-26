@@ -10,7 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::bundle::{
-    load_bundle_from_source, BundleAddPlan, BundleRemovePlan, BundleRemoveStatus,
+    apply_bundle_export_plan, build_bundle_export_plan, load_bundle_from_source,
+    validate_bundle_export_plan, BundleAddPlan, BundleExportApplyOptions, BundleExportMode,
+    BundleExportPlan, BundleExportPlanInput, BundleExportResolvedSkill, BundleRemovePlan,
+    BundleRemoveStatus,
 };
 use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -183,6 +186,8 @@ enum BundleCommand {
     Add(BundleAddArgs),
     /// Remove local dependency provenance for a bundle.
     Remove(BundleRemoveArgs),
+    /// Export current dependencies as a bundle manifest.
+    Export(BundleExportArgs),
 }
 
 #[derive(Debug, Args)]
@@ -219,6 +224,30 @@ struct BundleRemoveArgs {
     /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct BundleExportArgs {
+    /// Bundle name to write into sksync.bundle.json.
+    name: String,
+    /// Output directory that will contain sksync.bundle.json.
+    #[arg(long)]
+    output: PathBuf,
+    /// Export from ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Copy currently installed skill bodies into the bundle directory.
+    #[arg(long)]
+    snapshot: bool,
+    /// Export only selected dependency names. Repeatable.
+    #[arg(long = "skill")]
+    skills: Vec<String>,
+    /// Show the export plan without writing files.
+    #[arg(long)]
+    dry_run: bool,
+    /// Replace an existing generated output directory.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -592,6 +621,143 @@ fn run_bundle(args: BundleArgs) -> Result<()> {
         BundleCommand::Inspect(args) => run_bundle_inspect(args),
         BundleCommand::Add(args) => run_bundle_add(args),
         BundleCommand::Remove(args) => run_bundle_remove(args),
+        BundleCommand::Export(args) => run_bundle_export(args),
+    }
+}
+
+fn run_bundle_export(args: BundleExportArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    let dependencies = store.load_bundle_export_dependencies()?;
+    let resolved_config = load_config_from_path(&config_path, scope_for(args.global))?;
+    let resolved_skills = resolved_config
+        .skills
+        .iter()
+        .filter(|skill| skill.install_source.is_some())
+        .map(|skill| BundleExportResolvedSkill {
+            name: skill.name.as_str().to_owned(),
+            source_path: skill.source.as_path().to_path_buf(),
+        })
+        .collect::<Vec<_>>();
+    let plan = build_bundle_export_plan(BundleExportPlanInput {
+        name: args.name,
+        description: None,
+        output: resolve_export_output_path(&args.output, &root_dir),
+        mode: if args.snapshot {
+            BundleExportMode::Snapshot
+        } else {
+            BundleExportMode::ManifestOnly
+        },
+        selected_skills: args.skills,
+        dependencies,
+        resolved_skills,
+    })?;
+    validate_bundle_export_output_safety(
+        &plan.output,
+        &root_dir,
+        &config_path,
+        &lockfile_path,
+        resolved_config.skill_dir.as_path(),
+    )?;
+    validate_bundle_export_plan(&plan)?;
+    print_bundle_export_plan(&plan);
+    if args.dry_run {
+        return Ok(());
+    }
+    apply_bundle_export_plan(&plan, BundleExportApplyOptions { force: args.force })?;
+    print_success(format!(
+        "Exported bundle: {} -> {}",
+        plan.manifest.name,
+        plan.output.display()
+    ));
+    Ok(())
+}
+
+fn resolve_export_output_path(output: &Path, root_dir: &Path) -> PathBuf {
+    if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        root_dir.join(output)
+    }
+}
+
+fn validate_bundle_export_output_safety(
+    output: &Path,
+    root_dir: &Path,
+    config_path: &Path,
+    lockfile_path: &Path,
+    skill_dir: &Path,
+) -> Result<()> {
+    let output = normalize_cli_path_for_compare(output);
+    let root_dir = normalize_cli_path_for_compare(root_dir);
+    let config_path = normalize_cli_path_for_compare(config_path);
+    let lockfile_path = normalize_cli_path_for_compare(lockfile_path);
+    let skill_dir = normalize_cli_path_for_compare(&expand_tilde_path(skill_dir));
+
+    if output == root_dir {
+        bail!("bundle export output must not be the active config root");
+    }
+    for protected in [&config_path, &lockfile_path, &skill_dir] {
+        if output == *protected || protected.starts_with(&output) || output.starts_with(protected) {
+            bail!(
+                "bundle export output must not overlap protected sksync state: {}",
+                protected.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn expand_tilde_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if value == "~" {
+        return dirs::home_dir().unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn normalize_cli_path_for_compare(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn print_bundle_export_plan(plan: &BundleExportPlan) {
+    print_section("Bundle export plan");
+    println!("Name: {}", plan.manifest.name);
+    println!("Mode: {}", plan.mode.as_str());
+    println!("Output: {}", plan.output.display());
+    print_section_with_count("Entries", plan.items.len());
+    for item in &plan.items {
+        match (&item.source_path, &item.snapshot_destination) {
+            (Some(source), Some(destination)) => println!(
+                "- {}: {} -> {}",
+                item.skill_name,
+                source.display(),
+                destination.display()
+            ),
+            _ => println!("- {}: {}", item.skill_name, item.manifest_source),
+        }
     }
 }
 
@@ -2395,6 +2561,24 @@ mod tests {
             "--dry-run",
         ])
         .expect("import --agent --dry-run parses");
+    }
+
+    #[test]
+    fn bundle_export_command_is_registered() {
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundles/team-baseline",
+            "--skill",
+            "review",
+            "--snapshot",
+            "--dry-run",
+            "--force",
+        ])
+        .expect("bundle export should parse");
     }
 
     #[test]

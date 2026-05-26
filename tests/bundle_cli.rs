@@ -80,6 +80,22 @@ fn read_project_config(root: &Path) -> serde_json::Value {
         .expect("project config json")
 }
 
+fn write_export_project(root: &Path) {
+    fs::write(
+        root.join("sksync.config.json"),
+        r#"{
+          "skillDir": "./.sksync/skills",
+          "dependencies": {
+            "review": { "source": "github:org/repo/skills/review#main", "agents": ["pi"] },
+            "qa": { "source": "./vendor/qa", "agents": ["pi"] }
+          }
+        }"#,
+    )
+    .expect("write config");
+    write_bundle_skill(root, ".sksync/skills/review", "review");
+    write_bundle_skill(root, ".sksync/skills/qa", "qa");
+}
+
 #[test]
 fn bundle_add_and_remove_flow_manages_dependencies_files_and_symlinks() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -194,5 +210,187 @@ fn bundle_add_adopts_manual_same_source_without_bundle_managing_it() {
     assert_eq!(review["source"], "./bundle/skills/review");
     assert_eq!(review["managedByBundles"], serde_json::Value::Null);
     assert_eq!(review["bundles"], serde_json::Value::Null);
+    assert!(root.join(".sksync/skills/review/SKILL.md").is_file());
+}
+
+#[test]
+fn bundle_export_writes_manifest_only_bundle() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_success(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+        ],
+    ));
+
+    let manifest = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(root.join("bundle-out/sksync.bundle.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["name"], "team-baseline");
+    assert_eq!(
+        manifest["entries"]["review"]["source"],
+        "github:org/repo/skills/review#main"
+    );
+    assert_eq!(manifest["entries"]["qa"]["source"], "./vendor/qa");
+    assert!(!root.join("bundle-out/skills").exists());
+}
+
+#[test]
+fn bundle_export_snapshot_copies_installed_skill_bodies() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_success(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+            "--snapshot",
+        ],
+    ));
+
+    let manifest = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(root.join("bundle-out/sksync.bundle.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["entries"]["review"]["source"], "./skills/review");
+    assert_eq!(manifest["entries"]["qa"]["source"], "./skills/qa");
+    assert!(root.join("bundle-out/skills/review/SKILL.md").is_file());
+    assert!(root.join("bundle-out/skills/qa/SKILL.md").is_file());
+}
+
+#[test]
+fn bundle_export_dry_run_does_not_create_output() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_success(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+            "--dry-run",
+        ],
+    ));
+
+    assert!(!root.join("bundle-out").exists());
+}
+
+#[test]
+fn bundle_export_skill_filter_exports_only_selected_dependency() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_success(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+            "--skill",
+            "qa",
+        ],
+    ));
+
+    let manifest = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(root.join("bundle-out/sksync.bundle.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest["entries"].get("qa").is_some());
+    assert!(manifest["entries"].get("review").is_none());
+}
+
+#[test]
+fn bundle_export_refuses_existing_output_without_force() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+    fs::create_dir_all(root.join("bundle-out")).unwrap();
+
+    let error = assert_failure(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+        ],
+    ));
+
+    assert!(error.contains("already exists"));
+}
+
+#[test]
+fn bundle_export_snapshot_dry_run_validates_installed_skill_bodies() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+    fs::write(
+        root.join(".sksync/skills/review/SKILL.md"),
+        "# Missing frontmatter\n",
+    )
+    .expect("break installed skill");
+
+    let error = assert_failure(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+            "--snapshot",
+            "--dry-run",
+        ],
+    ));
+
+    assert!(error.contains("invalid SKILL.md"));
+    assert!(!root.join("bundle-out").exists());
+}
+
+#[test]
+fn bundle_export_rejects_output_that_overlaps_project_state() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+    let before = fs::read_to_string(root.join("sksync.config.json")).unwrap();
+
+    let error = assert_failure(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            ".",
+            "--force",
+        ],
+    ));
+
+    assert!(error.contains("active config root") || error.contains("protected sksync state"));
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.config.json")).unwrap(),
+        before
+    );
     assert!(root.join(".sksync/skills/review/SKILL.md").is_file());
 }
