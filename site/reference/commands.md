@@ -71,9 +71,25 @@ sksync bundle remove <name> --dry-run
 | `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`. |
 | `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove`. |
 | `--dry-run` | Show planned `create` / `merge` / `conflict` / `skipped` or `remove` / `detach-provenance` / `ambiguous` / `not-found` statuses without writing. |
-| `--global` | Operate on the global config. |
+| `--global` | Operate on the global config. Supported by `bundle add` and `bundle remove`; `bundle inspect` is manifest-only. |
 
-See [Bundles](/guides/bundles).
+Example `bundle add --dry-run` output:
+
+```text
+Bundle add plan (2)
+create review <- ./bundles/review-workflow/skills/review
+merge qa <- https://github.com/org/qa-skills/tree/main/skills/qa
+```
+
+Example `bundle remove --dry-run` output:
+
+```text
+Bundle remove plan (2)
+remove review (*)
+detach-provenance qa (*)
+```
+
+See [Bundles](/guides/bundles) for manifest authoring, provenance, migration, and troubleshooting guidance.
 
 ## `sksync agents`
 

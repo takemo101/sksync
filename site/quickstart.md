@@ -17,7 +17,7 @@ This creates:
 - `.sksync/skills/` — where skill bodies are stored
 
 ::: tip
-Manage skills for your whole machine instead of one repo with `sksync init --global`, which writes `~/.sksync/config.json`, `~/.sksync/agents.json`, and `~/.sksync/skills/`. Pass `--global` to the commands below to target the global config.
+Manage skills for your whole machine instead of one repo with `sksync init --global`, which writes `~/.sksync/config.json`, `~/.sksync/agents.json`, and `~/.sksync/skills/`. Commands that read or write config accept `--global`; manifest-only commands such as `sksync bundle inspect` do not need it.
 :::
 
 ## 2. Add a skill for one or more agents
@@ -42,6 +42,23 @@ sksync add https://www.skills.sh/owner/repo/skill-name --agent pi
 # From a local directory
 sksync add ./local-skill --agent claude-code --agent gemini
 ```
+
+## Optional: add a team bundle
+
+If your team publishes a bundle, inspect it first, then dry-run the add:
+
+```sh
+sksync bundle inspect ./bundles/review-workflow
+sksync bundle add ./bundles/review-workflow --agent claude-code --agent pi --dry-run
+```
+
+When the plan looks right, install every bundle entry into the selected agents:
+
+```sh
+sksync bundle add ./bundles/review-workflow --agent claude-code --agent pi
+```
+
+Bundles expand into normal dependencies. They do not create runtime bundle folders, and agents still see flat skills. See [Bundles](/guides/bundles) for manifest authoring, provenance, and removal behavior.
 
 ## 3. Preview the plan
 
@@ -98,5 +115,6 @@ sksync check
 - **Understand the manifest** → [Project Config](/guides/project-config)
 - **See where each agent's skills live** → [Agent Mappings](/guides/agent-mappings)
 - **All source formats and discovery rules** → [Sources & Discovery](/guides/sources)
+- **Team bundle manifests and provenance** → [Bundles](/guides/bundles)
 - **Lockfile, reproducible installs, and updates** → [Lockfile & Sync](/guides/lockfile)
 - **Full command reference** → [Commands](/reference/commands)
