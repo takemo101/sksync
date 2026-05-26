@@ -332,6 +332,21 @@ Authoring tips:
 - use manifest-relative sources when bundle skills live beside the manifest,
 - keep bundles focused, such as `review-workflow`, `rust-baseline`, or `team-onboarding`.
 
+Planned export workflow:
+
+```bash
+# Preview writing only sksync.bundle.json from current dependencies.
+cargo run -- bundle export team-baseline --output ./bundles/team-baseline --dry-run
+
+# Create only sksync.bundle.json from current dependencies.
+cargo run -- bundle export team-baseline --output ./bundles/team-baseline
+
+# Copy installed skill bodies into the bundle directory.
+cargo run -- bundle export team-baseline --output ./bundles/team-baseline --snapshot
+```
+
+`bundle export` is planned, not part of the current CLI. The design keeps the default export lightweight by preserving dependency source references, while `--snapshot` creates a self-contained bundle directory from installed skill bodies.
+
 ### `sksync attach`
 
 Attach an existing dependency-managed skill to additional agents. sksync preserves the existing source representation, installs the skill, and creates symlinks.
