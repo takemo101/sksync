@@ -187,9 +187,9 @@ That means a later `bundle remove` detaches provenance but keeps the manual depe
 
 If the skill name exists with a different source, `bundle add` reports `conflict` and writes nothing. Resolve that manually by renaming the bundle entry, removing the old dependency, or updating the dependency source.
 
-## Planned export workflow
+## Exporting a bundle from existing dependencies
 
-Today, bundle authors write `sksync.bundle.json` directly. A planned `bundle export` command will generate one from the current project or global dependencies:
+`bundle export` generates a bundle from the current project or global dependencies:
 
 ```sh
 # Manifest-only export: preserve existing dependency sources.
@@ -198,19 +198,20 @@ sksync bundle export team-baseline --output ./bundles/team-baseline
 
 # Snapshot export: copy installed skill bodies into the bundle directory.
 sksync bundle export team-baseline --output ./bundles/team-baseline --snapshot
+
+# Export only selected dependencies.
+sksync bundle export team-baseline --output ./bundles/team-baseline --skill review --skill qa
 ```
 
-Manifest-only export will create only `sksync.bundle.json` and keep each dependency's source reference. Snapshot export will copy installed skill bodies to `./skills/<name>` under the output directory and write manifest-relative entries.
+Manifest-only export creates only `sksync.bundle.json` and keeps each dependency's source reference. Snapshot export copies installed skill bodies to `./skills/<name>` under the output directory and writes manifest-relative entries.
 
-Planned safety rules:
+Safety rules:
 
 - `--dry-run` prints entries and copy operations without creating the output directory.
 - `--skill <name>` can be repeated to export only selected dependencies.
 - `--global` exports from `~/.sksync/config.json`.
 - existing output is an error unless `--force` is passed.
 - agents, existing bundle provenance, and `managedByBundles` are not written into the bundle manifest.
-
-`bundle export` is not in the current CLI yet; this section records the intended authoring workflow.
 
 ## Authoring best practices
 

@@ -58,6 +58,8 @@ sksync bundle add <source> --agent <agent> [--agent <agent> …]
 sksync bundle add <source> --agent <agent> --dry-run
 sksync bundle remove <name> [--source <exact-source>]
 sksync bundle remove <name> --dry-run
+sksync bundle export <name> --output <dir> [--snapshot]
+sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 ```
 
 | Subcommand | Meaning |
@@ -65,13 +67,18 @@ sksync bundle remove <name> --dry-run
 | `inspect` | Read a bundle manifest and print normalized entry sources. Read-only. |
 | `add` | Add every bundle entry to the selected agents. Aborts on any conflict. |
 | `remove` | Remove local bundle provenance and delete only bundle-managed dependencies whose last provenance is removed. |
+| `export` | Generate `sksync.bundle.json` from current project or global dependencies. |
 
 | Flag | Meaning |
 |---|---|
 | `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`. |
 | `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove`. |
-| `--dry-run` | Show planned `create` / `merge` / `conflict` / `skipped` or `remove` / `detach-provenance` / `ambiguous` / `not-found` statuses without writing. |
-| `--global` | Operate on the global config. Supported by `bundle add` and `bundle remove`; `bundle inspect` is manifest-only. |
+| `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export`. |
+| `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. |
+| `--skill <name>` | Export only this dependency. Repeatable. |
+| `--force` | Replace an existing export output directory. |
+| `--dry-run` | Show planned add/remove/export work without writing. |
+| `--global` | Operate on the global config. Supported by `bundle add`, `bundle remove`, and `bundle export`; `bundle inspect` is manifest-only. |
 
 Example `bundle add --dry-run` output:
 
