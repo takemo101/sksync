@@ -306,6 +306,32 @@ Example manifest:
 
 Bundle entry keys are final skill names. Entry sources may be local, GitHub, `skills.sh`, or manifest-relative paths. Bundle manifests never choose target agents.
 
+Typical team flow:
+
+```bash
+# See manifest metadata and normalized entry sources.
+cargo run -- bundle inspect ./bundles/review-workflow
+
+# Preview create / merge / conflict / skipped statuses.
+cargo run -- bundle add ./bundles/review-workflow --agent pi --agent claude-code --dry-run
+
+# Install every entry into the selected agents.
+cargo run -- bundle add ./bundles/review-workflow --agent pi --agent claude-code
+
+# Later, remove local provenance and bundle-managed dependencies.
+cargo run -- bundle remove review-workflow --dry-run
+cargo run -- bundle remove review-workflow
+```
+
+`bundle add` is all-or-nothing at the config/lockfile level. Existing dependencies with the same normalized source are adopted and keep `managedByBundles: false`, so `bundle remove` later detaches provenance without deleting manually managed dependencies. Existing dependencies with the same skill name but a different source are reported as conflicts and nothing is written.
+
+Authoring tips:
+
+- keep bundle names and entry keys stable,
+- prefer explicit refs for remote entries; use tags or commits when strict reproducibility matters,
+- use manifest-relative sources when bundle skills live beside the manifest,
+- keep bundles focused, such as `review-workflow`, `rust-baseline`, or `team-onboarding`.
+
 ### `sksync attach`
 
 Attach an existing dependency-managed skill to additional agents. sksync preserves the existing source representation, installs the skill, and creates symlinks.

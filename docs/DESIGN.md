@@ -201,7 +201,9 @@ A bundle is a curated install set stored as `sksync.bundle.json` at the root of 
 
 Bundle manifests do not contain agents. `sksync bundle add <source> --agent ...` expands entries into normal dependencies, union-merges agents when an existing dependency has the same source, and conflicts when the same skill name already points at a different source. `sksync bundle remove <name>` uses local config provenance only; it does not refetch the remote manifest.
 
-Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance.
+Bundle add planning reports `create`, `merge`, `conflict`, and `skipped`. Any conflict aborts the whole add before writes. Bundle remove planning reports `remove`, `detach-provenance`, `ambiguous`, and `not-found`. Dependencies created by bundles use `managedByBundles: true`; manual dependencies adopted by matching source keep `managedByBundles: false`, so removing the bundle only detaches provenance.
+
+Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance. Bundle provenance is local UX/config metadata, not content reproducibility state.
 
 ### Agent target mapping
 
