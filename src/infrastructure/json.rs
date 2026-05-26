@@ -816,13 +816,26 @@ impl DependencyConfigStore for FileDependencyConfigStore {
                 merged_agents.push(normalized);
             }
         }
-        dependencies.insert(
-            skill_name.to_owned(),
-            json!({
-                "source": source,
-                "agents": merged_agents,
-            }),
-        );
+        let mut dependency = if dependencies
+            .get(skill_name)
+            .and_then(|dependency| dependency_source_matches(dependency, skill_name, source).ok())
+            .unwrap_or(false)
+        {
+            dependencies
+                .get(skill_name)
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+        } else {
+            json!({})
+        };
+        let object = dependency.as_object_mut().ok_or_else(|| {
+            DependencyConfigStoreError::InvalidField(format!(
+                "dependencies.{skill_name} must be an object"
+            ))
+        })?;
+        object.insert("source".to_owned(), json!(source));
+        object.insert("agents".to_owned(), json!(merged_agents));
+        dependencies.insert(skill_name.to_owned(), dependency);
         self.write_value(&value)
     }
 
