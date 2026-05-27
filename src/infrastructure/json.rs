@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use crate::application::bundle::{
     git_source_to_config_string, BundleAddPlan, BundleAddPlanItem, BundleAddStatus,
-    BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus, LoadedBundleEntry,
+    BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus, BundleSyncPlan, BundleSyncPlanItem,
+    BundleSyncSourceResolution, BundleSyncStatus, LoadedBundleEntry,
 };
 use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
@@ -1118,6 +1119,184 @@ impl FileDependencyConfigStore {
         })
     }
 
+    pub fn resolve_bundle_sync_source(
+        &self,
+        bundle_name: &crate::domain::bundle::BundleName,
+        source: Option<&str>,
+    ) -> Result<BundleSyncSourceResolution, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let empty_dependencies = serde_json::Map::new();
+        let dependencies = value
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.as_object())
+            .unwrap_or(&empty_dependencies);
+        let mut matching_sources = BTreeSet::new();
+        for (skill_name, dependency) in dependencies {
+            for bundle in dependency_bundles(dependency, skill_name)? {
+                if bundle.name == bundle_name.as_str() {
+                    matching_sources.insert(bundle.source);
+                }
+            }
+        }
+        if let Some(source) = source {
+            if matching_sources.iter().any(|existing| existing == source) {
+                return Ok(BundleSyncSourceResolution::Resolved(source.to_owned()));
+            }
+            return Ok(BundleSyncSourceResolution::NotFound);
+        }
+        match matching_sources.len() {
+            0 => Ok(BundleSyncSourceResolution::NotFound),
+            1 => Ok(BundleSyncSourceResolution::Resolved(
+                matching_sources.into_iter().next().unwrap_or_default(),
+            )),
+            _ => Ok(BundleSyncSourceResolution::Ambiguous(
+                matching_sources.into_iter().collect(),
+            )),
+        }
+    }
+
+    pub fn plan_bundle_sync(
+        &self,
+        provenance: &crate::domain::bundle::BundleProvenance,
+        entries: &[LoadedBundleEntry],
+        fallback_agents: &[String],
+    ) -> Result<BundleSyncPlan, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let empty_dependencies = serde_json::Map::new();
+        let dependencies = value
+            .get("dependencies")
+            .and_then(|dependencies| dependencies.as_object())
+            .unwrap_or(&empty_dependencies);
+        let inferred_agents = infer_bundle_agents(dependencies, provenance)?;
+        let fallback_agents = normalize_agent_names(fallback_agents);
+        let agents = if inferred_agents.is_empty() {
+            fallback_agents
+        } else {
+            inferred_agents
+        };
+        let manifest_entries = entries
+            .iter()
+            .map(|entry| (entry.skill_name.as_str(), entry))
+            .collect::<BTreeMap<_, _>>();
+        let mut items = Vec::new();
+        let mut keep_count = 0;
+
+        for entry in entries {
+            match dependencies.get(&entry.skill_name) {
+                Some(existing)
+                    if dependency_has_bundle(existing, &entry.skill_name, provenance)? =>
+                {
+                    if dependency_source_matches(
+                        existing,
+                        &entry.skill_name,
+                        &entry.normalized_source,
+                    )? {
+                        keep_count += 1;
+                    } else {
+                        let local_source = dependency_source(existing, &entry.skill_name).ok();
+                        items.push(BundleSyncPlanItem {
+                            skill_name: entry.skill_name.clone(),
+                            status: BundleSyncStatus::SourceChanged,
+                            local_source: local_source.clone(),
+                            manifest_source: Some(entry.normalized_source.clone()),
+                            agents: Vec::new(),
+                            message: Some(format!(
+                                "local source {:?} differs from bundle manifest source {:?}",
+                                local_source.unwrap_or_else(|| "<unknown>".to_owned()),
+                                entry.normalized_source
+                            )),
+                        });
+                    }
+                }
+                Some(existing) => {
+                    if dependency_source_matches(
+                        existing,
+                        &entry.skill_name,
+                        &entry.normalized_source,
+                    )? {
+                        items.push(BundleSyncPlanItem {
+                            skill_name: entry.skill_name.clone(),
+                            status: BundleSyncStatus::Adopt,
+                            local_source: dependency_source(existing, &entry.skill_name).ok(),
+                            manifest_source: Some(entry.normalized_source.clone()),
+                            agents: agents.clone(),
+                            message: None,
+                        });
+                    } else {
+                        let local_source = dependency_source(existing, &entry.skill_name).ok();
+                        items.push(BundleSyncPlanItem {
+                            skill_name: entry.skill_name.clone(),
+                            status: BundleSyncStatus::SourceChanged,
+                            local_source: local_source.clone(),
+                            manifest_source: Some(entry.normalized_source.clone()),
+                            agents: Vec::new(),
+                            message: Some(format!(
+                                "existing dependency source {:?} differs from bundle manifest source {:?}",
+                                local_source.unwrap_or_else(|| "<unknown>".to_owned()),
+                                entry.normalized_source
+                            )),
+                        });
+                    }
+                }
+                None if agents.is_empty() => items.push(BundleSyncPlanItem {
+                    skill_name: entry.skill_name.clone(),
+                    status: BundleSyncStatus::MissingAgents,
+                    local_source: None,
+                    manifest_source: Some(entry.normalized_source.clone()),
+                    agents: Vec::new(),
+                    message: Some(
+                        "no dependency agents could be inferred; pass --agent".to_owned(),
+                    ),
+                }),
+                None => items.push(BundleSyncPlanItem {
+                    skill_name: entry.skill_name.clone(),
+                    status: BundleSyncStatus::Add,
+                    local_source: None,
+                    manifest_source: Some(entry.normalized_source.clone()),
+                    agents: agents.clone(),
+                    message: None,
+                }),
+            }
+        }
+
+        for (skill_name, dependency) in dependencies {
+            if !dependency_has_bundle(dependency, skill_name, provenance)? {
+                continue;
+            }
+            if manifest_entries.contains_key(skill_name.as_str()) {
+                continue;
+            }
+            let bundles = dependency_bundles(dependency, skill_name)?;
+            let remaining = bundles
+                .iter()
+                .filter(|bundle| {
+                    !(bundle.name == provenance.name.as_str() && bundle.source == provenance.source)
+                })
+                .count();
+            let managed = dependency_managed_by_bundles(dependency, skill_name)?;
+            let status = if remaining == 0 && managed {
+                BundleSyncStatus::Remove
+            } else {
+                BundleSyncStatus::DetachProvenance
+            };
+            items.push(BundleSyncPlanItem {
+                skill_name: skill_name.clone(),
+                status,
+                local_source: dependency_source(dependency, skill_name).ok(),
+                manifest_source: None,
+                agents: Vec::new(),
+                message: None,
+            });
+        }
+
+        Ok(BundleSyncPlan {
+            bundle: provenance.name.clone(),
+            source: provenance.source.clone(),
+            items,
+            keep_count,
+        })
+    }
+
     pub fn detach_bundle_provenance(
         &self,
         plan: &BundleRemovePlan,
@@ -1392,6 +1571,38 @@ fn dependency_bundles(
             "dependencies.{skill_name}.bundles is invalid: {error}"
         ))
     })
+}
+
+fn dependency_has_bundle(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+    provenance: &crate::domain::bundle::BundleProvenance,
+) -> Result<bool, DependencyConfigStoreError> {
+    Ok(dependency_bundles(dependency, skill_name)?
+        .iter()
+        .any(|bundle| {
+            bundle.name == provenance.name.as_str() && bundle.source == provenance.source
+        }))
+}
+
+fn infer_bundle_agents(
+    dependencies: &serde_json::Map<String, serde_json::Value>,
+    provenance: &crate::domain::bundle::BundleProvenance,
+) -> Result<Vec<String>, DependencyConfigStoreError> {
+    let mut agents = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (skill_name, dependency) in dependencies {
+        if !dependency_has_bundle(dependency, skill_name, provenance)? {
+            continue;
+        }
+        for agent in dependency_agents(Some(dependency), skill_name)? {
+            let normalized = normalize_agent_name(&agent);
+            if seen.insert(normalized.clone()) {
+                agents.push(normalized);
+            }
+        }
+    }
+    Ok(agents)
 }
 
 fn dependency_managed_by_bundles(
@@ -2690,6 +2901,131 @@ mod tests {
             missing.items[0].status,
             crate::application::bundle::BundleRemoveStatus::NotFound
         );
+    }
+
+    #[test]
+    fn bundle_sync_plan_classifies_membership_drift_and_blockers() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "keep-me": {
+                  "source": "./keep",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
+                "source-changed": {
+                  "source": "./old",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
+                "remove-me": {
+                  "source": "./removed",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
+                "detach-me": {
+                  "source": "./detached",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }]
+                },
+                "adopt-me": {
+                  "source": "./adopt",
+                  "agents": ["claude"]
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/a".to_owned(),
+        };
+        let entries = vec![
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "keep-me".to_owned(),
+                original_source: "./keep".to_owned(),
+                normalized_source: "./keep".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "source-changed".to_owned(),
+                original_source: "./new".to_owned(),
+                normalized_source: "./new".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "add-me".to_owned(),
+                original_source: "./add".to_owned(),
+                normalized_source: "./add".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "adopt-me".to_owned(),
+                original_source: "./adopt".to_owned(),
+                normalized_source: "./adopt".to_owned(),
+            },
+        ];
+
+        let plan = store
+            .plan_bundle_sync(&provenance, &entries, &[])
+            .expect("plan sync");
+
+        assert_eq!(plan.keep_count, 1);
+        assert_eq!(
+            plan.items
+                .iter()
+                .map(|item| item.status.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source-changed",
+                "add",
+                "adopt",
+                "detach-provenance",
+                "remove"
+            ]
+        );
+        assert!(plan.has_blockers());
+    }
+
+    #[test]
+    fn bundle_sync_plan_reports_missing_agents_when_no_agents_can_be_inferred() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "empty-agents": {
+                  "source": "./old",
+                  "agents": [],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/a".to_owned(),
+        };
+        let entries = vec![crate::application::bundle::LoadedBundleEntry {
+            skill_name: "new-entry".to_owned(),
+            original_source: "./new".to_owned(),
+            normalized_source: "./new".to_owned(),
+        }];
+
+        let plan = store
+            .plan_bundle_sync(&provenance, &entries, &[])
+            .expect("plan sync");
+
+        assert_eq!(plan.items[0].status.as_str(), "missing-agents");
+        assert!(plan.has_blockers());
     }
 
     #[test]

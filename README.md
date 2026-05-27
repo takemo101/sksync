@@ -288,6 +288,7 @@ Bundles are curated install sets described by `sksync.bundle.json`. A bundle is 
 cargo run -- bundle inspect <source>
 cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run]
 cargo run -- bundle remove <name> [--source <exact-source>] [--dry-run]
+cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run]
 ```
 
 Example manifest:
@@ -318,12 +319,17 @@ cargo run -- bundle add ./bundles/review-workflow --agent pi --agent claude-code
 # Install every entry into the selected agents.
 cargo run -- bundle add ./bundles/review-workflow --agent pi --agent claude-code
 
+# Later, preview bundle manifest membership drift.
+cargo run -- bundle sync review-workflow --dry-run
+
 # Later, remove local provenance and bundle-managed dependencies.
 cargo run -- bundle remove review-workflow --dry-run
 cargo run -- bundle remove review-workflow
 ```
 
 `bundle add` is all-or-nothing at the config/lockfile level. Existing dependencies with the same normalized source are adopted and keep `managedByBundles: false`, so `bundle remove` later detaches provenance without deleting manually managed dependencies. Existing dependencies with the same skill name but a different source are reported as conflicts and nothing is written.
+
+`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. The current implementation is preview-only; applying sync changes is planned separately. Existing skill content updates remain the responsibility of `sksync update`.
 
 Authoring tips:
 
