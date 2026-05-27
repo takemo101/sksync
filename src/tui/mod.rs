@@ -20,6 +20,7 @@ enum Intent {
     RemoveSkill,
     RemoveAgent,
     AddBundle,
+    RemoveBundle,
     Status,
     Apply,
     ConfigureDefaultAgents,
@@ -34,6 +35,7 @@ impl fmt::Display for Intent {
             Self::RemoveSkill => "Remove skill",
             Self::RemoveAgent => "Detach skill from agent",
             Self::AddBundle => "Add bundle",
+            Self::RemoveBundle => "Remove bundle",
             Self::Status => "Show status",
             Self::Apply => "Apply links",
             Self::ConfigureDefaultAgents => "Configure default agents",
@@ -100,6 +102,7 @@ fn wizard_intents() -> Vec<Intent> {
         Intent::RemoveSkill,
         Intent::RemoveAgent,
         Intent::AddBundle,
+        Intent::RemoveBundle,
         Intent::Status,
         Intent::Apply,
         Intent::ConfigureDefaultAgents,
@@ -122,6 +125,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             Intent::RemoveSkill => run_remove_flow(&project_root)?,
             Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
             Intent::AddBundle => run_add_bundle_flow(&project_root)?,
+            Intent::RemoveBundle => run_remove_bundle_flow(&project_root)?,
             Intent::Status => run_status_flow(&project_root)?,
             Intent::Apply => run_apply_flow(&project_root)?,
             Intent::ConfigureDefaultAgents => run_configure_default_agents_flow(&project_root)?,
@@ -207,6 +211,99 @@ fn bundle_add_args(source: &str, agents: &[String], global: bool, dry_run: bool)
         args.push("--dry-run".to_owned());
     }
     args
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BundleProvenanceChoice {
+    name: String,
+    source: String,
+}
+
+impl fmt::Display for BundleProvenanceChoice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} — {}", self.name, self.source)
+    }
+}
+
+fn run_remove_bundle_flow(project_root: &Path) -> Result<()> {
+    let scope = prompt_config_scope("Which config should the bundle be removed from?")?;
+    let config_path = config_path_for_scope(project_root, scope)?;
+    let choices = bundle_provenance_choices_from_config_path(&config_path)?;
+    if choices.is_empty() {
+        println!(
+            "No bundle provenance is configured in {}",
+            config_path.display()
+        );
+        return Ok(());
+    }
+    let choice = Select::new("Select bundle provenance to remove", choices)
+        .prompt()
+        .context("failed to read bundle provenance selection")?;
+    let dry_run_args = bundle_remove_args(&choice, scope.is_global(), true);
+    println!("dry-run plan:");
+    run_sksync(project_root, &dry_run_args)?;
+
+    let apply_args = bundle_remove_args(&choice, scope.is_global(), false);
+    confirm_and_run(project_root, "Remove this bundle provenance?", apply_args)
+}
+
+fn bundle_remove_args(choice: &BundleProvenanceChoice, global: bool, dry_run: bool) -> Vec<String> {
+    let mut args = vec![
+        "bundle".to_owned(),
+        "remove".to_owned(),
+        choice.name.clone(),
+        "--source".to_owned(),
+        choice.source.clone(),
+    ];
+    if global {
+        args.push("--global".to_owned());
+    }
+    if dry_run {
+        args.push("--dry-run".to_owned());
+    }
+    args
+}
+
+fn bundle_provenance_choices_from_config_path(
+    config_path: &Path,
+) -> Result<Vec<BundleProvenanceChoice>> {
+    if !config_path.exists() {
+        return Ok(Vec::new());
+    }
+    let value = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(config_path)
+            .with_context(|| format!("failed to read {}", config_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    Ok(bundle_provenance_choices_from_value(&value))
+}
+
+fn bundle_provenance_choices_from_value(value: &serde_json::Value) -> Vec<BundleProvenanceChoice> {
+    let mut choices = BTreeSet::new();
+    let Some(dependencies) = value
+        .get("dependencies")
+        .and_then(|value| value.as_object())
+    else {
+        return Vec::new();
+    };
+    for dependency in dependencies.values() {
+        let Some(bundles) = dependency.get("bundles").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for bundle in bundles {
+            let (Some(name), Some(source)) = (
+                bundle.get("name").and_then(|value| value.as_str()),
+                bundle.get("source").and_then(|value| value.as_str()),
+            ) else {
+                continue;
+            };
+            choices.insert(BundleProvenanceChoice {
+                name: name.to_owned(),
+                source: source.to_owned(),
+            });
+        }
+    }
+    choices.into_iter().collect()
 }
 
 fn run_attach_agent_flow(project_root: &Path) -> Result<()> {
@@ -663,8 +760,9 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bundle_add_args, config_path_for_scope, default_agent_indexes, merge_agent_options,
-        wizard_intents, write_default_agents_config, ConfigScope, Intent,
+        bundle_add_args, bundle_provenance_choices_from_value, bundle_remove_args,
+        config_path_for_scope, default_agent_indexes, merge_agent_options, wizard_intents,
+        write_default_agents_config, BundleProvenanceChoice, ConfigScope, Intent,
     };
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
@@ -698,6 +796,67 @@ mod tests {
                 "claude-code",
                 "--global",
                 "--dry-run"
+            ]
+        );
+    }
+
+    #[test]
+    fn wizard_intents_include_remove_bundle() {
+        assert!(wizard_intents().contains(&Intent::RemoveBundle));
+    }
+
+    #[test]
+    fn bundle_remove_args_include_exact_source_scope_and_dry_run() {
+        let choice = BundleProvenanceChoice {
+            name: "review-workflow".to_owned(),
+            source: "./bundle".to_owned(),
+        };
+
+        assert_eq!(
+            bundle_remove_args(&choice, true, true),
+            vec![
+                "bundle",
+                "remove",
+                "review-workflow",
+                "--source",
+                "./bundle",
+                "--global",
+                "--dry-run"
+            ]
+        );
+    }
+
+    #[test]
+    fn bundle_provenance_choices_are_unique_exact_name_source_pairs() {
+        let value = serde_json::json!({
+            "dependencies": {
+                "review": {
+                    "bundles": [
+                        { "name": "baseline", "source": "./bundle-a" },
+                        { "name": "baseline", "source": "./bundle-a" }
+                    ]
+                },
+                "qa": {
+                    "bundles": [
+                        { "name": "baseline", "source": "./bundle-b" }
+                    ]
+                }
+            }
+        });
+
+        let choices = bundle_provenance_choices_from_value(&value);
+
+        assert_eq!(
+            choices,
+            vec![
+                BundleProvenanceChoice {
+                    name: "baseline".to_owned(),
+                    source: "./bundle-a".to_owned(),
+                },
+                BundleProvenanceChoice {
+                    name: "baseline".to_owned(),
+                    source: "./bundle-b".to_owned(),
+                }
             ]
         );
     }
