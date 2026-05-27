@@ -68,7 +68,7 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `inspect` | Read a bundle manifest and print normalized entry sources. Read-only. |
 | `add` | Add every bundle entry to the selected agents. Aborts on any conflict. |
 | `remove` | Remove local bundle provenance and delete only bundle-managed dependencies whose last provenance is removed. |
-| `sync` | Preview latest manifest membership drift and apply added/adopted entries for an already-added bundle. Removal apply is planned separately. |
+| `sync` | Preview and apply manifest membership drift for an already-added bundle. Source changes and missing agents block writes. |
 | `export` | Generate `sksync.bundle.json` from current project or global dependencies. |
 
 | Flag | Meaning |

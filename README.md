@@ -329,7 +329,7 @@ cargo run -- bundle remove review-workflow
 
 `bundle add` is all-or-nothing at the config/lockfile level. Existing dependencies with the same normalized source are adopted and keep `managedByBundles: false`, so `bundle remove` later detaches provenance without deleting manually managed dependencies. Existing dependencies with the same skill name but a different source are reported as conflicts and nothing is written.
 
-`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync can apply added entries and same-source manual adoptions; removal/detach sync apply is planned separately. Existing skill content updates remain the responsibility of `sksync update`.
+`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync applies safe membership changes: added entries become dependencies, same-source manual dependencies are adopted, bundle-managed deleted entries are removed, and manual/adopted deleted entries only lose bundle provenance. Existing skill content updates remain the responsibility of `sksync update`.
 
 Authoring tips:
 

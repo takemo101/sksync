@@ -2934,6 +2934,15 @@ mod tests {
                   "agents": ["pi"],
                   "bundles": [{ "name": "baseline", "source": "./bundles/a" }]
                 },
+                "multi-bundle": {
+                  "source": "./multi",
+                  "agents": ["pi"],
+                  "bundles": [
+                    { "name": "baseline", "source": "./bundles/a" },
+                    { "name": "other", "source": "./bundles/other" }
+                  ],
+                  "managedByBundles": true
+                },
                 "adopt-me": {
                   "source": "./adopt",
                   "agents": ["claude"]
@@ -2984,6 +2993,7 @@ mod tests {
                 "source-changed",
                 "add",
                 "adopt",
+                "detach-provenance",
                 "detach-provenance",
                 "remove"
             ]

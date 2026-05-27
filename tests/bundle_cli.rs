@@ -296,6 +296,114 @@ fn bundle_sync_adopts_manual_same_source_entry() {
 }
 
 #[test]
+fn bundle_sync_removes_deleted_bundle_managed_entry() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" }
+          }
+        }"#,
+    )
+    .expect("write updated bundle manifest");
+
+    assert_success(sksync(root, &["bundle", "sync", "review-workflow"]));
+
+    let config = read_project_config(root);
+    assert!(config["dependencies"].get("qa").is_none());
+    assert!(!root.join(".sksync/skills/qa").exists());
+    assert!(!root.join(".agents/skills/qa").exists());
+}
+
+#[test]
+fn bundle_sync_detaches_deleted_manual_adopted_entry() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    fs::create_dir_all(root.join("bundle")).expect("create bundle");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" }
+          }
+        }"#,
+    )
+    .expect("write initial bundle manifest");
+    write_bundle_skill(root, "bundle/skills/review", "review");
+    write_bundle_skill(root, "bundle/skills/qa", "qa");
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    let mut config = read_project_config(root);
+    config["dependencies"].as_object_mut().unwrap().insert(
+        "qa".to_owned(),
+        serde_json::json!({
+            "source": "./bundle/skills/qa",
+            "agents": ["universal"]
+        }),
+    );
+    fs::write(
+        root.join("sksync.config.json"),
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .expect("write config with manual qa");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" },
+            "qa": { "source": "./skills/qa" }
+          }
+        }"#,
+    )
+    .expect("write manifest with qa");
+    assert_success(sksync(root, &["bundle", "sync", "review-workflow"]));
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" }
+          }
+        }"#,
+    )
+    .expect("write manifest without qa");
+
+    assert_success(sksync(root, &["bundle", "sync", "review-workflow"]));
+
+    let config = read_project_config(root);
+    assert!(config["dependencies"]["qa"].get("bundles").is_none());
+    assert_eq!(
+        config["dependencies"]["qa"]["managedByBundles"],
+        serde_json::Value::Null
+    );
+    assert!(root.join(".sksync/skills/qa/SKILL.md").is_file());
+    assert!(fs::symlink_metadata(root.join(".agents/skills/qa"))
+        .expect("qa link")
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
 fn bundle_sync_requires_source_when_name_matches_multiple_sources() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
