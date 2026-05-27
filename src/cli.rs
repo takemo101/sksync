@@ -11,9 +11,10 @@ use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::bundle::{
     apply_bundle_export_plan, build_bundle_export_plan, load_bundle_from_source,
-    validate_bundle_export_plan, BundleAddPlan, BundleExportApplyOptions, BundleExportMode,
-    BundleExportPlan, BundleExportPlanInput, BundleExportResolvedSkill, BundleRemovePlan,
-    BundleRemoveStatus, BundleSyncPlan, BundleSyncSourceResolution,
+    validate_bundle_export_plan, BundleAddPlan, BundleAddPlanItem, BundleAddStatus,
+    BundleExportApplyOptions, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
+    BundleExportResolvedSkill, BundleRemovePlan, BundleRemoveStatus, BundleSyncPlan,
+    BundleSyncSourceResolution, BundleSyncStatus,
 };
 use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -804,6 +805,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     parse_agent_kinds(&args.agents)?;
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let root_dir = if args.global {
         config_root_for_global()?
     } else {
@@ -839,7 +841,122 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
-    bail!("bundle sync apply is not implemented yet; rerun with --dry-run")
+    if plan.has_blockers() {
+        bail!("bundle sync has blocking item(s); rerun with --dry-run for details")
+    }
+    if plan.items.iter().any(|item| {
+        matches!(
+            item.status,
+            BundleSyncStatus::Remove | BundleSyncStatus::DetachProvenance
+        )
+    }) {
+        bail!("bundle sync removal apply is not implemented yet; rerun with --dry-run")
+    }
+
+    let add_plan = bundle_sync_add_plan(&plan, &provenance);
+    if add_plan.items.is_empty() {
+        print_success(format!("Bundle already synchronized: {}", plan.bundle));
+        return Ok(());
+    }
+
+    let config_backup = ConfigFileBackup::capture(&config_path)?;
+    let lockfile_backup = ConfigFileBackup::capture(&lockfile_path)?;
+    let created_skill_names = add_plan
+        .items
+        .iter()
+        .filter(|item| item.status == BundleAddStatus::Create)
+        .map(|item| item.skill_name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut created_skill_dirs = Vec::new();
+    let mut created_link_targets = Vec::new();
+    let sync_result = (|| -> Result<()> {
+        store.apply_bundle_add(&add_plan)?;
+        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+        created_skill_dirs = config
+            .skills
+            .iter()
+            .filter(|skill| created_skill_names.contains(skill.name.as_str()))
+            .filter_map(|skill| {
+                let path = skill.source.as_path();
+                if path.exists() {
+                    None
+                } else {
+                    Some(path.to_path_buf())
+                }
+            })
+            .collect();
+        let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+        apply_update_report_sources(&mut config, &update_report);
+        let fs_store = FileSystemLinkStore;
+        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+        let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+        created_link_targets = link_plan
+            .items
+            .iter()
+            .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
+            .map(|item| item.target.as_path().to_path_buf())
+            .filter(|target| !target.exists())
+            .collect();
+        let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+        apply_link_plan(
+            &link_plan,
+            &lockfile,
+            &fs_store,
+            &FileLockfileStore::new(&lockfile_path),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: true,
+            },
+        )?;
+        print_success(format!("Synchronized bundle: {}", plan.bundle));
+        print_update_report(update_report);
+        print_plan(&link_plan);
+        Ok(())
+    })();
+
+    if let Err(error) = sync_result {
+        cleanup_bundle_add_artifacts(&created_link_targets, &created_skill_dirs);
+        let config_restore = config_backup.restore();
+        let lockfile_restore = lockfile_backup.restore();
+        if let Err(restore_error) = config_restore.and(lockfile_restore) {
+            return Err(error.context(format!(
+                "sksync bundle sync failed and rollback failed: {restore_error}"
+            )));
+        }
+        return Err(
+            error.context("sksync bundle sync failed; restored previous config and lockfile")
+        );
+    }
+
+    Ok(())
+}
+
+fn bundle_sync_add_plan(
+    plan: &BundleSyncPlan,
+    provenance: &crate::domain::bundle::BundleProvenance,
+) -> BundleAddPlan {
+    BundleAddPlan {
+        items: plan
+            .items
+            .iter()
+            .filter_map(|item| {
+                let status = match item.status {
+                    BundleSyncStatus::Add => BundleAddStatus::Create,
+                    BundleSyncStatus::Adopt => BundleAddStatus::Merge,
+                    _ => return None,
+                };
+                Some(BundleAddPlanItem {
+                    skill_name: item.skill_name.clone(),
+                    source: item.manifest_source.clone().unwrap_or_default(),
+                    agents: item.agents.clone(),
+                    provenance: provenance.clone(),
+                    status,
+                    message: item.message.clone(),
+                })
+            })
+            .collect(),
+    }
 }
 
 fn run_bundle_add(args: BundleAddArgs) -> Result<()> {

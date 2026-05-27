@@ -50,7 +50,7 @@ sksync attach <skill> --agent <agent> --global
 
 ## `sksync bundle`
 
-Inspect, add, remove, export, and preview sync drift for curated bundle install sets. Bundles expand into normal dependencies; they are not runtime folders.
+Inspect, add, remove, export, and synchronize curated bundle install sets. Bundles expand into normal dependencies; they are not runtime folders.
 
 ```sh
 sksync bundle inspect <source>
@@ -58,7 +58,7 @@ sksync bundle add <source> --agent <agent> [--agent <agent> …]
 sksync bundle add <source> --agent <agent> --dry-run
 sksync bundle remove <name> [--source <exact-source>]
 sksync bundle remove <name> --dry-run
-sksync bundle sync <name> [--source <exact-source>] --dry-run
+sksync bundle sync <name> [--source <exact-source>] [--agent <agent> …] [--dry-run]
 sksync bundle export <name> --output <dir> [--snapshot]
 sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 ```
@@ -68,12 +68,12 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `inspect` | Read a bundle manifest and print normalized entry sources. Read-only. |
 | `add` | Add every bundle entry to the selected agents. Aborts on any conflict. |
 | `remove` | Remove local bundle provenance and delete only bundle-managed dependencies whose last provenance is removed. |
-| `sync` | Preview latest manifest membership drift for an already-added bundle. Apply is not implemented yet. |
+| `sync` | Preview latest manifest membership drift and apply added/adopted entries for an already-added bundle. Removal apply is planned separately. |
 | `export` | Generate `sksync.bundle.json` from current project or global dependencies. |
 
 | Flag | Meaning |
 |---|---|
-| `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`. |
+| `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`; fallback-only for `bundle sync` when dependency agents cannot be inferred. |
 | `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove` or `bundle sync`. |
 | `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export`. |
 | `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. |
