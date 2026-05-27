@@ -243,7 +243,7 @@ sksync list --global
 
 ## `sksync wizard`
 
-Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, default-agents, list+check, and plan+apply. `ask` and `tui` are compatible aliases.
+Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, Remove bundle, default-agents, list+check, and plan+apply. `ask` and `tui` are compatible aliases.
 
 ```sh
 sksync wizard
