@@ -184,6 +184,36 @@ fn bundle_sync_dry_run_reports_new_manifest_entry_without_writing() {
 }
 
 #[test]
+fn bundle_sync_dry_run_prints_progress_to_stderr() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+
+    let output = sksync(root, &["bundle", "sync", "review-workflow", "--dry-run"]);
+    assert!(
+        output.status.success(),
+        "expected success\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stdout.contains("Bundle sync plan"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("Loading bundle manifest"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("Planning changes"), "stderr: {stderr}");
+}
+
+#[test]
 fn bundle_sync_adds_new_bundle_entry() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();

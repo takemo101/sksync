@@ -785,6 +785,7 @@ fn print_bundle_export_plan(plan: &BundleExportPlan) {
 
 fn run_bundle_inspect(args: BundleInspectArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    print_progress("Loading bundle manifest...");
     let bundle = load_bundle_from_source(&args.source, &current_dir)?;
 
     print_section("Bundle");
@@ -823,6 +824,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
         }
         BundleSyncSourceResolution::NotFound => bail!("bundle provenance not found"),
     };
+    print_progress("Loading bundle manifest...");
     let bundle = load_bundle_from_source(&source, &root_dir)?;
     if bundle.manifest.name != bundle_name {
         bail!(
@@ -835,6 +837,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
         name: bundle_name,
         source,
     };
+    print_progress("Planning changes...");
     let plan = store.plan_bundle_sync(&provenance, &bundle.entries, &args.agents)?;
     print_bundle_sync_plan(&plan);
 
@@ -878,6 +881,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
                     }
                 })
                 .collect();
+            print_progress("Installing skills...");
             let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
             apply_update_report_sources(&mut config, &update_report);
             let fs_store = FileSystemLinkStore;
@@ -892,6 +896,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
                 .filter(|target| !target.exists())
                 .collect();
             let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+            print_progress("Applying links...");
             apply_link_plan(
                 &link_plan,
                 &lockfile,
@@ -918,6 +923,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
                 lockfile_path: &lockfile_path,
                 removal_plan: &removal_plan,
             };
+            print_progress("Removing bundle-managed skills...");
             store.detach_bundle_provenance(&remove_plan)?;
             let remove_args = RemoveArgs {
                 skills: Vec::new(),
@@ -1026,8 +1032,10 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
     } else {
         current_dir.clone()
     };
+    print_progress("Loading bundle manifest...");
     let bundle = load_bundle_from_source(&args.source, &root_dir)?;
     let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    print_progress("Planning changes...");
     let plan = store.plan_bundle_add(&bundle.entries, &args.agents, &bundle.provenance)?;
     print_bundle_add_plan(&plan);
 
@@ -1067,6 +1075,7 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
                 }
             })
             .collect();
+        print_progress("Installing skills...");
         let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
         apply_update_report_sources(&mut config, &update_report);
         let fs_store = FileSystemLinkStore;
@@ -1081,6 +1090,7 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
             .filter(|target| !target.exists())
             .collect();
         let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+        print_progress("Applying links...");
         apply_link_plan(
             &link_plan,
             &lockfile,
@@ -1166,6 +1176,7 @@ fn run_bundle_remove(args: BundleRemoveArgs) -> Result<()> {
             lockfile_path: &lockfile_path,
             removal_plan: &removal_plan,
         };
+        print_progress("Removing bundle-managed skills...");
         store.detach_bundle_provenance(&plan)?;
         let remove_args = RemoveArgs {
             skills: Vec::new(),
@@ -1549,6 +1560,7 @@ fn run_add(args: AddArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
+    print_progress("Resolving skill source...");
     let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
@@ -1563,6 +1575,7 @@ fn run_add(args: AddArgs) -> Result<()> {
         };
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+        print_progress("Installing skills...");
         let report = run_add_workflow(
             selections,
             &args.agents,
@@ -1609,6 +1622,7 @@ fn run_attach(args: AttachArgs) -> Result<()> {
             FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
         let agents = store.add_dependency_agents(&args.skill, &args.agents)?;
         let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+        print_progress("Installing skills...");
         let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
         apply_update_report_sources(&mut config, &update_report);
         let fs_store = FileSystemLinkStore;
@@ -1621,6 +1635,7 @@ fn run_attach(args: AttachArgs) -> Result<()> {
         let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
         let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
         let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+        print_progress("Applying links...");
         apply_link_plan(
             &plan,
             &lockfile,
@@ -2015,17 +2030,20 @@ impl RemoteRefResolver for GitRemoteRefResolver {
 }
 
 fn run_plan(args: PlanArgs) -> Result<()> {
+    print_progress("Planning links...");
     let (_config, plan, _current_dir) = load_plan(args.global)?;
     print_plan(&plan);
     Ok(())
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
+    print_progress("Planning links...");
     let (config, plan, current_dir) = load_plan(args.global)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &current_dir)?;
     let fs_store = FileSystemLinkStore;
     let lockfile_store = FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?);
 
+    print_progress("Applying links...");
     apply_link_plan(
         &plan,
         &lockfile,
@@ -2050,13 +2068,16 @@ fn run_install(args: InstallArgs) -> Result<()> {
         let lockfile = read_lockfile(&lockfile_path)?;
         apply_locked_install_sources(&mut config, &lockfile);
     }
+    print_progress("Installing skills...");
     let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
     apply_update_report_sources(&mut config, &report);
     print_update_report(report);
+    print_progress("Planning links...");
     let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
     let fs_store = FileSystemLinkStore;
     let lockfile_store = FileLockfileStore::new(lockfile_path);
+    print_progress("Applying links...");
     apply_link_plan(
         &plan,
         &lockfile,
@@ -2075,9 +2096,11 @@ fn run_install(args: InstallArgs) -> Result<()> {
 fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let mut config = load_config_for_scope(args.global, &current_dir)?;
+    print_progress("Installing skills...");
     let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
     apply_update_report_sources(&mut config, &report);
     print_update_report(report);
+    print_progress("Planning links...");
     let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
@@ -2600,6 +2623,22 @@ fn print_info(message: impl AsRef<str>) {
     println!("ℹ {}", message.as_ref());
 }
 
+fn print_progress(message: impl AsRef<str>) {
+    eprintln!(
+        "{}",
+        format_progress_message(message.as_ref(), std::io::stderr().is_terminal())
+    );
+}
+
+fn format_progress_message(message: &str, color: bool) -> String {
+    let plain = format!("→ {message}");
+    if color {
+        format!("\u{1b}[36m{plain}\u{1b}[0m")
+    } else {
+        plain
+    }
+}
+
 fn print_detail(message: impl AsRef<str>) {
     println!("  {}", message.as_ref());
 }
@@ -2747,10 +2786,10 @@ fn run_wizard() -> Result<()> {
 mod tests {
     use super::{
         agent_target_mappings_from_config, compact_revision, compact_source, copy_dir_all,
-        format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
-        list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
-        scan_import_candidates, score_skill_choice, select_skill_candidates, truncate_middle, Cli,
-        Command, ConfigFileBackup,
+        format_progress_message, format_selected_skill_choices, global_config_root_from_home,
+        is_managed_skill_dir, list_state_label, reject_legacy_registry_source,
+        remove_installed_skill_dir, scan_import_candidates, score_skill_choice,
+        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup,
     };
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
@@ -2761,6 +2800,18 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn progress_message_is_colored_only_for_terminal_stderr() {
+        assert_eq!(
+            format_progress_message("Installing skills...", false),
+            "→ Installing skills..."
+        );
+        assert_eq!(
+            format_progress_message("Installing skills...", true),
+            "\u{1b}[36m→ Installing skills...\u{1b}[0m"
+        );
+    }
 
     #[test]
     fn cli_definition_is_valid() {

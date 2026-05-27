@@ -2,7 +2,7 @@
 
 Full reference for the sksync CLI. Commands are shown as `sksync <command>`; from a clone the equivalent is `cargo run -- <command>`.
 
-Most commands accept `--global` to operate on `~/.sksync/config.json` (user scope) instead of the project's `sksync.config.json`.
+Most commands accept `--global` to operate on `~/.sksync/config.json` (user scope) instead of the project's `sksync.config.json`. Long-running operations print short progress phase messages to stderr; command results and tables remain on stdout.
 
 [[toc]]
 

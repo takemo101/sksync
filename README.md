@@ -104,6 +104,8 @@ cargo run -- wizard
 
 After `cargo build`, you can also run `./target/debug/sksync ...`.
 
+Long-running operations print short progress phase messages to stderr, while command results and tables remain on stdout.
+
 ### `sksync init`
 
 Create a starter config for a new project.
