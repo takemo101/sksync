@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
 use serde_json::json;
 
+use crate::application::bundle::load_bundle_from_source;
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::ConfigStore;
 use crate::infrastructure::json::{
@@ -18,6 +19,7 @@ enum Intent {
     AttachAgent,
     RemoveSkill,
     RemoveAgent,
+    AddBundle,
     Status,
     Apply,
     ConfigureDefaultAgents,
@@ -31,6 +33,7 @@ impl fmt::Display for Intent {
             Self::AttachAgent => "Attach skill to agent",
             Self::RemoveSkill => "Remove skill",
             Self::RemoveAgent => "Detach skill from agent",
+            Self::AddBundle => "Add bundle",
             Self::Status => "Show status",
             Self::Apply => "Apply links",
             Self::ConfigureDefaultAgents => "Configure default agents",
@@ -90,32 +93,35 @@ impl fmt::Display for RemoveMode {
     }
 }
 
+fn wizard_intents() -> Vec<Intent> {
+    vec![
+        Intent::AddSkill,
+        Intent::AttachAgent,
+        Intent::RemoveSkill,
+        Intent::RemoveAgent,
+        Intent::AddBundle,
+        Intent::Status,
+        Intent::Apply,
+        Intent::ConfigureDefaultAgents,
+        Intent::Quit,
+    ]
+}
+
 pub fn run(project_root: PathBuf) -> Result<()> {
     println!("sksync wizard");
     println!("Project: {}", project_root.display());
 
     loop {
-        let intent = Select::new(
-            "What would you like to do?",
-            vec![
-                Intent::AddSkill,
-                Intent::AttachAgent,
-                Intent::RemoveSkill,
-                Intent::RemoveAgent,
-                Intent::Status,
-                Intent::Apply,
-                Intent::ConfigureDefaultAgents,
-                Intent::Quit,
-            ],
-        )
-        .prompt()
-        .context("failed to read wizard selection")?;
+        let intent = Select::new("What would you like to do?", wizard_intents())
+            .prompt()
+            .context("failed to read wizard selection")?;
 
         match intent {
             Intent::AddSkill => run_add_flow(&project_root)?,
             Intent::AttachAgent => run_attach_agent_flow(&project_root)?,
             Intent::RemoveSkill => run_remove_flow(&project_root)?,
             Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
+            Intent::AddBundle => run_add_bundle_flow(&project_root)?,
             Intent::Status => run_status_flow(&project_root)?,
             Intent::Apply => run_apply_flow(&project_root)?,
             Intent::ConfigureDefaultAgents => run_configure_default_agents_flow(&project_root)?,
@@ -150,6 +156,57 @@ fn run_add_flow(project_root: &Path) -> Result<()> {
     }
 
     confirm_and_run(project_root, "Run this command?", args)
+}
+
+fn run_add_bundle_flow(project_root: &Path) -> Result<()> {
+    let source = prompt_required("Bundle source")?;
+    let scope = prompt_config_scope("Where should this bundle be added?")?;
+    let root_dir = if scope.is_global() {
+        global_config_root()?
+    } else {
+        project_root.to_path_buf()
+    };
+    let bundle = load_bundle_from_source(&source, &root_dir)?;
+
+    println!("Bundle");
+    println!("Name: {}", bundle.manifest.name);
+    println!("Description: {}", bundle.manifest.description);
+    println!("Source: {}", bundle.provenance.source);
+    println!("Entries ({})", bundle.entries.len());
+    for entry in &bundle.entries {
+        println!(
+            "- {}: {} -> {}",
+            entry.skill_name, entry.original_source, entry.normalized_source
+        );
+    }
+    if !prompt_confirm("Continue with this bundle?", true)? {
+        return Ok(());
+    }
+
+    let config = load_optional_config_for_scope(project_root, scope)?;
+    let default_agents = default_agents_from_config(config.as_ref());
+    let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
+    let dry_run_args = bundle_add_args(&source, &agents, scope.is_global(), true);
+    println!("dry-run plan:");
+    run_sksync(project_root, &dry_run_args)?;
+
+    let apply_args = bundle_add_args(&source, &agents, scope.is_global(), false);
+    confirm_and_run(project_root, "Add this bundle?", apply_args)
+}
+
+fn bundle_add_args(source: &str, agents: &[String], global: bool, dry_run: bool) -> Vec<String> {
+    let mut args = vec!["bundle".to_owned(), "add".to_owned(), source.to_owned()];
+    for agent in agents {
+        args.push("--agent".to_owned());
+        args.push(agent.clone());
+    }
+    if global {
+        args.push("--global".to_owned());
+    }
+    if dry_run {
+        args.push("--dry-run".to_owned());
+    }
+    args
 }
 
 fn run_attach_agent_flow(project_root: &Path) -> Result<()> {
@@ -606,8 +663,8 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        config_path_for_scope, default_agent_indexes, merge_agent_options,
-        write_default_agents_config, ConfigScope,
+        bundle_add_args, config_path_for_scope, default_agent_indexes, merge_agent_options,
+        wizard_intents, write_default_agents_config, ConfigScope, Intent,
     };
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
@@ -616,6 +673,34 @@ mod tests {
     use crate::infrastructure::json::AgentMappingConfig;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn wizard_intents_include_add_bundle() {
+        assert!(wizard_intents().contains(&Intent::AddBundle));
+    }
+
+    #[test]
+    fn bundle_add_args_include_agents_scope_and_dry_run() {
+        assert_eq!(
+            bundle_add_args(
+                "./bundle",
+                &["pi".to_owned(), "claude-code".to_owned()],
+                true,
+                true,
+            ),
+            vec![
+                "bundle",
+                "add",
+                "./bundle",
+                "--agent",
+                "pi",
+                "--agent",
+                "claude-code",
+                "--global",
+                "--dry-run"
+            ]
+        );
+    }
 
     #[test]
     fn project_scope_uses_project_config_path() {
