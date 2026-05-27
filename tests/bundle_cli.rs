@@ -133,6 +133,141 @@ fn bundle_add_and_remove_flow_manages_dependencies_files_and_symlinks() {
 }
 
 #[test]
+fn bundle_sync_dry_run_reports_new_manifest_entry_without_writing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    write_bundle_skill(root, "bundle/skills/lint", "lint");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" },
+            "qa": { "source": "./skills/qa" },
+            "lint": { "source": "./skills/lint" }
+          }
+        }"#,
+    )
+    .expect("write updated bundle manifest");
+    let config_before = fs::read_to_string(root.join("sksync.config.json")).unwrap();
+    let lock_before = fs::read_to_string(root.join("sksync-lock.json")).unwrap();
+
+    let output = sksync(root, &["bundle", "sync", "review-workflow", "--dry-run"]);
+    assert!(
+        output.status.success(),
+        "expected success\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(stdout.contains("add lint"), "stdout: {stdout}");
+    assert!(stdout.contains("keep: 2"), "stdout: {stdout}");
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.config.json")).unwrap(),
+        config_before
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("sksync-lock.json")).unwrap(),
+        lock_before
+    );
+    assert!(!root.join(".sksync/skills/lint").exists());
+    assert!(!root.join(".agents/skills/lint").exists());
+}
+
+#[test]
+fn bundle_sync_requires_source_when_name_matches_multiple_sources() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    fs::write(
+        root.join("sksync.config.json"),
+        r#"{
+          "skillDir": "./.sksync/skills",
+          "dependencies": {
+            "one": {
+              "source": "./one",
+              "agents": ["pi"],
+              "bundles": [{ "name": "review-workflow", "source": "./bundle-a" }],
+              "managedByBundles": true
+            },
+            "two": {
+              "source": "./two",
+              "agents": ["pi"],
+              "bundles": [{ "name": "review-workflow", "source": "./bundle-b" }],
+              "managedByBundles": true
+            }
+          }
+        }"#,
+    )
+    .expect("write config");
+
+    let error = assert_failure(sksync(
+        root,
+        &["bundle", "sync", "review-workflow", "--dry-run"],
+    ));
+
+    assert!(error.contains("ambiguous"), "error: {error}");
+    assert!(error.contains("--source <exact-source>"), "error: {error}");
+}
+
+#[test]
+fn bundle_sync_reports_not_found_without_local_provenance() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+
+    let error = assert_failure(sksync(
+        root,
+        &["bundle", "sync", "missing-workflow", "--dry-run"],
+    ));
+
+    assert!(
+        error.contains("bundle provenance not found"),
+        "error: {error}"
+    );
+}
+
+#[test]
+fn bundle_sync_aborts_when_manifest_name_changed() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "renamed-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" },
+            "qa": { "source": "./skills/qa" }
+          }
+        }"#,
+    )
+    .expect("write renamed manifest");
+
+    let error = assert_failure(sksync(
+        root,
+        &["bundle", "sync", "review-workflow", "--dry-run"],
+    ));
+
+    assert!(error.contains("manifest name changed"), "error: {error}");
+}
+
+#[test]
 fn bundle_add_conflict_leaves_config_and_files_unchanged() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();

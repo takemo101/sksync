@@ -118,7 +118,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 
 Source strings should stay compact. `sksync add <source> --agent <agent>` updates `dependencies` and then runs install/apply behavior. With `--global`, it updates `~/.sksync/config.json`.
 
-`defaultAgents` is used only by the wizard to preselect agents in the `Add skill` flow. CLI `add` still requires explicit `--agent` arguments for compatibility and clarity.
+`defaultAgents` is used only by the wizard to preselect agents in `Add skill` and `Add bundle` flows. CLI `add` and `bundle add` still require explicit `--agent` arguments for compatibility and clarity.
 
 Bundle-added dependencies may include `bundles` provenance and `managedByBundles`. Missing `managedByBundles` means `false`. Manual dependencies keep `managedByBundles: false` when a bundle with the same source adopts them, so `sksync bundle remove` only detaches provenance instead of deleting the dependency.
 
@@ -204,6 +204,20 @@ Bundle manifests do not contain agents. `sksync bundle add <source> --agent ...`
 Bundle add planning reports `create`, `merge`, `conflict`, and `skipped`. Any conflict aborts the whole add before writes. Bundle remove planning reports `remove`, `detach-provenance`, `ambiguous`, and `not-found`. Dependencies created by bundles use `managedByBundles: true`; manual dependencies adopted by matching source keep `managedByBundles: false`, so removing the bundle only detaches provenance.
 
 Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance. Bundle provenance is local UX/config metadata, not content reproducibility state.
+
+#### Bundle sync
+
+```sh
+sksync bundle sync <name> [--source <exact-source>] [--global] [--agent <agent>...] [--dry-run]
+```
+
+`bundle sync` follows changes in bundle manifest membership for one named bundle at a time. It compares the latest manifest for a bundle source with local dependencies that record the same bundle name and exact source. If no matching local bundle provenance exists, sync fails as not found. If the bundle name exists locally for multiple sources, the user must pass `--source <exact-source>` to disambiguate. If the reloaded manifest declares a different bundle name than the requested local provenance, sync aborts before writes rather than silently renaming local provenance. Sync does not refresh content for existing kept entries; `sksync update` remains responsible for dependency content updates.
+
+The sync plan reports changed or blocking items first: `add`, `adopt`, `remove`, `detach-provenance`, `source-changed`, and `missing-agents`. Unchanged manifest entries are counted as `keep` in the summary rather than printed as noisy per-entry rows by default. Any blocking status aborts apply before writes.
+
+When sync discovers a new manifest entry, the new dependency uses the deduplicated union of dependency agents from other local dependencies with the same bundle name and exact source. If a same-name dependency already exists with the same or equivalent source, sync adopts it by adding bundle provenance, union-merging the inferred dependency agents, and leaving it manual rather than bundle-managed. If no agents can be inferred for a new dependency, the sync plan reports a blocking `missing-agents` item until the user supplies agents explicitly. CLI `--agent` values are a fallback for this inference failure, not an override for a bundle installation that already has inferable agents. `--dry-run` should preview all manifest drift and blockers without mutating config, lockfile, installed skill bodies, or symlinks.
+
+When sync discovers a local dependency whose matching bundle entry disappeared from the latest manifest, it applies the same safety rule as bundle removal: bundle-managed dependencies may be removed when no other bundle provenance remains, while manual or adopted dependencies only lose the matching bundle provenance. Sync does not silently apply source changes. If a manifest entry points to a different source than the local dependency with the same skill name, sync reports a blocking `source-changed` status with the local and manifest sources, then aborts before writes.
 
 #### Bundle export
 
@@ -397,6 +411,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 | `sksync remove <skills...>` | `npm uninstall` | Remove one or more dependencies, installed files, lockfile entries, and managed symlinks. |
 | `sksync remove <skill> --agent <agent>` | optional dependency removal | Remove only selected agent targets/symlinks. |
 | `sksync outdated` | `npm outdated` | Compare lockfile resolved sources with upstream/latest. |
+| `sksync bundle inspect/add/remove/export/sync` | npm workspace/package-set operations | Manage curated bundle install sets and follow bundle manifest membership drift. |
 | `sksync apply` | sksync-specific | Reflect installed skills into agent targets. |
 | `sksync check` | `npm ls` / health check | Check lockfile hash, source, and target symlink drift. |
 | `sksync doctor` | health check | Read-only diagnosis of config, lockfile, source, target, and mapping problems. |
@@ -415,6 +430,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 - `remove <skills...>`: remove config entries, installed files, managed symlinks, and lockfile entries; support `--keep-files`, `--config-only`, and `--global`.
 - `remove <skill> --agent <agent>`: remove selected agent symlinks and targets only; full removal if the last agent is removed.
 - `outdated`: compare Git lockfile commits with remote ref HEAD; support `--global` and `--json`.
+- `bundle`: inspect/add/remove/export curated install sets; `bundle sync` follows manifest membership drift for one named bundle at a time with `--dry-run` preview.
 - `apply`: resolve targets, detect conflicts, create/update symlinks, and write lockfile; `--force` only allows safe replacement of sksync-managed links.
 - `check`: compare config, lockfile, hashes, sources, and symlink health.
 - `doctor`: read-only comprehensive diagnosis with suggested next commands, never automatic repair.
@@ -424,7 +440,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 
 ## 8. Wizard design
 
-`sksync wizard` is an interactive prompt wizard. Its purpose is to safely add/remove skills without requiring users to remember command-line flags. `sksync ask` and `sksync tui` remain aliases.
+`sksync wizard` is an interactive prompt wizard. Its purpose is to safely add/remove skills and bundles without requiring users to remember command-line flags. `sksync ask` and `sksync tui` remain aliases.
 
 Example flow:
 
@@ -434,6 +450,8 @@ Example flow:
     Attach skill to agent
     Remove skill
     Detach skill from agent
+    Add bundle
+    Remove bundle
     Configure default agents
     Show status
     Apply links
@@ -464,6 +482,8 @@ Planned changes:
 | attach to agent | project/global scope, configured skill list, available agent list | `attach` |
 | remove skill | project/global scope, configured skill list, remove mode | `remove` |
 | detach from agent | project/global scope, configured skill list, configured agent list | `remove --agent` |
+| add bundle | bundle source, manifest preview, project/global scope, agent list, plan confirmation | `bundle add` |
+| remove bundle | project/global scope, exact bundle provenance selection, plan confirmation | `bundle remove` |
 | default agents | project/global scope, agent list | config update |
 | status | global scope, output detail | `list` / `check` |
 | apply | global scope, force, confirmation | `plan` -> `apply` |
@@ -478,7 +498,10 @@ Planned changes:
 - Destructive operations require plan/summary and explicit confirmation.
 - TUI state is temporary prompt state only.
 - Persistent state lives only in config, lockfile, or local state.
-- `Add skill` uses config `defaultAgents` as initial selection, but the user can change it each time.
+- `Add skill` and `Add bundle` use config `defaultAgents` as initial selection, but the user can change it each time.
+- `Add bundle` loads the manifest after source entry, shows the bundle name, description, and entries, and asks the user to continue before agent selection.
+- `Remove bundle` lists exact bundle provenance choices as `name — source` so same-name bundles from different sources are never ambiguous in the wizard.
+- Bundle wizard flows stop at add/remove for the first bundle UX iteration; `bundle sync` starts as a CLI flow with dry-run preview.
 - Status uses `list` / `check` summaries; there is no persistent screen UI.
 
 ## 9. Safety rules

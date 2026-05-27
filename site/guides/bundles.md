@@ -22,12 +22,15 @@ sksync bundle add ./bundles/review-workflow --agent pi --agent claude-code --dry
 # 3. Install all entries into the chosen agents.
 sksync bundle add ./bundles/review-workflow --agent pi --agent claude-code
 
-# 4. Later, remove the bundle's local provenance.
+# 4. Later, preview bundle manifest membership drift.
+sksync bundle sync review-workflow --dry-run
+
+# 5. Later, remove the bundle's local provenance.
 sksync bundle remove review-workflow --dry-run
 sksync bundle remove review-workflow
 ```
 
-`bundle add` and `bundle remove` accept `--global` to use `~/.sksync/config.json` and global agent targets. `bundle inspect` is manifest-only and has no scope flag.
+`bundle add`, `bundle remove`, and `bundle sync` accept `--global` to use `~/.sksync/config.json` and global agent targets. `bundle inspect` is manifest-only and has no scope flag. `bundle sync` is currently preview-only with `--dry-run`; applying sync changes is planned separately.
 
 ## Manifest
 
@@ -123,6 +126,42 @@ merge qa <- https://github.com/org/qa-skills/tree/main/skills/qa
 | `skipped` | The requested agents and bundle provenance are already present. |
 
 Any conflict aborts the whole add. Config and lockfile writes are rolled back on failure, and sksync best-effort cleans up artifacts it created during the failed operation.
+
+## Sync dry-run statuses
+
+`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift. It follows manifest membership only; existing skill content updates remain the responsibility of `sksync update`.
+
+```sh
+sksync bundle sync review-workflow --dry-run
+```
+
+Example dry-run output:
+
+```text
+Bundle sync plan (1)
+Bundle: review-workflow
+Source: ./bundles/review-workflow
+keep: 2
+add lint <- ./bundles/review-workflow/skills/lint
+  agents: pi, claude-code
+```
+
+| Status | Meaning |
+|---|---|
+| `add` | A manifest entry is new locally and would become a normal dependency. |
+| `adopt` | A same-source manual dependency exists and would receive bundle provenance. |
+| `remove` | A bundle-managed dependency disappeared from the manifest and would be removed when sync apply exists. |
+| `detach-provenance` | A manual or adopted dependency disappeared from the manifest and would only lose bundle provenance. |
+| `source-changed` | The manifest source differs from the local dependency source. This is blocking. |
+| `missing-agents` | New entries need dependency agents, but none could be inferred. This is blocking. |
+
+If the same bundle name appears from multiple stored sources, disambiguate with the exact source shown in config:
+
+```sh
+sksync bundle sync review-workflow --source ./bundles/review-workflow --dry-run
+```
+
+The current implementation previews sync drift only. Non-dry-run sync apply is planned separately.
 
 ## Remove and dry-run statuses
 

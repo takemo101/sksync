@@ -13,7 +13,7 @@ use crate::application::bundle::{
     apply_bundle_export_plan, build_bundle_export_plan, load_bundle_from_source,
     validate_bundle_export_plan, BundleAddPlan, BundleExportApplyOptions, BundleExportMode,
     BundleExportPlan, BundleExportPlanInput, BundleExportResolvedSkill, BundleRemovePlan,
-    BundleRemoveStatus,
+    BundleRemoveStatus, BundleSyncPlan, BundleSyncSourceResolution,
 };
 use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -186,6 +186,8 @@ enum BundleCommand {
     Add(BundleAddArgs),
     /// Remove local dependency provenance for a bundle.
     Remove(BundleRemoveArgs),
+    /// Synchronize local bundle provenance with the latest bundle manifest.
+    Sync(BundleSyncArgs),
     /// Export current dependencies as a bundle manifest.
     Export(BundleExportArgs),
 }
@@ -218,6 +220,24 @@ struct BundleRemoveArgs {
     /// Exact stored bundle source to disambiguate duplicate bundle names.
     #[arg(long)]
     source: Option<String>,
+    /// Use ~/.sksync/config.json instead of project config.
+    #[arg(long)]
+    global: bool,
+    /// Show what would change without writing files or config.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct BundleSyncArgs {
+    /// Bundle name to synchronize from local provenance.
+    name: String,
+    /// Exact stored bundle source to disambiguate duplicate bundle names.
+    #[arg(long)]
+    source: Option<String>,
+    /// Agent fallback for new entries when dependency agents cannot be inferred.
+    #[arg(short, long = "agent")]
+    agents: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
@@ -621,6 +641,7 @@ fn run_bundle(args: BundleArgs) -> Result<()> {
         BundleCommand::Inspect(args) => run_bundle_inspect(args),
         BundleCommand::Add(args) => run_bundle_add(args),
         BundleCommand::Remove(args) => run_bundle_remove(args),
+        BundleCommand::Sync(args) => run_bundle_sync(args),
         BundleCommand::Export(args) => run_bundle_export(args),
     }
 }
@@ -777,6 +798,48 @@ fn run_bundle_inspect(args: BundleInspectArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
+    parse_agent_kinds(&args.agents)?;
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config_path = config_path_for(args.global, &current_dir)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let bundle_name = BundleName::new(args.name.clone()).context("invalid bundle name")?;
+    let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
+    let source = match store.resolve_bundle_sync_source(&bundle_name, args.source.as_deref())? {
+        BundleSyncSourceResolution::Resolved(source) => source,
+        BundleSyncSourceResolution::Ambiguous(sources) => {
+            bail!(
+                "bundle sync is ambiguous; pass --source <exact-source> (matches: {})",
+                sources.join(", ")
+            )
+        }
+        BundleSyncSourceResolution::NotFound => bail!("bundle provenance not found"),
+    };
+    let bundle = load_bundle_from_source(&source, &root_dir)?;
+    if bundle.manifest.name != bundle_name {
+        bail!(
+            "bundle manifest name changed from {} to {}; aborting sync",
+            bundle_name,
+            bundle.manifest.name
+        );
+    }
+    let provenance = crate::domain::bundle::BundleProvenance {
+        name: bundle_name,
+        source,
+    };
+    let plan = store.plan_bundle_sync(&provenance, &bundle.entries, &args.agents)?;
+    print_bundle_sync_plan(&plan);
+
+    if args.dry_run {
+        return Ok(());
+    }
+    bail!("bundle sync apply is not implemented yet; rerun with --dry-run")
 }
 
 fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
@@ -996,6 +1059,40 @@ fn print_bundle_remove_plan(plan: &BundleRemovePlan) {
             .or(plan.source.as_deref())
             .unwrap_or("*");
         println!("{} {} ({source})", item.status.as_str(), item.skill_name);
+        if let Some(message) = &item.message {
+            println!("  ! {message}");
+        }
+    }
+}
+
+fn print_bundle_sync_plan(plan: &BundleSyncPlan) {
+    print_section_with_count("Bundle sync plan", plan.items.len());
+    println!("Bundle: {}", plan.bundle);
+    println!("Source: {}", plan.source);
+    println!("keep: {}", plan.keep_count);
+    for item in &plan.items {
+        match (&item.local_source, &item.manifest_source) {
+            (Some(local), Some(manifest)) => println!(
+                "{} {} (local: {}, manifest: {})",
+                item.status.as_str(),
+                item.skill_name,
+                local,
+                manifest
+            ),
+            (Some(local), None) => {
+                println!("{} {} ({})", item.status.as_str(), item.skill_name, local)
+            }
+            (None, Some(manifest)) => println!(
+                "{} {} <- {}",
+                item.status.as_str(),
+                item.skill_name,
+                manifest
+            ),
+            (None, None) => println!("{} {}", item.status.as_str(), item.skill_name),
+        }
+        if !item.agents.is_empty() {
+            println!("  agents: {}", item.agents.join(", "));
+        }
         if let Some(message) = &item.message {
             println!("  ! {message}");
         }

@@ -122,6 +122,64 @@ impl BundleRemovePlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleSyncStatus {
+    Add,
+    Adopt,
+    Remove,
+    DetachProvenance,
+    SourceChanged,
+    MissingAgents,
+}
+
+impl BundleSyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Adopt => "adopt",
+            Self::Remove => "remove",
+            Self::DetachProvenance => "detach-provenance",
+            Self::SourceChanged => "source-changed",
+            Self::MissingAgents => "missing-agents",
+        }
+    }
+
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::SourceChanged | Self::MissingAgents)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleSyncPlanItem {
+    pub skill_name: String,
+    pub status: BundleSyncStatus,
+    pub local_source: Option<String>,
+    pub manifest_source: Option<String>,
+    pub agents: Vec<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleSyncPlan {
+    pub bundle: BundleName,
+    pub source: String,
+    pub items: Vec<BundleSyncPlanItem>,
+    pub keep_count: usize,
+}
+
+impl BundleSyncPlan {
+    pub fn has_blockers(&self) -> bool {
+        self.items.iter().any(|item| item.status.is_blocking())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleSyncSourceResolution {
+    Resolved(String),
+    Ambiguous(Vec<String>),
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BundleExportMode {
     ManifestOnly,
     Snapshot,
