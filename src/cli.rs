@@ -13,8 +13,8 @@ use crate::application::bundle::{
     apply_bundle_export_plan, build_bundle_export_plan, load_bundle_from_source,
     validate_bundle_export_plan, BundleAddPlan, BundleAddPlanItem, BundleAddStatus,
     BundleExportApplyOptions, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
-    BundleExportResolvedSkill, BundleRemovePlan, BundleRemoveStatus, BundleSyncPlan,
-    BundleSyncSourceResolution, BundleSyncStatus,
+    BundleExportResolvedSkill, BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus,
+    BundleSyncPlan, BundleSyncSourceResolution, BundleSyncStatus,
 };
 use crate::application::check::{check_lockfile_with_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -844,17 +844,9 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     if plan.has_blockers() {
         bail!("bundle sync has blocking item(s); rerun with --dry-run for details")
     }
-    if plan.items.iter().any(|item| {
-        matches!(
-            item.status,
-            BundleSyncStatus::Remove | BundleSyncStatus::DetachProvenance
-        )
-    }) {
-        bail!("bundle sync removal apply is not implemented yet; rerun with --dry-run")
-    }
-
     let add_plan = bundle_sync_add_plan(&plan, &provenance);
-    if add_plan.items.is_empty() {
+    let remove_plan = bundle_sync_remove_plan(&plan);
+    if add_plan.items.is_empty() && remove_plan.items.is_empty() {
         print_success(format!("Bundle already synchronized: {}", plan.bundle));
         return Ok(());
     }
@@ -870,48 +862,88 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     let mut created_skill_dirs = Vec::new();
     let mut created_link_targets = Vec::new();
     let sync_result = (|| -> Result<()> {
-        store.apply_bundle_add(&add_plan)?;
-        let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
-        created_skill_dirs = config
-            .skills
-            .iter()
-            .filter(|skill| created_skill_names.contains(skill.name.as_str()))
-            .filter_map(|skill| {
-                let path = skill.source.as_path();
-                if path.exists() {
-                    None
-                } else {
-                    Some(path.to_path_buf())
+        if !add_plan.items.is_empty() {
+            store.apply_bundle_add(&add_plan)?;
+            let mut config = load_config_from_path(&config_path, scope_for(args.global))?;
+            created_skill_dirs = config
+                .skills
+                .iter()
+                .filter(|skill| created_skill_names.contains(skill.name.as_str()))
+                .filter_map(|skill| {
+                    let path = skill.source.as_path();
+                    if path.exists() {
+                        None
+                    } else {
+                        Some(path.to_path_buf())
+                    }
+                })
+                .collect();
+            let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
+            apply_update_report_sources(&mut config, &update_report);
+            let fs_store = FileSystemLinkStore;
+            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+            let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+            let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+            created_link_targets = link_plan
+                .items
+                .iter()
+                .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
+                .map(|item| item.target.as_path().to_path_buf())
+                .filter(|target| !target.exists())
+                .collect();
+            let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+            apply_link_plan(
+                &link_plan,
+                &lockfile,
+                &fs_store,
+                &FileLockfileStore::new(&lockfile_path),
+                ApplyOptions {
+                    force: false,
+                    skip_blocked_targets: true,
+                },
+            )?;
+            print_update_report(update_report);
+            print_plan(&link_plan);
+        }
+
+        if !remove_plan.items.is_empty() {
+            let config = load_config_for_scope(args.global, &current_dir)?;
+            let skill_dir = config.skill_dir.as_path().to_path_buf();
+            let mut lockfile = read_lockfile(&lockfile_path).ok();
+            let (_config, removal_plan, _root_dir) =
+                build_plan_from_config(config.clone(), args.global, &current_dir)?;
+            let runtime = RemoveRuntime {
+                config_path: &config_path,
+                skill_dir: &skill_dir,
+                lockfile_path: &lockfile_path,
+                removal_plan: &removal_plan,
+            };
+            store.detach_bundle_provenance(&remove_plan)?;
+            let remove_args = RemoveArgs {
+                skills: Vec::new(),
+                global: args.global,
+                config_only: false,
+                agents: Vec::new(),
+                keep_files: false,
+            };
+            for item in &remove_plan.items {
+                if item.status == BundleRemoveStatus::Remove {
+                    let skill = config
+                        .skills
+                        .iter()
+                        .find(|skill| skill.name.as_str() == item.skill_name);
+                    remove_entire_skill(
+                        &remove_args,
+                        &item.skill_name,
+                        skill.map(|skill| skill.source.as_path().to_path_buf()),
+                        &mut lockfile,
+                        &runtime,
+                    )?;
                 }
-            })
-            .collect();
-        let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
-        apply_update_report_sources(&mut config, &update_report);
-        let fs_store = FileSystemLinkStore;
-        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-        let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
-        let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
-        created_link_targets = link_plan
-            .items
-            .iter()
-            .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
-            .map(|item| item.target.as_path().to_path_buf())
-            .filter(|target| !target.exists())
-            .collect();
-        let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
-        apply_link_plan(
-            &link_plan,
-            &lockfile,
-            &fs_store,
-            &FileLockfileStore::new(&lockfile_path),
-            ApplyOptions {
-                force: false,
-                skip_blocked_targets: true,
-            },
-        )?;
+            }
+        }
+
         print_success(format!("Synchronized bundle: {}", plan.bundle));
-        print_update_report(update_report);
-        print_plan(&link_plan);
         Ok(())
     })();
 
@@ -956,6 +988,31 @@ fn bundle_sync_add_plan(
                 })
             })
             .collect(),
+    }
+}
+
+fn bundle_sync_remove_plan(plan: &BundleSyncPlan) -> BundleRemovePlan {
+    BundleRemovePlan {
+        bundle: plan.bundle.clone(),
+        source: Some(plan.source.clone()),
+        items: plan
+            .items
+            .iter()
+            .filter_map(|item| {
+                let status = match item.status {
+                    BundleSyncStatus::Remove => BundleRemoveStatus::Remove,
+                    BundleSyncStatus::DetachProvenance => BundleRemoveStatus::DetachProvenance,
+                    _ => return None,
+                };
+                Some(BundleRemovePlanItem {
+                    skill_name: item.skill_name.clone(),
+                    status,
+                    source: item.local_source.clone(),
+                    message: item.message.clone(),
+                })
+            })
+            .collect(),
+        ambiguous_sources: Vec::new(),
     }
 }
 
