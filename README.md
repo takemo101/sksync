@@ -485,7 +485,7 @@ cargo run -- list --global
 
 ### `sksync wizard`
 
-Launch an interactive prompt wizard for add / attach / detach / remove / default agents configuration / list+check / plan+apply flows. `ask` and `tui` are compatible aliases.
+Launch an interactive prompt wizard for add / attach / detach / remove skill flows, Add bundle, default agents configuration, list+check, and plan+apply flows. `ask` and `tui` are compatible aliases.
 
 ```bash
 cargo run -- wizard
