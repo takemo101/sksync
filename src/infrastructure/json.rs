@@ -3029,6 +3029,65 @@ mod tests {
     }
 
     #[test]
+    fn bundle_sync_plan_uses_fallback_agents_only_when_inference_is_empty() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "existing": {
+                  "source": "./existing",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                }
+              }
+            }"#,
+        )
+        .expect("write config");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+        let provenance = crate::domain::bundle::BundleProvenance {
+            name: crate::domain::bundle::BundleName::new("baseline").unwrap(),
+            source: "./bundles/a".to_owned(),
+        };
+        let entries = vec![crate::application::bundle::LoadedBundleEntry {
+            skill_name: "new-entry".to_owned(),
+            original_source: "./new".to_owned(),
+            normalized_source: "./new".to_owned(),
+        }];
+
+        let inferred = store
+            .plan_bundle_sync(&provenance, &entries, &["claude".to_owned()])
+            .expect("plan sync");
+
+        assert_eq!(inferred.items[0].status.as_str(), "add");
+        assert_eq!(inferred.items[0].agents, vec!["pi"]);
+
+        std::fs::write(
+            &config_path,
+            r#"{
+              "dependencies": {
+                "existing": {
+                  "source": "./existing",
+                  "agents": [],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                }
+              }
+            }"#,
+        )
+        .expect("rewrite config");
+
+        let fallback = store
+            .plan_bundle_sync(&provenance, &entries, &["claude".to_owned()])
+            .expect("plan sync");
+
+        assert_eq!(fallback.items[0].status.as_str(), "add");
+        assert_eq!(fallback.items[0].agents, vec!["claude-code"]);
+    }
+
+    #[test]
     fn bundle_detach_provenance_keeps_manual_dependency() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("sksync.config.json");
