@@ -1,0 +1,21 @@
+pre-push:
+  jobs:
+    - name: rust tests
+      run: cargo test --quiet
+
+local-ci:
+  jobs:
+    - name: cargo fmt
+      run: cargo fmt --check
+
+    - name: cargo test
+      run: cargo test --quiet
+
+    - name: release build
+      run: cargo build --release --quiet
+
+    - name: clippy
+      run: cargo clippy --quiet -- -D warnings
+
+    - name: GitHub Actions linux smoke
+      run: npx -y @redwoodjs/agent-ci run --workflow .github/workflows/linux-smoke.yml --pause-on-failure
