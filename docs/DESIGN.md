@@ -423,20 +423,31 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 ### Command behavior summary
 
 - `init`: create project/global config and skill directories without overwriting existing config; `--agents` refreshes only `~/.sksync/agents.json`.
-- `add`: accept GitHub / `skills.sh` / local sources, add a dependency, support multiple `--agent`, and run install/apply behavior.
-- `install`: prefer lockfile `installSource`; otherwise fetch from config and create a lockfile; then apply managed symlinks.
-- `update`: fetch dependencies, resolve Git sources to exact commits, and refresh the lockfile.
-- `attach`: add agents to an existing dependency-managed skill while preserving source representation.
-- `remove <skills...>`: remove config entries, installed files, managed symlinks, and lockfile entries; support `--keep-files`, `--config-only`, and `--global`.
+- `add`: accept GitHub / `skills.sh` / local sources, add a dependency, support multiple `--agent`, and run install/apply behavior; `--force` passes through to the final link apply step.
+- `install`: prefer lockfile `installSource`; otherwise fetch from config and create a lockfile; then apply managed symlinks; `--force` repairs drifted or broken target symlinks during the apply step.
+- `update`: fetch dependencies, resolve Git sources to exact commits, and refresh the lockfile. It does not apply links and therefore has no `--force`.
+- `attach`: add agents to an existing dependency-managed skill while preserving source representation; `--force` passes through to the final link apply step.
+- `remove <skills...>`: remove config entries, installed files, managed symlinks, and lockfile entries; support `--keep-files`, `--config-only`, and `--global`. It does not support generic `--force`.
 - `remove <skill> --agent <agent>`: remove selected agent symlinks and targets only; full removal if the last agent is removed.
 - `outdated`: compare Git lockfile commits with remote ref HEAD; support `--global` and `--json`.
-- `bundle`: inspect/add/remove/export curated install sets; `bundle sync` follows manifest membership drift for one named bundle at a time with `--dry-run` preview.
-- `apply`: resolve targets, detect conflicts, create/update symlinks, and write lockfile; `--force` only allows safe replacement of sksync-managed links.
+- `bundle`: inspect/add/remove/export curated install sets; `bundle add --force` and `bundle sync --force` pass through to their final link apply step; `bundle export --force` replaces an existing generated output directory.
+- `apply`: resolve targets, detect conflicts, create/update symlinks, and write lockfile; `--force` only allows symlink repair/replacement, never regular-file or directory replacement.
 - `check`: compare config, lockfile, hashes, sources, and symlink health.
 - `doctor`: read-only comprehensive diagnosis with suggested next commands, never automatic repair.
 - `agents`: list effective mappings, diagnose target directories, and refresh bundled mappings.
 - `import`: copy-only migration from existing skill directories; no original files are mutated.
 - `wizard`: prompt-based wrapper around CLI/application use cases.
+
+### `--force` link replacement semantics
+
+`--force` is supported only on commands that perform link application: `apply`, `install`, `attach`, `add`, `bundle add`, and `bundle sync`. It affects only the final target-link reconciliation step.
+
+With `--force`, sksync may replace these existing targets:
+
+- a symlink at the desired target path that points to a different source than the resolved skill body;
+- a broken symlink at the desired target path.
+
+Replacement means unlinking the existing symlink and creating a new symlink to the resolved skill body. `--force` must not replace or delete regular files, directories, missing sources, or targets outside the configured agent target path. Those remain blocking conflicts. Read-only commands (`plan`, `check`, `doctor`, `list`, `outdated`, `bundle inspect`) do not accept `--force`; `update` does not accept `--force` because it updates installed skill bodies and the lockfile but does not apply target links; `remove` intentionally has no generic `--force` because removal is limited to managed links and installed bodies inside `skillDir`.
 
 ## 8. Wizard design
 
@@ -506,10 +517,11 @@ Planned changes:
 
 ## 9. Safety rules
 
-- Do not overwrite existing regular files.
-- Update/delete only symlinks created or managed by sksync.
+- Do not overwrite existing regular files or directories, even with `--force`.
+- Update/delete only targets represented by sksync config/lockfile plans.
 - Warn if an existing symlink points somewhere unexpected.
-- Do not perform destructive changes without `--force` where applicable.
+- Without `--force`, drifted and broken target symlinks block apply.
+- With `--force`, only drifted or broken target symlinks may be unlinked and recreated.
 - Provide dry-run planning.
 - Do not delete links that are not represented by the lockfile/config.
 
