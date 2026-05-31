@@ -44,13 +44,27 @@ pub fn apply_link_plan(
     validate_plan_is_safe_to_apply(plan, options)?;
 
     for item in &plan.items {
-        if item.action == PlanAction::CreateSymlink {
-            applier.create_symlink(&item.source, &item.target)?;
+        match &item.action {
+            PlanAction::CreateSymlink => applier.create_symlink(&item.source, &item.target)?,
+            action if options.force && is_force_replace_action(action) => {
+                applier.replace_symlink(&item.source, &item.target)?;
+            }
+            _ => {}
         }
     }
 
     lockfile_store.write(lockfile)?;
     Ok(())
+}
+
+fn is_force_replace_action(action: &PlanAction) -> bool {
+    matches!(
+        action,
+        PlanAction::DriftedSymlink { .. }
+            | PlanAction::Conflict {
+                reason: ConflictReason::BrokenSymlink,
+            }
+    )
 }
 
 fn validate_plan_is_safe_to_apply(
@@ -67,6 +81,9 @@ fn validate_plan_is_safe_to_apply(
                 });
             }
             PlanAction::Conflict { reason } => {
+                if options.force && *reason == ConflictReason::BrokenSymlink {
+                    continue;
+                }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::Conflict {
                         skill: item.skill.as_str().to_owned(),
@@ -76,6 +93,9 @@ fn validate_plan_is_safe_to_apply(
                 }
             }
             PlanAction::DriftedSymlink { actual_source } => {
+                if options.force {
+                    continue;
+                }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::DriftedSymlink {
                         skill: item.skill.as_str().to_owned(),
@@ -108,6 +128,7 @@ mod tests {
     #[derive(Default)]
     struct FakeApplier {
         created: RefCell<Vec<(PathBuf, PathBuf)>>,
+        replaced: RefCell<Vec<(PathBuf, PathBuf)>>,
     }
 
     impl LinkApplier for FakeApplier {
@@ -117,6 +138,18 @@ mod tests {
             target: &TargetPath,
         ) -> Result<(), LinkApplyError> {
             self.created.borrow_mut().push((
+                source.as_path().to_path_buf(),
+                target.as_path().to_path_buf(),
+            ));
+            Ok(())
+        }
+
+        fn replace_symlink(
+            &self,
+            source: &SourcePath,
+            target: &TargetPath,
+        ) -> Result<(), LinkApplyError> {
+            self.replaced.borrow_mut().push((
                 source.as_path().to_path_buf(),
                 target.as_path().to_path_buf(),
             ));
@@ -273,5 +306,107 @@ mod tests {
 
         assert!(applier.created.borrow().is_empty());
         assert!(lockfiles.written.get());
+    }
+
+    #[test]
+    fn unexpected_symlink_is_replaced_with_force() {
+        let plan = LinkPlan::new(vec![item(PlanAction::DriftedSymlink {
+            actual_source: PathBuf::from("other"),
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("force replaces drifted symlink");
+
+        assert!(applier.created.borrow().is_empty());
+        assert_eq!(applier.replaced.borrow().len(), 1);
+        assert!(lockfiles.written.get());
+    }
+
+    #[test]
+    fn broken_symlink_is_replaced_with_force() {
+        let plan = LinkPlan::new(vec![item(PlanAction::Conflict {
+            reason: ConflictReason::BrokenSymlink,
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("force replaces broken symlink");
+
+        assert!(applier.created.borrow().is_empty());
+        assert_eq!(applier.replaced.borrow().len(), 1);
+        assert!(lockfiles.written.get());
+    }
+
+    #[test]
+    fn regular_file_conflict_still_fails_with_force() {
+        let plan = LinkPlan::new(vec![item(PlanAction::Conflict {
+            reason: ConflictReason::RegularFile,
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        let error = apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect_err("regular file conflict fails even with force");
+
+        assert!(matches!(error, ApplyError::Conflict { .. }));
+        assert!(applier.created.borrow().is_empty());
+        assert!(applier.replaced.borrow().is_empty());
+        assert!(!lockfiles.written.get());
+    }
+
+    #[test]
+    fn directory_conflict_still_fails_with_force() {
+        let plan = LinkPlan::new(vec![item(PlanAction::Conflict {
+            reason: ConflictReason::Directory,
+        })]);
+        let applier = FakeApplier::default();
+        let lockfiles = FakeLockfileStore::default();
+
+        let error = apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &lockfiles,
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect_err("directory conflict fails even with force");
+
+        assert!(matches!(error, ApplyError::Conflict { .. }));
+        assert!(applier.created.borrow().is_empty());
+        assert!(applier.replaced.borrow().is_empty());
+        assert!(!lockfiles.written.get());
     }
 }

@@ -76,7 +76,7 @@ Create the symlinks the planner proposed and write the lockfile:
 sksync apply
 ```
 
-`apply` only ever creates symlinks. It fails if a source is missing, a target conflicts with an unmanaged file, or drift is detected. Use `--force` to update a target only when it is already a sksync-managed link.
+`apply` creates missing symlinks and fails if a source is missing, a target conflicts with an unmanaged file, or drift is detected. Use `--force` to repair drifted or broken target symlinks; regular files and directories are never replaced.
 
 ## 5. List and check
 
