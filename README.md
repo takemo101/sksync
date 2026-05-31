@@ -80,7 +80,9 @@ cargo run -- init
 cargo run -- init --global
 cargo run -- init --agents
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- add owner/repo/path/to/skill --agent pi --force
 cargo run -- attach skill-name --agent gemini
+cargo run -- attach skill-name --agent gemini --force
 cargo run -- agents list
 cargo run -- agents doctor
 cargo run -- agents refresh
@@ -89,11 +91,14 @@ cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.agents/skills --agent universal --agent pi
 cargo run -- bundle inspect ./bundle-dir
 cargo run -- bundle add ./bundle-dir --agent pi --dry-run
+cargo run -- bundle add ./bundle-dir --agent pi --force
+cargo run -- bundle sync bundle-name --force
 cargo run -- bundle remove bundle-name --dry-run
 cargo run -- remove skill-name
 cargo run -- remove skill-a skill-b
 cargo run -- outdated
 cargo run -- install
+cargo run -- install --force
 cargo run -- update
 cargo run -- plan --dry-run
 cargo run -- apply
@@ -172,7 +177,10 @@ Add an Agent Skills source as a dependency. Given a source and one or more agent
 
 ```bash
 cargo run -- add <source> --agent pi [--agent claude-code]
+cargo run -- add <source> --agent pi --force
 ```
+
+`--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
 
 Common examples:
 
@@ -288,9 +296,9 @@ Bundles are curated install sets described by `sksync.bundle.json`. A bundle is 
 
 ```bash
 cargo run -- bundle inspect <source>
-cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run]
+cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run] [--force]
 cargo run -- bundle remove <name> [--source <exact-source>] [--dry-run]
-cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run]
+cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run] [--force]
 ```
 
 Example manifest:
@@ -331,7 +339,7 @@ cargo run -- bundle remove review-workflow
 
 `bundle add` is all-or-nothing at the config/lockfile level. Existing dependencies with the same normalized source are adopted and keep `managedByBundles: false`, so `bundle remove` later detaches provenance without deleting manually managed dependencies. Existing dependencies with the same skill name but a different source are reported as conflicts and nothing is written.
 
-`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync applies safe membership changes: added entries become dependencies, same-source manual dependencies are adopted, bundle-managed deleted entries are removed, and manual/adopted deleted entries only lose bundle provenance. Existing skill content updates remain the responsibility of `sksync update`.
+`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync applies safe membership changes: added entries become dependencies, same-source manual dependencies are adopted, bundle-managed deleted entries are removed, and manual/adopted deleted entries only lose bundle provenance. `bundle add --force` and `bundle sync --force` pass through to the final link step, where only drifted or broken target symlinks may be repaired. Existing skill content updates remain the responsibility of `sksync update`.
 
 Authoring tips:
 
@@ -365,7 +373,10 @@ Attach an existing dependency-managed skill to additional agents. sksync preserv
 ```bash
 cargo run -- attach cuekit-dogfood --agent claude-code
 cargo run -- attach cuekit-dogfood --agent pi --agent gemini --global
+cargo run -- attach cuekit-dogfood --agent gemini --force
 ```
+
+`--force` has the same link-repair semantics as `apply --force`: drifted or broken target symlinks can be recreated, but files and directories are never replaced.
 
 ### `sksync agents`
 
@@ -444,7 +455,10 @@ If `sksync-lock.json` exists, reconstruct skills from lockfile sources first, th
 ```bash
 cargo run -- install
 cargo run -- install --global
+cargo run -- install --force
 ```
+
+`install --force` applies only after skills are reconstructed: it may repair drifted or broken target symlinks, but regular files and directories remain protected.
 
 ### `sksync update`
 
@@ -459,7 +473,7 @@ Supported sources are the same as `sksync add`. Repo-root / parent-directory dis
 
 ### `sksync apply`
 
-Run only the planner's create-symlink actions, then write `sksync-lock.json`. `apply` fails on missing sources, conflicts, or drift. `--force` only allows replacement when the existing target is a sksync-managed link that is safe to update.
+Run the planner's target-link actions, then write `sksync-lock.json`. Without `--force`, `apply` fails on missing sources, conflicts, or drift. With `--force`, it may unlink and recreate drifted or broken target symlinks; regular files and directories remain blocking conflicts.
 
 ```bash
 cargo run -- apply
@@ -497,7 +511,7 @@ cargo run -- tui
 
 ### Safety rules
 
-- Never overwrite existing regular files.
+- Never overwrite existing regular files or directories, even with `--force`.
 - `add` rolls back dependency config on failure.
 - `remove` deletes only symlinks managed by sksync.
 - `remove` deletes installed files only when they are under the configured `skillDir`.
@@ -506,9 +520,9 @@ cargo run -- tui
 - `outdated` compares Git remote refs with lockfile commits.
 - `install` prefers lockfile resolved sources when a lockfile exists.
 - `update` fetches from dependencies and refreshes the lockfile.
-- `apply` runs create-symlink actions only.
+- Link-applying commands support `--force` only for drifted or broken target symlinks; missing sources, regular files, and directories are never force-replaced.
 - Project config resolves targets as project scope; `--global` config resolves targets as user scope.
-- `apply` fails on conflict, drift, or missing source states.
+- `apply` fails on conflict, drift, or missing source states unless `--force` can safely repair a symlink.
 - Parent directories for target paths are created as needed.
 - Use temporary directories for tests and examples when possible.
 
