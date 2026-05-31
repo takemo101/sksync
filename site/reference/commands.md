@@ -29,12 +29,14 @@ Add an Agent Skills source as a dependency: append to the config, fetch the skil
 sksync add <source> --agent <agent> [--agent <agent> …]
 sksync add <source> --name <skill> --agent <agent>
 sksync add <source> --agent <agent> --global
+sksync add <source> --agent <agent> --force
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--agent <agent>` | Agent to link the skill into. Repeatable. Required. |
 | `--name <skill>` | Disambiguate repo-root discovery to a single skill by frontmatter/dir name. |
+| `--force` | During the final link apply step, replace drifted or broken target symlinks only. Never replaces files or directories. |
 | `--global` | Add to `~/.sksync/config.json`. |
 
 Source forms (GitHub shorthand, tree URL, skills.sh, local) and discovery rules → [Sources & Discovery](/guides/sources). Fetched skills are validated for `SKILL.md` + frontmatter `name`/`description` before install.
@@ -46,7 +48,14 @@ Link an already dependency-managed skill into an additional agent, preserving it
 ```sh
 sksync attach <skill> --agent <agent> [--agent <agent> …]
 sksync attach <skill> --agent <agent> --global
+sksync attach <skill> --agent <agent> --force
 ```
+
+| Flag | Meaning |
+|---|---|
+| `--agent <agent>` | Agent to link the skill into. Repeatable. Required. |
+| `--force` | During the final link apply step, replace drifted or broken target symlinks only. Never replaces files or directories. |
+| `--global` | Use `~/.sksync/config.json`. |
 
 ## `sksync bundle`
 
@@ -56,9 +65,11 @@ Inspect, add, remove, export, and synchronize curated bundle install sets. Bundl
 sksync bundle inspect <source>
 sksync bundle add <source> --agent <agent> [--agent <agent> …]
 sksync bundle add <source> --agent <agent> --dry-run
+sksync bundle add <source> --agent <agent> --force
 sksync bundle remove <name> [--source <exact-source>]
 sksync bundle remove <name> --dry-run
 sksync bundle sync <name> [--source <exact-source>] [--agent <agent> …] [--dry-run]
+sksync bundle sync <name> --force
 sksync bundle export <name> --output <dir> [--snapshot]
 sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 ```
@@ -78,7 +89,7 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export`. |
 | `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. |
 | `--skill <name>` | Export only this dependency. Repeatable. |
-| `--force` | Replace an existing export output directory. |
+| `--force` | For `bundle add` / `bundle sync`, replace drifted or broken target symlinks during the final link apply step only. For `bundle export`, replace an existing generated output directory. |
 | `--dry-run` | Show planned add/remove/export/sync work without writing. |
 | `--global` | Operate on the global config. Supported by `bundle add`, `bundle remove`, `bundle sync`, and `bundle export`; `bundle inspect` is manifest-only. |
 
@@ -202,7 +213,10 @@ Reconstruct skills, preferring the lockfile's resolved sources when `sksync-lock
 ```sh
 sksync install
 sksync install --global
+sksync install --force
 ```
+
+`--force` applies only after skills are reconstructed: it may replace drifted or broken target symlinks, but never regular files or directories.
 
 ## `sksync update`
 
@@ -215,7 +229,7 @@ sksync update --global
 
 ## `sksync apply`
 
-Run only the planner's create-symlink actions, then write `sksync-lock.json`. Fails on missing source, conflict, or drift. `--force` updates a target only when it is an existing sksync-managed link.
+Run only the planner's create-symlink actions, then write `sksync-lock.json`. Without `--force`, apply fails on missing source, conflict, or drift. With `--force`, apply may unlink and recreate drifted or broken target symlinks; regular files and directories remain blocking conflicts.
 
 ```sh
 sksync apply
@@ -253,14 +267,14 @@ sksync tui
 
 ## Safety rules
 
-- Existing plain files are never overwritten.
+- Existing plain files and directories are never overwritten, even with `--force`.
 - `add` rolls back the dependency config on failure.
-- `bundle add` aborts on any conflict and rolls back config/lockfile writes on failure.
+- `bundle add` aborts on any config/provenance conflict and rolls back config/lockfile writes on failure.
 - `bundle remove` uses local provenance only and cannot delete manual dependencies solely because they once belonged to a bundle.
 - `remove` deletes only sksync-managed symlinks, and installed files only when inside the configured `skillDir`.
 - Git source subpaths reject absolute paths and `..`, and must stay inside the clone directory.
 - Project-scope agent target directories cannot escape the project root.
-- `apply` executes create-symlink actions only and fails on conflict / drift / missing source.
+- Link-applying commands support `--force` only for drifted or broken target symlinks; missing sources, regular files, and directories are never force-replaced. Commands that skip blocked targets leave those targets unchanged and report them in the printed plan.
 - `install` prefers the lockfile's resolved sources when present; `update` fetches the latest and re-locks.
 - Target parent directories are created as needed.
 

@@ -41,6 +41,7 @@ pub struct AddWorkflow<'a, D, I, F, L, T> {
 pub fn run_add_workflow<D, I, F, L, T>(
     selections: Vec<AddSelection>,
     agents: &[String],
+    force: bool,
     load_config: impl FnOnce() -> Result<ResolvedConfig>,
     build_lockfile: impl FnOnce(&ResolvedConfig, &LinkPlan) -> Result<Lockfile>,
     workflow: AddWorkflow<'_, D, I, F, L, T>,
@@ -81,7 +82,7 @@ where
         workflow.fs_store,
         workflow.lockfile_store,
         ApplyOptions {
-            force: false,
+            force,
             skip_blocked_targets: true,
         },
     )?;
@@ -199,6 +200,14 @@ mod tests {
             self.created.set(self.created.get() + 1);
             Ok(())
         }
+
+        fn replace_symlink(
+            &self,
+            _source: &SourcePath,
+            _target: &TargetPath,
+        ) -> Result<(), LinkApplyError> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -270,6 +279,7 @@ mod tests {
                 source: "owner/repo/skills/review".to_owned(),
             }],
             &["pi".to_owned()],
+            false,
             || Ok(config()),
             |_config, _plan| {
                 Ok(Lockfile {

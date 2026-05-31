@@ -41,32 +41,70 @@ impl LinkApplier for FileSystemLinkStore {
         source: &SourcePath,
         target: &TargetPath,
     ) -> Result<(), LinkApplyError> {
-        if let Some(parent) = target.as_path().parent() {
-            fs::create_dir_all(parent).map_err(|source| LinkApplyError::CreateParent {
-                path: display_path(parent),
-                source,
-            })?;
-        }
-
         if fs::symlink_metadata(target.as_path()).is_ok() {
             return Err(LinkApplyError::TargetExists {
                 path: display_path(target.as_path()),
             });
         }
 
-        let link_source = source
-            .as_path()
-            .canonicalize()
-            .unwrap_or_else(|_| source.as_path().to_path_buf());
-
-        std::os::unix::fs::symlink(&link_source, target.as_path()).map_err(|error| {
-            LinkApplyError::CreateSymlink {
-                source: display_path(&link_source),
-                target: display_path(target.as_path()),
-                error,
-            }
-        })
+        create_symlink_at(source.as_path(), target.as_path())
     }
+
+    fn replace_symlink(
+        &self,
+        source: &SourcePath,
+        target: &TargetPath,
+    ) -> Result<(), LinkApplyError> {
+        let link_source = canonicalize_link_source(source.as_path())?;
+        let metadata = fs::symlink_metadata(target.as_path()).map_err(|source| {
+            LinkApplyError::RemoveSymlink {
+                path: display_path(target.as_path()),
+                source,
+            }
+        })?;
+
+        if !metadata.file_type().is_symlink() {
+            return Err(LinkApplyError::TargetNotSymlink {
+                path: display_path(target.as_path()),
+            });
+        }
+
+        fs::remove_file(target.as_path()).map_err(|source| LinkApplyError::RemoveSymlink {
+            path: display_path(target.as_path()),
+            source,
+        })?;
+
+        create_symlink_at_resolved(&link_source, target.as_path())
+    }
+}
+
+fn create_symlink_at(source: &Path, target: &Path) -> Result<(), LinkApplyError> {
+    let link_source = canonicalize_link_source(source)?;
+    create_symlink_at_resolved(&link_source, target)
+}
+
+fn canonicalize_link_source(source: &Path) -> Result<PathBuf, LinkApplyError> {
+    source
+        .canonicalize()
+        .map_err(|error| LinkApplyError::SourceMissing {
+            path: display_path(source),
+            source: error,
+        })
+}
+
+fn create_symlink_at_resolved(link_source: &Path, target: &Path) -> Result<(), LinkApplyError> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|source| LinkApplyError::CreateParent {
+            path: display_path(parent),
+            source,
+        })?;
+    }
+
+    std::os::unix::fs::symlink(link_source, target).map_err(|error| LinkApplyError::CreateSymlink {
+        source: display_path(link_source),
+        target: display_path(target),
+        error,
+    })
 }
 
 fn inspect_target_path(
@@ -137,7 +175,7 @@ fn resolve_link_destination(link_path: &Path, destination: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::FileSystemLinkStore;
-    use crate::application::ports::{LinkStore, TargetState};
+    use crate::application::ports::{LinkApplier, LinkApplyError, LinkStore, TargetState};
     use crate::domain::skill::SourcePath;
     use crate::domain::target::TargetPath;
     use std::fs;
@@ -268,5 +306,98 @@ mod tests {
                 actual_source: missing_source
             }
         );
+    }
+
+    #[test]
+    fn replace_symlink_replaces_unexpected_symlink() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let expected = temp_dir.path().join("expected");
+        let actual = temp_dir.path().join("actual");
+        let target_link = temp_dir.path().join("target");
+        fs::create_dir(&expected).expect("create expected");
+        fs::create_dir(&actual).expect("create actual");
+        symlink(&actual, &target_link).expect("create existing symlink");
+
+        FileSystemLinkStore
+            .replace_symlink(&source_path(&expected), &target_path(&target_link))
+            .expect("replace symlink");
+
+        let replaced = fs::read_link(&target_link).expect("read replaced link");
+        assert_eq!(
+            replaced,
+            expected.canonicalize().expect("canonical expected")
+        );
+    }
+
+    #[test]
+    fn replace_symlink_replaces_broken_symlink() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let expected = temp_dir.path().join("expected");
+        let target_link = temp_dir.path().join("target");
+        fs::create_dir(&expected).expect("create expected");
+        symlink(temp_dir.path().join("missing"), &target_link).expect("create broken symlink");
+
+        FileSystemLinkStore
+            .replace_symlink(&source_path(&expected), &target_path(&target_link))
+            .expect("replace broken symlink");
+
+        let replaced = fs::read_link(&target_link).expect("read replaced link");
+        assert_eq!(
+            replaced,
+            expected.canonicalize().expect("canonical expected")
+        );
+    }
+
+    #[test]
+    fn replace_symlink_refuses_missing_source_without_removing_existing_link() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing = temp_dir.path().join("missing");
+        let actual = temp_dir.path().join("actual");
+        let target_link = temp_dir.path().join("target");
+        fs::create_dir(&actual).expect("create actual");
+        symlink(&actual, &target_link).expect("create existing symlink");
+
+        FileSystemLinkStore
+            .replace_symlink(&source_path(missing), &target_path(&target_link))
+            .expect_err("missing source is not linked");
+
+        assert_eq!(
+            fs::read_link(&target_link).expect("read preserved link"),
+            actual
+        );
+    }
+
+    #[test]
+    fn replace_symlink_refuses_regular_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let expected = temp_dir.path().join("expected");
+        let target = temp_dir.path().join("target");
+        fs::create_dir(&expected).expect("create expected");
+        fs::write(&target, "manual file").expect("write file");
+
+        let error = FileSystemLinkStore
+            .replace_symlink(&source_path(expected), &target_path(&target))
+            .expect_err("regular file is not replaced");
+
+        assert!(matches!(error, LinkApplyError::TargetNotSymlink { .. }));
+        assert_eq!(
+            fs::read_to_string(target).expect("read file"),
+            "manual file"
+        );
+    }
+
+    #[test]
+    fn replace_symlink_refuses_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let expected = temp_dir.path().join("expected");
+        let target = temp_dir.path().join("target");
+        fs::create_dir(&expected).expect("create expected");
+        fs::create_dir(&target).expect("create target directory");
+
+        let error = FileSystemLinkStore
+            .replace_symlink(&source_path(expected), &target_path(target))
+            .expect_err("directory is not replaced");
+
+        assert!(matches!(error, LinkApplyError::TargetNotSymlink { .. }));
     }
 }

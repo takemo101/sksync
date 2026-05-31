@@ -133,6 +133,72 @@ fn bundle_add_and_remove_flow_manages_dependencies_files_and_symlinks() {
 }
 
 #[test]
+fn bundle_sync_force_handles_removed_entry_with_missing_installed_source() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    fs::remove_dir_all(root.join(".sksync/skills/qa")).expect("remove installed qa source");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" }
+          }
+        }"#,
+    )
+    .expect("write updated bundle manifest");
+
+    assert_success(sksync(
+        root,
+        &["bundle", "sync", "review-workflow", "--force"],
+    ));
+
+    let config = read_project_config(root);
+    assert!(config["dependencies"]["review"].is_object());
+    assert!(config["dependencies"].get("qa").is_none());
+}
+
+#[test]
+fn bundle_sync_force_repairs_drifted_link_when_membership_is_current() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    write_review_bundle(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+
+    let unexpected = root.join("unexpected-review");
+    fs::create_dir(&unexpected).expect("create unexpected target");
+    fs::remove_file(root.join(".agents/skills/review")).expect("remove managed link");
+    std::os::unix::fs::symlink(&unexpected, root.join(".agents/skills/review"))
+        .expect("create drifted symlink");
+
+    assert_success(sksync(
+        root,
+        &["bundle", "sync", "review-workflow", "--force"],
+    ));
+
+    let actual = fs::read_link(root.join(".agents/skills/review")).expect("read repaired link");
+    assert_eq!(
+        actual,
+        root.join(".sksync/skills/review")
+            .canonicalize()
+            .expect("canonical review source")
+    );
+}
+
+#[test]
 fn bundle_sync_dry_run_reports_new_manifest_entry_without_writing() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();

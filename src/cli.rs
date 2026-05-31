@@ -121,6 +121,9 @@ struct AddArgs {
     /// Write ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(long)]
     global: bool,
+    /// Replace drifted or broken target symlinks during the final link apply step.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -133,6 +136,9 @@ struct AttachArgs {
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(long)]
     global: bool,
+    /// Replace drifted or broken target symlinks during the final link apply step.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -212,6 +218,9 @@ struct BundleAddArgs {
     /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
+    /// Replace drifted or broken target symlinks during the final link apply step.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -245,6 +254,9 @@ struct BundleSyncArgs {
     /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
+    /// Replace drifted or broken target symlinks during the final link apply step.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -312,7 +324,7 @@ struct PlanArgs {
 
 #[derive(Debug, Args)]
 struct ApplyArgs {
-    /// Allow replacing existing sksync-managed links when it is safe to do so.
+    /// Replace drifted or broken target symlinks without touching files or directories.
     #[arg(long)]
     force: bool,
     /// Use ~/.sksync/config.json instead of project config.
@@ -325,6 +337,9 @@ struct InstallArgs {
     /// Use ~/.sksync/config.json and global lockfile instead of project files.
     #[arg(long)]
     global: bool,
+    /// Replace drifted or broken target symlinks during the final link apply step.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -849,7 +864,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     }
     let add_plan = bundle_sync_add_plan(&plan, &provenance);
     let remove_plan = bundle_sync_remove_plan(&plan);
-    if add_plan.items.is_empty() && remove_plan.items.is_empty() {
+    if add_plan.items.is_empty() && remove_plan.items.is_empty() && !args.force {
         print_success(format!("Bundle already synchronized: {}", plan.bundle));
         return Ok(());
     }
@@ -884,31 +899,7 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
             print_progress("Installing skills...");
             let update_report = update_dependencies(&config, &FileSystemSkillInstaller)?;
             apply_update_report_sources(&mut config, &update_report);
-            let fs_store = FileSystemLinkStore;
-            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-            let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
-            let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
-            created_link_targets = link_plan
-                .items
-                .iter()
-                .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
-                .map(|item| item.target.as_path().to_path_buf())
-                .filter(|target| !target.exists())
-                .collect();
-            let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
-            print_progress("Applying links...");
-            apply_link_plan(
-                &link_plan,
-                &lockfile,
-                &fs_store,
-                &FileLockfileStore::new(&lockfile_path),
-                ApplyOptions {
-                    force: false,
-                    skip_blocked_targets: true,
-                },
-            )?;
             print_update_report(update_report);
-            print_plan(&link_plan);
         }
 
         if !remove_plan.items.is_empty() {
@@ -947,6 +938,34 @@ fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
                     )?;
                 }
             }
+        }
+
+        if !add_plan.items.is_empty() || args.force {
+            let config = load_config_from_path(&config_path, scope_for(args.global))?;
+            let fs_store = FileSystemLinkStore;
+            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+            let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
+            let link_plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
+            created_link_targets = link_plan
+                .items
+                .iter()
+                .filter(|item| matches!(item.action, PlanAction::CreateSymlink))
+                .map(|item| item.target.as_path().to_path_buf())
+                .filter(|target| !target.exists())
+                .collect();
+            let lockfile = build_lockfile_from_plan(&config, &link_plan, &root_dir)?;
+            print_progress("Applying links...");
+            apply_link_plan(
+                &link_plan,
+                &lockfile,
+                &fs_store,
+                &FileLockfileStore::new(&lockfile_path),
+                ApplyOptions {
+                    force: args.force,
+                    skip_blocked_targets: true,
+                },
+            )?;
+            print_plan(&link_plan);
         }
 
         print_success(format!("Synchronized bundle: {}", plan.bundle));
@@ -1097,7 +1116,7 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
             &fs_store,
             &FileLockfileStore::new(&lockfile_path),
             ApplyOptions {
-                force: false,
+                force: args.force,
                 skip_blocked_targets: true,
             },
         )?;
@@ -1579,6 +1598,7 @@ fn run_add(args: AddArgs) -> Result<()> {
         let report = run_add_workflow(
             selections,
             &args.agents,
+            args.force,
             || load_config_from_path(&config_path, scope_for(args.global)),
             |config, plan| build_lockfile_from_plan(config, plan, &root_dir),
             AddWorkflow {
@@ -1642,7 +1662,7 @@ fn run_attach(args: AttachArgs) -> Result<()> {
             &fs_store,
             &FileLockfileStore::new(lockfile_path_for(args.global, &current_dir)?),
             ApplyOptions {
-                force: false,
+                force: args.force,
                 skip_blocked_targets: true,
             },
         )?;
@@ -2084,7 +2104,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
         &fs_store,
         &lockfile_store,
         ApplyOptions {
-            force: false,
+            force: args.force,
             skip_blocked_targets: false,
         },
     )?;
@@ -3444,6 +3464,38 @@ mod tests {
         Cli::command()
             .try_get_matches_from(["sksync", "plan", "--help"])
             .expect_err("--help should short-circuit as a clap display error");
+    }
+
+    #[test]
+    fn force_flags_parse_for_direct_link_commands() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "owner/repo/skills/review",
+            "--agent",
+            "pi",
+            "--force",
+        ])
+        .expect("add --force parses");
+        Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi", "--force"])
+            .expect("attach --force parses");
+        Cli::try_parse_from(["sksync", "install", "--force"]).expect("install --force parses");
+    }
+
+    #[test]
+    fn force_flags_parse_for_bundle_link_commands() {
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "add",
+            "./bundles/review-workflow",
+            "--agent",
+            "pi",
+            "--force",
+        ])
+        .expect("bundle add --force parses");
+        Cli::try_parse_from(["sksync", "bundle", "sync", "review-workflow", "--force"])
+            .expect("bundle sync --force parses");
     }
 
     #[test]

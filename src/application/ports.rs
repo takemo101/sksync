@@ -131,6 +131,20 @@ pub enum LinkApplyError {
     },
     #[error("target already exists at {path}")]
     TargetExists { path: String },
+    #[error("source is missing at {path}: {source}")]
+    SourceMissing {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("refusing to replace non-symlink target at {path}")]
+    TargetNotSymlink { path: String },
+    #[error("failed to remove existing symlink {path}: {source}")]
+    RemoveSymlink {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to create symlink {target} -> {source}: {error}")]
     CreateSymlink {
         source: String,
@@ -142,6 +156,12 @@ pub enum LinkApplyError {
 
 pub trait LinkApplier {
     fn create_symlink(
+        &self,
+        source: &SourcePath,
+        target: &TargetPath,
+    ) -> Result<(), LinkApplyError>;
+
+    fn replace_symlink(
         &self,
         source: &SourcePath,
         target: &TargetPath,

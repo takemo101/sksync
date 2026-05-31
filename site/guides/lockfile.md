@@ -61,7 +61,7 @@ sksync plan --global
 
 ### apply {#apply}
 
-Runs only the planner's *create symlink* actions, then writes `sksync-lock.json`. Fails on missing source, conflict, or drift. `--force` allows updating a target **only** when it is an existing sksync-managed link that is safe to replace.
+Runs the planner's target-link actions, then writes `sksync-lock.json`. Without `--force`, it fails on missing source, conflict, or drift. With `--force`, it may repair drifted or broken target symlinks, but it never replaces regular files or directories.
 
 ```sh
 sksync apply
