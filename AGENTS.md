@@ -40,6 +40,13 @@ cargo clippy --quiet -- -D warnings
 For docs-only changes, at minimum inspect the diff and ensure Markdown renders
 cleanly.
 
+## Release workflow
+
+Before preparing or publishing a release, follow `docs/RELEASE.md`. Remember to
+update the manual site version in `site/.vitepress/config.ts`. If GitHub Actions
+macOS release jobs remain queued, use the documented local macOS asset fallback
+instead of waiting indefinitely.
+
 ## Project safety rules
 
 - Tests must not touch the real home directory; use temporary directories.
