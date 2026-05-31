@@ -101,7 +101,7 @@ enum Command {
 #[derive(Debug, Args)]
 struct InitArgs {
     /// Initialize ~/.sksync/config.json instead of ./sksync.config.json.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Force overwrite ~/.sksync/agents.json with bundled agent mappings only.
     #[arg(long)]
@@ -119,10 +119,10 @@ struct AddArgs {
     #[arg(long)]
     name: Option<String>,
     /// Write ~/.sksync/config.json instead of ./sksync.config.json.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Replace drifted or broken target symlinks during the final link apply step.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
@@ -134,10 +134,10 @@ struct AttachArgs {
     #[arg(short, long = "agent", required = true)]
     agents: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Replace drifted or broken target symlinks during the final link apply step.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
@@ -160,7 +160,7 @@ enum AgentsCommand {
 #[derive(Debug, Args)]
 struct DoctorArgs {
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
@@ -172,7 +172,7 @@ struct ImportArgs {
     #[arg(short, long = "agent", required = true)]
     agents: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Show what would be imported without writing files or config.
     #[arg(long)]
@@ -213,13 +213,13 @@ struct BundleAddArgs {
     #[arg(short, long = "agent", required = true)]
     agents: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
     /// Replace drifted or broken target symlinks during the final link apply step.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
@@ -231,7 +231,7 @@ struct BundleRemoveArgs {
     #[arg(long)]
     source: Option<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Show what would change without writing files or config.
     #[arg(long)]
@@ -249,13 +249,13 @@ struct BundleSyncArgs {
     #[arg(short, long = "agent")]
     agents: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Show what would change without writing files or config.
     #[arg(long)]
     dry_run: bool,
     /// Replace drifted or broken target symlinks during the final link apply step.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
@@ -267,7 +267,7 @@ struct BundleExportArgs {
     #[arg(long)]
     output: PathBuf,
     /// Export from ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Copy currently installed skill bodies into the bundle directory.
     #[arg(long)]
@@ -279,7 +279,7 @@ struct BundleExportArgs {
     #[arg(long)]
     dry_run: bool,
     /// Replace an existing generated output directory.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
@@ -289,7 +289,7 @@ struct RemoveArgs {
     #[arg(required = true)]
     skills: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Remove only from config and lockfile, leaving installed files and symlinks untouched.
     #[arg(long)]
@@ -305,7 +305,7 @@ struct RemoveArgs {
 #[derive(Debug, Args)]
 struct OutdatedArgs {
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Print machine-readable JSON.
     #[arg(long)]
@@ -318,48 +318,48 @@ struct PlanArgs {
     #[arg(long)]
     dry_run: bool,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct ApplyArgs {
     /// Replace drifted or broken target symlinks without touching files or directories.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct InstallArgs {
     /// Use ~/.sksync/config.json and global lockfile instead of project files.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
     /// Replace drifted or broken target symlinks during the final link apply step.
-    #[arg(long)]
+    #[arg(short = 'f', long)]
     force: bool,
 }
 
 #[derive(Debug, Args)]
 struct UpdateArgs {
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct ListArgs {
     /// Use ~/.sksync/config.json instead of project config.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
 #[derive(Debug, Args)]
 struct CheckArgs {
     /// Use ~/.sksync/sksync-lock.json instead of project lockfile.
-    #[arg(long)]
+    #[arg(short = 'g', long)]
     global: bool,
 }
 
@@ -3483,6 +3483,23 @@ mod tests {
     }
 
     #[test]
+    fn short_force_flags_parse_for_link_commands() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "owner/repo/skills/review",
+            "--agent",
+            "pi",
+            "-f",
+        ])
+        .expect("add -f parses");
+        Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi", "-f"])
+            .expect("attach -f parses");
+        Cli::try_parse_from(["sksync", "install", "-f"]).expect("install -f parses");
+        Cli::try_parse_from(["sksync", "apply", "-f"]).expect("apply -f parses");
+    }
+
+    #[test]
     fn force_flags_parse_for_bundle_link_commands() {
         Cli::try_parse_from([
             "sksync",
@@ -3496,6 +3513,83 @@ mod tests {
         .expect("bundle add --force parses");
         Cli::try_parse_from(["sksync", "bundle", "sync", "review-workflow", "--force"])
             .expect("bundle sync --force parses");
+    }
+
+    #[test]
+    fn short_force_flags_parse_for_bundle_commands() {
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "add",
+            "./bundles/review-workflow",
+            "--agent",
+            "pi",
+            "-f",
+        ])
+        .expect("bundle add -f parses");
+        Cli::try_parse_from(["sksync", "bundle", "sync", "review-workflow", "-f"])
+            .expect("bundle sync -f parses");
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundles/team-baseline",
+            "-f",
+        ])
+        .expect("bundle export -f parses");
+    }
+
+    #[test]
+    fn short_global_flags_parse_for_global_commands() {
+        Cli::try_parse_from(["sksync", "init", "-g"]).expect("init -g parses");
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "owner/repo/skills/review",
+            "--agent",
+            "pi",
+            "-g",
+        ])
+        .expect("add -g parses");
+        Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi", "-g"])
+            .expect("attach -g parses");
+        Cli::try_parse_from(["sksync", "doctor", "-g"]).expect("doctor -g parses");
+        Cli::try_parse_from(["sksync", "remove", "review", "-g"]).expect("remove -g parses");
+        Cli::try_parse_from(["sksync", "outdated", "-g"]).expect("outdated -g parses");
+        Cli::try_parse_from(["sksync", "plan", "-g"]).expect("plan -g parses");
+        Cli::try_parse_from(["sksync", "apply", "-g"]).expect("apply -g parses");
+        Cli::try_parse_from(["sksync", "install", "-g"]).expect("install -g parses");
+        Cli::try_parse_from(["sksync", "update", "-g"]).expect("update -g parses");
+        Cli::try_parse_from(["sksync", "check", "-g"]).expect("check -g parses");
+        Cli::try_parse_from(["sksync", "list", "-g"]).expect("list -g parses");
+        Cli::try_parse_from(["sksync", "import", "./skills", "--agent", "pi", "-g"])
+            .expect("import -g parses");
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "add",
+            "./bundles/review-workflow",
+            "--agent",
+            "pi",
+            "-g",
+        ])
+        .expect("bundle add -g parses");
+        Cli::try_parse_from(["sksync", "bundle", "remove", "review-workflow", "-g"])
+            .expect("bundle remove -g parses");
+        Cli::try_parse_from(["sksync", "bundle", "sync", "review-workflow", "-g"])
+            .expect("bundle sync -g parses");
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundles/team-baseline",
+            "-g",
+        ])
+        .expect("bundle export -g parses");
     }
 
     #[test]

@@ -77,12 +77,12 @@ Run commands locally through `cargo run --`:
 
 ```bash
 cargo run -- init
-cargo run -- init --global
+cargo run -- init -g
 cargo run -- init --agents
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
-cargo run -- add owner/repo/path/to/skill --agent pi --force
+cargo run -- add owner/repo/path/to/skill --agent pi -f
 cargo run -- attach skill-name --agent gemini
-cargo run -- attach skill-name --agent gemini --force
+cargo run -- attach skill-name --agent gemini -f
 cargo run -- agents list
 cargo run -- agents doctor
 cargo run -- agents refresh
@@ -91,14 +91,14 @@ cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.agents/skills --agent universal --agent pi
 cargo run -- bundle inspect ./bundle-dir
 cargo run -- bundle add ./bundle-dir --agent pi --dry-run
-cargo run -- bundle add ./bundle-dir --agent pi --force
-cargo run -- bundle sync bundle-name --force
+cargo run -- bundle add ./bundle-dir --agent pi -f
+cargo run -- bundle sync bundle-name -f
 cargo run -- bundle remove bundle-name --dry-run
 cargo run -- remove skill-name
 cargo run -- remove skill-a skill-b
 cargo run -- outdated
 cargo run -- install
-cargo run -- install --force
+cargo run -- install -f
 cargo run -- update
 cargo run -- plan --dry-run
 cargo run -- apply
@@ -118,7 +118,7 @@ Create a starter config for a new project.
 ```bash
 cargo run -- init
 # or initialize global config
-cargo run -- init --global
+cargo run -- init -g
 # or force-refresh only ~/.sksync/agents.json
 cargo run -- init --agents
 ```
@@ -128,7 +128,7 @@ Project mode creates:
 - `sksync.config.json`
 - `.sksync/skills/`
 
-Global mode (`--global`) creates:
+Global mode (`-g` / `--global`) creates:
 
 - `~/.sksync/config.json`
 - `~/.sksync/agents.json`
@@ -140,7 +140,7 @@ If the target config already exists, `init` fails instead of overwriting it. In 
 
 #### Agent target mappings
 
-`~/.sksync/agents.json` stores both global and project agent target directory mappings. Project config uses `project` mappings, while global config (`--global`) uses `global` mappings. Inline `agents` overrides in `sksync.config.json` take highest priority.
+`~/.sksync/agents.json` stores both global and project agent target directory mappings. Project config uses `project` mappings, while global config (`-g` / `--global`) uses `global` mappings. Inline `agents` overrides in `sksync.config.json` take highest priority.
 
 The bundled mappings include entries for major Agent Skills-compatible agents. Examples:
 
@@ -177,10 +177,10 @@ Add an Agent Skills source as a dependency. Given a source and one or more agent
 
 ```bash
 cargo run -- add <source> --agent pi [--agent claude-code]
-cargo run -- add <source> --agent pi --force
+cargo run -- add <source> --agent pi -f
 ```
 
-`--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
+`-f` / `--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
 
 Common examples:
 
@@ -284,10 +284,10 @@ Fetched skills are validated before install:
 
 If validation fails, sksync does not replace the destination and deletes the staging directory.
 
-Pass `--global` to add the dependency to `~/.sksync/config.json` as a global dependency.
+Pass `-g` / `--global` to add the dependency to `~/.sksync/config.json` as a global dependency.
 
 ```bash
-cargo run -- add owner/repo/path/to/skill --agent pi --global
+cargo run -- add owner/repo/path/to/skill --agent pi -g
 ```
 
 ### `sksync bundle`
@@ -296,9 +296,9 @@ Bundles are curated install sets described by `sksync.bundle.json`. A bundle is 
 
 ```bash
 cargo run -- bundle inspect <source>
-cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run] [--force]
+cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run] [-f]
 cargo run -- bundle remove <name> [--source <exact-source>] [--dry-run]
-cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run] [--force]
+cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run] [-f]
 ```
 
 Example manifest:
@@ -339,7 +339,7 @@ cargo run -- bundle remove review-workflow
 
 `bundle add` is all-or-nothing at the config/lockfile level. Existing dependencies with the same normalized source are adopted and keep `managedByBundles: false`, so `bundle remove` later detaches provenance without deleting manually managed dependencies. Existing dependencies with the same skill name but a different source are reported as conflicts and nothing is written.
 
-`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync applies safe membership changes: added entries become dependencies, same-source manual dependencies are adopted, bundle-managed deleted entries are removed, and manual/adopted deleted entries only lose bundle provenance. `bundle add --force` and `bundle sync --force` pass through to the final link step, where only drifted or broken target symlinks may be repaired. Existing skill content updates remain the responsibility of `sksync update`.
+`bundle sync --dry-run` reloads the latest manifest for an already-added bundle and previews membership drift such as new entries, removed entries, source changes, and missing dependency agents. Non-dry-run sync applies safe membership changes: added entries become dependencies, same-source manual dependencies are adopted, bundle-managed deleted entries are removed, and manual/adopted deleted entries only lose bundle provenance. `bundle add -f` / `--force` and `bundle sync -f` / `--force` pass through to the final link step, where only drifted or broken target symlinks may be repaired. Existing skill content updates remain the responsibility of `sksync update`.
 
 Authoring tips:
 
@@ -372,11 +372,11 @@ Attach an existing dependency-managed skill to additional agents. sksync preserv
 
 ```bash
 cargo run -- attach cuekit-dogfood --agent claude-code
-cargo run -- attach cuekit-dogfood --agent pi --agent gemini --global
-cargo run -- attach cuekit-dogfood --agent gemini --force
+cargo run -- attach cuekit-dogfood --agent pi --agent gemini -g
+cargo run -- attach cuekit-dogfood --agent gemini -f
 ```
 
-`--force` has the same link-repair semantics as `apply --force`: drifted or broken target symlinks can be recreated, but files and directories are never replaced.
+`-f` / `--force` has the same link-repair semantics as `apply -f`: drifted or broken target symlinks can be recreated, but files and directories are never replaced.
 
 ### `sksync agents`
 
@@ -394,7 +394,7 @@ Run a read-only diagnosis across config, lockfile, sources, targets, and agent m
 
 ```bash
 cargo run -- doctor
-cargo run -- doctor --global
+cargo run -- doctor -g
 ```
 
 ### `sksync import`
@@ -405,7 +405,7 @@ Copy existing agent skill directories into `.sksync/skills` or `~/.sksync/skills
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.claude/skills --agent claude-code
 cargo run -- import ~/.agents/skills --agent universal --agent pi
-cargo run -- import ~/.jcode/skills --agent jcode --global
+cargo run -- import ~/.jcode/skills --agent jcode -g
 ```
 
 ### `sksync remove`
@@ -415,7 +415,7 @@ Remove one or more skills from dependency config, installed skill directories, m
 ```bash
 cargo run -- remove cuekit-dogfood
 cargo run -- remove cuekit-dogfood qa-skill review-helper
-cargo run -- remove cuekit-dogfood --global
+cargo run -- remove cuekit-dogfood -g
 cargo run -- remove cuekit-dogfood --keep-files
 cargo run -- remove cuekit-dogfood --config-only
 ```
@@ -435,7 +435,7 @@ Compare the lockfile with upstream and show skills that can be updated. Git sour
 
 ```bash
 cargo run -- outdated
-cargo run -- outdated --global
+cargo run -- outdated -g
 cargo run -- outdated --json
 ```
 
@@ -445,7 +445,7 @@ Read `sksync.config.json`, inspect current target state, and show planned create
 
 ```bash
 cargo run -- plan --dry-run
-cargo run -- plan --global
+cargo run -- plan -g
 ```
 
 ### `sksync install`
@@ -454,11 +454,11 @@ If `sksync-lock.json` exists, reconstruct skills from lockfile sources first, th
 
 ```bash
 cargo run -- install
-cargo run -- install --global
-cargo run -- install --force
+cargo run -- install -g
+cargo run -- install -f
 ```
 
-`install --force` applies only after skills are reconstructed: it may repair drifted or broken target symlinks, but regular files and directories remain protected.
+`install -f` / `--force` applies only after skills are reconstructed: it may repair drifted or broken target symlinks, but regular files and directories remain protected.
 
 ### `sksync update`
 
@@ -466,19 +466,19 @@ Download or copy the latest or pinned skills from `dependencies` sources into `s
 
 ```bash
 cargo run -- update
-cargo run -- update --global
+cargo run -- update -g
 ```
 
 Supported sources are the same as `sksync add`. Repo-root / parent-directory discovery happens during `add` and is saved as a selected path, so `update` / `install` re-fetch the saved source.
 
 ### `sksync apply`
 
-Run the planner's target-link actions, then write `sksync-lock.json`. Without `--force`, `apply` fails on missing sources, conflicts, or drift. With `--force`, it may unlink and recreate drifted or broken target symlinks; regular files and directories remain blocking conflicts.
+Run the planner's target-link actions, then write `sksync-lock.json`. Without `-f` / `--force`, `apply` fails on missing sources, conflicts, or drift. With `-f` / `--force`, it may unlink and recreate drifted or broken target symlinks; regular files and directories remain blocking conflicts.
 
 ```bash
 cargo run -- apply
-cargo run -- apply --force
-cargo run -- apply --global
+cargo run -- apply -f
+cargo run -- apply -g
 ```
 
 ### `sksync check`
@@ -487,7 +487,7 @@ Compare `sksync-lock.json` with the current state and detect source hash drift, 
 
 ```bash
 cargo run -- check
-cargo run -- check --global
+cargo run -- check -g
 ```
 
 ### `sksync list`
@@ -496,7 +496,7 @@ List configured skills and each agent's target path / state. If `sksync-lock.jso
 
 ```bash
 cargo run -- list
-cargo run -- list --global
+cargo run -- list -g
 ```
 
 ### `sksync wizard`
@@ -511,7 +511,7 @@ cargo run -- tui
 
 ### Safety rules
 
-- Never overwrite existing regular files or directories, even with `--force`.
+- Never overwrite existing regular files or directories, even with `-f` / `--force`.
 - `add` rolls back dependency config on failure.
 - `remove` deletes only symlinks managed by sksync.
 - `remove` deletes installed files only when they are under the configured `skillDir`.
@@ -520,9 +520,9 @@ cargo run -- tui
 - `outdated` compares Git remote refs with lockfile commits.
 - `install` prefers lockfile resolved sources when a lockfile exists.
 - `update` fetches from dependencies and refreshes the lockfile.
-- Link-applying commands support `--force` only for drifted or broken target symlinks; missing sources, regular files, and directories are never force-replaced.
-- Project config resolves targets as project scope; `--global` config resolves targets as user scope.
-- `apply` fails on conflict, drift, or missing source states unless `--force` can safely repair a symlink.
+- Link-applying commands support `-f` / `--force` only for drifted or broken target symlinks; missing sources, regular files, and directories are never force-replaced.
+- Project config resolves targets as project scope; `-g` / `--global` config resolves targets as user scope.
+- `apply` fails on conflict, drift, or missing source states unless `-f` / `--force` can safely repair a symlink.
 - Parent directories for target paths are created as needed.
 - Use temporary directories for tests and examples when possible.
 
