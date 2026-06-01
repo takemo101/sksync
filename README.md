@@ -508,7 +508,7 @@ cargo run -- list -g
 
 ### `sksync wizard`
 
-Launch an interactive prompt wizard for add / attach / detach / remove skill flows, Add bundle, Remove bundle, default agents configuration, list+check, and plan+apply flows. `ask` and `tui` are compatible aliases.
+Launch an interactive prompt wizard for add / attach / detach / remove skill flows, Add bundle, Remove bundle, default agents configuration, list+check, and plan+apply flows. The Add skill flow can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns. `ask` and `tui` are compatible aliases.
 
 ```bash
 cargo run -- wizard
