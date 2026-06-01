@@ -261,7 +261,7 @@ sksync list -g
 
 ## `sksync wizard`
 
-Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, Remove bundle, default-agents, list+check, and plan+apply. Add skill can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns. `ask` and `tui` are compatible aliases.
+Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, Remove bundle, default-agents, list+check, and plan+apply. Add skill can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns entered one at a time. `ask` and `tui` are compatible aliases.
 
 ```sh
 sksync wizard

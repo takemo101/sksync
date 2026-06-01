@@ -223,23 +223,33 @@ fn prompt_package_filter_choice() -> Result<PackageFilterChoice> {
 }
 
 fn prompt_include_patterns() -> Result<Vec<String>> {
-    let value = Text::new("Include patterns")
-        .with_help_message("Comma-separated patterns relative to the skill package root, e.g. SKILL.md, references")
-        .prompt()
-        .context("failed to read include patterns")?;
-    parse_include_patterns(&value)
-}
+    let mut patterns = Vec::new();
+    loop {
+        let value = Text::new("Include pattern")
+            .with_help_message(
+                "One pattern relative to the skill package root, e.g. SKILL.md or references",
+            )
+            .prompt()
+            .context("failed to read include pattern")?;
+        patterns.push(validate_include_pattern(&value)?);
 
-fn parse_include_patterns(value: &str) -> Result<Vec<String>> {
-    let patterns = value
-        .split([',', '\n'])
-        .map(str::trim)
-        .filter(|pattern| !pattern.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+        if !prompt_confirm("Add another include pattern?", false)? {
+            break;
+        }
+    }
     crate::domain::package_filter::PackageFilter::new(patterns.clone())
         .context("invalid include patterns")?;
     Ok(patterns)
+}
+
+fn validate_include_pattern(value: &str) -> Result<String> {
+    let pattern = value.trim();
+    if pattern.contains(',') || pattern.contains('\n') || pattern.contains('\r') {
+        bail!("enter one include pattern at a time")
+    }
+    crate::domain::package_filter::PackageFilter::new(vec![pattern.to_owned()])
+        .context("invalid include pattern")?;
+    Ok(pattern.to_owned())
 }
 
 fn run_add_bundle_flow(project_root: &Path) -> Result<()> {
@@ -841,9 +851,9 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 mod tests {
     use super::{
         add_skill_args, bundle_add_args, bundle_provenance_choices_from_value, bundle_remove_args,
-        config_path_for_scope, default_agent_indexes, merge_agent_options, parse_include_patterns,
-        wizard_intents, write_default_agents_config, BundleProvenanceChoice, ConfigScope, Intent,
-        PackageFilterChoice,
+        config_path_for_scope, default_agent_indexes, merge_agent_options,
+        validate_include_pattern, wizard_intents, write_default_agents_config,
+        BundleProvenanceChoice, ConfigScope, Intent, PackageFilterChoice,
     };
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
@@ -916,11 +926,10 @@ mod tests {
     }
 
     #[test]
-    fn include_patterns_parse_commas_and_newlines() {
-        assert_eq!(
-            parse_include_patterns("SKILL.md, references\nassets/*.png").unwrap(),
-            vec!["SKILL.md", "references", "assets/*.png"]
-        );
+    fn include_pattern_prompt_accepts_one_pattern_at_a_time() {
+        assert_eq!(validate_include_pattern(" SKILL.md ").unwrap(), "SKILL.md");
+        assert!(validate_include_pattern("SKILL.md, references").is_err());
+        assert!(validate_include_pattern("SKILL.md\nreferences").is_err());
     }
 
     #[test]
