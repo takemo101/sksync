@@ -2,6 +2,7 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::skill::SkillName;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -52,6 +53,7 @@ pub struct BundleProvenance {
 pub struct BundleEntry {
     pub skill_name: SkillName,
     pub source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

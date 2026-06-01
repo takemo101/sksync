@@ -9,6 +9,7 @@ use crate::application::source::parse_install_source_string;
 use crate::domain::bundle::{
     BundleEntry, BundleManifest, BundleName, BundleNameError, BundleProvenance,
 };
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::infrastructure::git::GitClient;
 use crate::infrastructure::json::{
@@ -30,6 +31,7 @@ pub struct LoadedBundleEntry {
     pub skill_name: String,
     pub original_source: String,
     pub normalized_source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,7 @@ impl BundleAddStatus {
 pub struct BundleAddPlanItem {
     pub skill_name: String,
     pub source: String,
+    pub include: Option<PackageFilter>,
     pub agents: Vec<String>,
     pub provenance: BundleProvenance,
     pub status: BundleAddStatus,
@@ -154,6 +157,7 @@ pub struct BundleSyncPlanItem {
     pub status: BundleSyncStatus,
     pub local_source: Option<String>,
     pub manifest_source: Option<String>,
+    pub include: Option<PackageFilter>,
     pub agents: Vec<String>,
     pub message: Option<String>,
 }
@@ -356,6 +360,7 @@ pub fn build_bundle_export_plan(
         entries.push(BundleEntry {
             skill_name: skill_name.clone(),
             source: manifest_source.clone(),
+            include: dependency.include.clone(),
         });
         items.push(BundleExportPlanItem {
             skill_name: skill_name.as_str().to_owned(),
@@ -602,6 +607,7 @@ fn load_local_bundle(raw_source: &str, path: &Path, config_root: &Path) -> Resul
                 skill_name: entry.skill_name.as_str().to_owned(),
                 original_source: entry.source.clone(),
                 normalized_source,
+                include: entry.include.clone(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -642,6 +648,7 @@ fn load_git_bundle(git: &GitInstallSource) -> Result<LoadedBundle> {
                     skill_name: entry.skill_name.as_str().to_owned(),
                     original_source: entry.source.clone(),
                     normalized_source,
+                    include: entry.include.clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -884,10 +891,12 @@ mod tests {
             BundleExportDependencyConfig {
                 name: "review".to_owned(),
                 source: "github:org/repo/skills/review#main".to_owned(),
+                include: None,
             },
             BundleExportDependencyConfig {
                 name: "qa".to_owned(),
                 source: "./vendor/qa".to_owned(),
+                include: None,
             },
         ];
         let plan = build_bundle_export_plan(BundleExportPlanInput {
@@ -934,6 +943,7 @@ mod tests {
         let dependencies = vec![BundleExportDependencyConfig {
             name: "review".to_owned(),
             source: "github:org/repo/skills/review#main".to_owned(),
+            include: None,
         }];
         let resolved_skills = vec![BundleExportResolvedSkill {
             name: "review".to_owned(),
@@ -1046,6 +1056,7 @@ mod tests {
                 entries: vec![BundleEntry {
                     skill_name: SkillName::new("review").unwrap(),
                     source: manifest_source.clone(),
+                    include: None,
                 }],
             },
             output: output.clone(),

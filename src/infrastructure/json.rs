@@ -103,6 +103,8 @@ pub struct RawBundleManifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawBundleEntry {
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -127,6 +129,7 @@ pub struct RawStructuredInstallSource {
 pub struct BundleExportDependencyConfig {
     pub name: String,
     pub source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +229,8 @@ pub enum BundleManifestJsonError {
     },
     #[error("bundle entry '{name}' duplicates another entry after name normalization")]
     DuplicateEntryName { name: String },
+    #[error("invalid bundle manifest field: {0}")]
+    InvalidField(String),
     #[error("bundle entry '{name}' source must not be empty")]
     EmptyEntrySource { name: String },
 }
@@ -261,6 +266,10 @@ pub fn write_bundle_manifest(
                 entry.skill_name.as_str().to_owned(),
                 RawBundleEntry {
                     source: entry.source.clone(),
+                    include: entry
+                        .include
+                        .as_ref()
+                        .map(|include| include.patterns().to_vec()),
                 },
             )
         })
@@ -324,9 +333,19 @@ pub fn parse_bundle_manifest(
         if entry.source.trim().is_empty() {
             return Err(BundleManifestJsonError::EmptyEntrySource { name: entry_name });
         }
+        let include = entry
+            .include
+            .map(PackageFilter::new)
+            .transpose()
+            .map_err(|source| {
+                BundleManifestJsonError::InvalidField(format!(
+                    "bundle entry '{entry_name}' include: {source}"
+                ))
+            })?;
         entries.push(BundleEntry {
             skill_name,
             source: entry.source,
+            include,
         });
     }
 
@@ -804,6 +823,7 @@ impl FileDependencyConfigStore {
             exported.push(BundleExportDependencyConfig {
                 name: name.clone(),
                 source: dependency_export_source(dependency, name)?,
+                include: dependency_include(dependency, name)?,
             });
         }
         exported.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1006,6 +1026,7 @@ impl FileDependencyConfigStore {
                 Ok(BundleAddPlanItem {
                     skill_name: entry.skill_name.clone(),
                     source: entry.normalized_source.clone(),
+                    include: entry.include.clone(),
                     agents: agents.clone(),
                     provenance: provenance.clone(),
                     status,
@@ -1032,18 +1053,22 @@ impl FileDependencyConfigStore {
             match existing {
                 Some(dependency) => merge_bundle_dependency(dependency, item)?,
                 None => {
-                    dependencies.insert(
-                        item.skill_name.clone(),
-                        json!({
-                            "source": item.source,
-                            "agents": item.agents,
-                            "bundles": [{
-                                "name": item.provenance.name.as_str(),
-                                "source": item.provenance.source,
-                            }],
-                            "managedByBundles": true,
-                        }),
-                    );
+                    let mut dependency = json!({
+                        "source": item.source,
+                        "agents": item.agents,
+                        "bundles": [{
+                            "name": item.provenance.name.as_str(),
+                            "source": item.provenance.source,
+                        }],
+                        "managedByBundles": true,
+                    });
+                    if let Some(include) = &item.include {
+                        dependency
+                            .as_object_mut()
+                            .expect("dependency is an object")
+                            .insert("include".to_owned(), json!(include.patterns()));
+                    }
+                    dependencies.insert(item.skill_name.clone(), dependency);
                 }
             }
         }
@@ -1219,6 +1244,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::SourceChanged,
                             local_source: local_source.clone(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: Vec::new(),
                             message: Some(format!(
                                 "local source {:?} differs from bundle manifest source {:?}",
@@ -1239,6 +1265,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::Adopt,
                             local_source: dependency_source(existing, &entry.skill_name).ok(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: agents.clone(),
                             message: None,
                         });
@@ -1249,6 +1276,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::SourceChanged,
                             local_source: local_source.clone(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: Vec::new(),
                             message: Some(format!(
                                 "existing dependency source {:?} differs from bundle manifest source {:?}",
@@ -1263,6 +1291,7 @@ impl FileDependencyConfigStore {
                     status: BundleSyncStatus::MissingAgents,
                     local_source: None,
                     manifest_source: Some(entry.normalized_source.clone()),
+                    include: entry.include.clone(),
                     agents: Vec::new(),
                     message: Some(
                         "no dependency agents could be inferred; pass --agent".to_owned(),
@@ -1273,6 +1302,7 @@ impl FileDependencyConfigStore {
                     status: BundleSyncStatus::Add,
                     local_source: None,
                     manifest_source: Some(entry.normalized_source.clone()),
+                    include: entry.include.clone(),
                     agents: agents.clone(),
                     message: None,
                 }),
@@ -1304,6 +1334,7 @@ impl FileDependencyConfigStore {
                 status,
                 local_source: dependency_source(dependency, skill_name).ok(),
                 manifest_source: None,
+                include: None,
                 agents: Vec::new(),
                 message: None,
             });
@@ -1468,6 +1499,40 @@ fn dependency_export_source(
     Ok(match install_source {
         InstallSource::Git(git) => git_source_to_config_string(&git),
         InstallSource::Local(path) => path.to_string_lossy().replace('\\', "/"),
+    })
+}
+
+fn dependency_include(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<Option<PackageFilter>, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let Some(include) = dependency.get("include") else {
+        return Ok(None);
+    };
+    let patterns = include.as_array().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.include must be an array"
+        ))
+    })?;
+    let patterns = patterns
+        .iter()
+        .map(|pattern| {
+            pattern.as_str().map(str::to_owned).ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField(format!(
+                    "dependencies.{skill_name}.include must contain only strings"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    PackageFilter::new(patterns).map(Some).map_err(|error| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.include is invalid: {error}"
+        ))
     })
 }
 
@@ -1666,6 +1731,11 @@ fn merge_bundle_dependency(
         if seen_agents.insert(agent.clone()) {
             merged_agents.push(agent.clone());
         }
+    }
+    if let Some(include) = &item.include {
+        object.insert("include".to_owned(), json!(include.patterns()));
+    } else {
+        object.remove("include");
     }
     object.insert("agents".to_owned(), json!(merged_agents));
 
@@ -2153,7 +2223,7 @@ mod tests {
               "name": "review-workflow",
               "description": "Review workflow skills.",
               "entries": {
-                "review": { "source": "./skills/review" },
+                "review": { "source": "./skills/review", "include": ["SKILL.md"] },
                 "qa": { "source": "github:org/qa-skills/skills/qa#main" }
               }
             }"#,
@@ -2164,7 +2234,12 @@ mod tests {
         assert_eq!(manifest.name.as_str(), "review-workflow");
         assert_eq!(manifest.entries.len(), 2);
         assert_eq!(manifest.entries[0].skill_name.as_str(), "qa");
+        assert_eq!(manifest.entries[0].include, None);
         assert_eq!(manifest.entries[1].skill_name.as_str(), "review");
+        assert_eq!(
+            manifest.entries[1].include,
+            Some(PackageFilter::manifest_only())
+        );
     }
 
     #[test]
@@ -2178,10 +2253,12 @@ mod tests {
                 BundleEntry {
                     skill_name: SkillName::new("review").unwrap(),
                     source: "./skills/review".to_owned(),
+                    include: Some(PackageFilter::manifest_only()),
                 },
                 BundleEntry {
                     skill_name: SkillName::new("qa").unwrap(),
                     source: "./skills/qa".to_owned(),
+                    include: None,
                 },
             ],
         };
@@ -2202,6 +2279,10 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>(),
             vec!["qa".to_owned(), "review".to_owned()]
+        );
+        assert_eq!(
+            value["entries"]["review"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
         parse_bundle_manifest(&content, path.to_string_lossy().as_ref())
             .expect("written manifest should parse");
@@ -2802,22 +2883,26 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "new-skill".to_owned(),
                 original_source: "./new".to_owned(),
+                include: None,
                 normalized_source: "./new".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "merge-me".to_owned(),
                 original_source: "github:org/repo/skills/merge-me".to_owned(),
+                include: None,
                 normalized_source: "https://github.com/org/repo/tree/HEAD/skills/merge-me"
                     .to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "skip-me".to_owned(),
                 original_source: "./skip".to_owned(),
+                include: None,
                 normalized_source: "./skip".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "conflict-me".to_owned(),
                 original_source: "./same".to_owned(),
+                include: None,
                 normalized_source: "./same".to_owned(),
             },
         ];
@@ -2873,11 +2958,13 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "review".to_owned(),
                 original_source: "./review".to_owned(),
+                include: Some(PackageFilter::manifest_only()),
                 normalized_source: "./review".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "qa".to_owned(),
                 original_source: "./qa".to_owned(),
+                include: None,
                 normalized_source: "./qa".to_owned(),
             },
         ];
@@ -2899,6 +2986,10 @@ mod tests {
             value["dependencies"]["review"]["managedByBundles"],
             serde_json::Value::Null
         );
+        assert_eq!(
+            value["dependencies"]["review"]["include"],
+            serde_json::json!(["SKILL.md"])
+        );
         assert_eq!(value["dependencies"]["qa"]["managedByBundles"], true);
     }
 
@@ -2914,6 +3005,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "review".to_owned(),
             original_source: "./review".to_owned(),
+            include: None,
             normalized_source: "./review".to_owned(),
         }];
 
@@ -3039,21 +3131,25 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "keep-me".to_owned(),
                 original_source: "./keep".to_owned(),
+                include: None,
                 normalized_source: "./keep".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "source-changed".to_owned(),
                 original_source: "./new".to_owned(),
+                include: None,
                 normalized_source: "./new".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "add-me".to_owned(),
                 original_source: "./add".to_owned(),
+                include: None,
                 normalized_source: "./add".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "adopt-me".to_owned(),
                 original_source: "./adopt".to_owned(),
+                include: None,
                 normalized_source: "./adopt".to_owned(),
             },
         ];
@@ -3106,6 +3202,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "new-entry".to_owned(),
             original_source: "./new".to_owned(),
+            include: None,
             normalized_source: "./new".to_owned(),
         }];
 
@@ -3143,6 +3240,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "new-entry".to_owned(),
             original_source: "./new".to_owned(),
+            include: None,
             normalized_source: "./new".to_owned(),
         }];
 

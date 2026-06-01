@@ -47,8 +47,22 @@
           "minLength": 1,
           "pattern": "\\S",
           "description": "Skill source for this entry. Relative sources resolve from the bundle manifest directory."
+        },
+        "include": {
+          "$ref": "#/$defs/includePatterns",
+          "description": "Optional package filter evaluated relative to the resolved skill package root. Missing means install the full package."
         }
       }
+    },
+    "includePatterns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).*\\S.*$"
+      },
+      "uniqueItems": true
     }
   }
 }

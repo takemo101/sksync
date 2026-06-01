@@ -1023,6 +1023,7 @@ fn bundle_sync_add_plan(
                 Some(BundleAddPlanItem {
                     skill_name: item.skill_name.clone(),
                     source: item.manifest_source.clone().unwrap_or_default(),
+                    include: item.include.clone(),
                     agents: item.agents.clone(),
                     provenance: provenance.clone(),
                     status,
