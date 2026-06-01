@@ -80,6 +80,7 @@ cargo run -- init
 cargo run -- init -g
 cargo run -- init --agents
 cargo run -- add owner/repo/path/to/skill --agent pi --agent claude-code
+cargo run -- add owner/repo --name skill-name --agent pi --manifest-only
 cargo run -- add owner/repo/path/to/skill --agent pi -f
 cargo run -- attach skill-name --agent gemini
 cargo run -- attach skill-name --agent gemini -f
@@ -177,10 +178,12 @@ Add an Agent Skills source as a dependency. Given a source and one or more agent
 
 ```bash
 cargo run -- add <source> --agent pi [--agent claude-code]
+cargo run -- add <source> --agent pi --include SKILL.md --include references
+cargo run -- add <source> --name <skill> --agent pi --manifest-only
 cargo run -- add <source> --agent pi -f
 ```
 
-`-f` / `--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
+`--include <pattern>` copies only matched files/directories from the resolved skill package root, and `--manifest-only` is a shortcut for `--include SKILL.md`. Missing include filters keep the existing full-package copy behavior. `-f` / `--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
 
 Common examples:
 
@@ -201,6 +204,10 @@ cargo run -- add https://www.skills.sh/owner/repo/skill-name --agent pi
 
 # local directory
 cargo run -- add ./local-skill --agent pi --agent gemini
+
+# package filters
+cargo run -- add ogulcancelik/herdr --name herdr --agent pi --manifest-only
+cargo run -- add org/repo/skills/review --agent pi --include SKILL.md --include references
 ```
 
 #### Source formats
@@ -315,7 +322,7 @@ Example manifest:
 }
 ```
 
-Bundle entry keys are final skill names. Entry sources may be local, GitHub, `skills.sh`, or manifest-relative paths. Bundle manifests never choose target agents.
+Bundle entry keys are final skill names. Entry sources may be local, GitHub, `skills.sh`, or manifest-relative paths. Bundle entries may also carry `include` filters, for example `"include": ["SKILL.md"]`, to install only selected package files. Bundle manifests never choose target agents.
 
 Typical team flow:
 
@@ -364,7 +371,7 @@ cargo run -- bundle export team-baseline --output ./bundles/team-baseline --snap
 cargo run -- bundle export team-baseline --output ./bundles/team-baseline --skill review --skill qa
 ```
 
-Default `bundle export` is lightweight: it preserves dependency source references and writes only `sksync.bundle.json`. `--snapshot` creates a self-contained bundle directory from installed skill bodies and rewrites entries to `./skills/<name>` sources. Export never writes agents, local bundle provenance, or `managedByBundles` into the bundle manifest.
+Default `bundle export` is lightweight: it preserves dependency source references and include filters, and writes only `sksync.bundle.json`. `--snapshot` creates a self-contained bundle directory from installed skill bodies and rewrites entries to `./skills/<name>` sources. Export never writes agents, local bundle provenance, or `managedByBundles` into the bundle manifest.
 
 ### `sksync attach`
 
@@ -532,7 +539,7 @@ Project-local generated files are git-ignored:
 
 - `.sksync/` - downloaded/copied skill bodies (`.sksync/skills/<skill>`)
 - `skills/` - legacy generated skill store from older defaults
-- `sksync-lock.json` - portable lockfile v4. It is project-local generated state, but if shared, it can reproduce skills across macOS / Linux with `sksync install`.
+- `sksync-lock.json` - portable lockfile v5. It is project-local generated state, but if shared, it can reproduce skills across macOS / Linux with `sksync install`.
 
 The primary file to share is `sksync.config.json`.
 
@@ -540,10 +547,10 @@ The primary file to share is `sksync.config.json`.
 
 - [`sksync.config.example.json`](sksync.config.example.json) - project/global install dependencies
 - [`sksync.agents.example.json`](sksync.agents.example.json) - global and project agent target mappings (`~/.sksync/agents.json`) with bundled Agent Skills entries
-- [`sksync-lock.example.json`](sksync-lock.example.json) - current portable lockfile v4 example
+- [`sksync-lock.example.json`](sksync-lock.example.json) - current portable lockfile v5 example
 - [`schemas/sksync.schema.json`](schemas/sksync.schema.json) - JSON Schema for `config.json` / `sksync.config.json`
 - [`schemas/sksync.agents.schema.json`](schemas/sksync.agents.schema.json) - JSON Schema for `agents.json`
-- [`schemas/sksync-lock.schema.json`](schemas/sksync-lock.schema.json) - JSON Schema for current portable `sksync-lock.json` v4
+- [`schemas/sksync-lock.schema.json`](schemas/sksync-lock.schema.json) - JSON Schema for current portable `sksync-lock.json` v5
 
 ## Linux / Docker compatibility
 

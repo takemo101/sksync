@@ -274,7 +274,7 @@ Rust implementation guidance:
 
 ## 12. Backward compatibility governance
 
-`sksync.config.json` and `sksync-lock.json` are public APIs. Lockfile v4 stores only portable source/hash/resolved install-source data and recomputes machine-local target paths from current config. v2/v3 remain read-compatible; new writes use v4.
+`sksync.config.json` and `sksync-lock.json` are public APIs. Lockfile v5 stores portable source/hash/resolved install-source data plus optional include filters, and recomputes machine-local target paths from current config. v2/v3/v4 remain read-compatible; new writes use v5.
 
 Rules:
 

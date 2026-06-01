@@ -84,6 +84,7 @@ fn bundle_schema_rejects_unknown_entry_fields() {
 
     assert_eq!(entry["additionalProperties"], false);
     assert_eq!(entry["required"], serde_json::json!(["source"]));
+    assert!(entry["properties"].get("include").is_some());
 }
 
 #[test]
@@ -112,15 +113,18 @@ fn config_schema_structured_sources_match_runtime_requirements() {
 }
 
 #[test]
-fn lock_schema_covers_current_portable_v4_fields() {
+fn lock_schema_covers_current_portable_v5_fields() {
     let schema = parse_json(include_str!("../schemas/sksync-lock.schema.json"));
 
-    assert_eq!(schema["properties"]["lockfileVersion"]["const"], 4);
+    assert_eq!(schema["properties"]["lockfileVersion"]["const"], 5);
     assert_eq!(schema["properties"]["root"]["const"], ".");
     assert_eq!(
         schema["$defs"]["lockedSkill"]["required"],
         serde_json::json!(["source", "hash", "files"])
     );
+    assert!(schema["$defs"]["lockedSkill"]["properties"]
+        .get("include")
+        .is_some());
     assert_eq!(
         schema["$defs"]["lockedGitInstallSource"]["required"],
         serde_json::json!(["type", "url", "path"])

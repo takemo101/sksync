@@ -4,7 +4,8 @@
   "description": "Skills for review and QA workflows.",
   "entries": {
     "review": {
-      "source": "./skills/review"
+      "source": "./skills/review",
+      "include": ["SKILL.md", "references"]
     },
     "qa": {
       "source": "github:org/qa-skills/skills/qa#main"

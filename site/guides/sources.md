@@ -105,6 +105,10 @@ sksync add https://www.skills.sh/owner/repo/skill-name --agent pi
 
 # Local directory
 sksync add ./local-skill --agent pi --agent gemini
+
+# Install only selected package files
+sksync add ogulcancelik/herdr --name herdr --agent pi --manifest-only
+sksync add org/repo/skills/review --agent pi --include SKILL.md --include references
 ```
 
 ## Related

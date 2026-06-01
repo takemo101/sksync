@@ -102,6 +102,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
   "dependencies": {
     "reviewer": {
       "source": "github:owner/repo/skills/reviewer#main",
+      "include": ["SKILL.md", "references"],
       "agents": ["pi", "claude-code", "codex"]
     },
     "browser": {
@@ -116,7 +117,7 @@ Schema: [`schemas/sksync.schema.json`](../schemas/sksync.schema.json)
 }
 ```
 
-Source strings should stay compact. `sksync add <source> --agent <agent>` updates `dependencies` and then runs install/apply behavior. With `--global`, it updates `~/.sksync/config.json`.
+Source strings should stay compact. `sksync add <source> --agent <agent>` updates `dependencies` and then runs install/apply behavior. With `--global`, it updates `~/.sksync/config.json`. Optional `include` filters are separate from the source identity; they select which files/directories to copy from the resolved package root. Missing `include` means copy the full package. `sksync add --manifest-only` stores `include: ["SKILL.md"]`, while repeated `--include <pattern>` stores custom filters.
 
 `defaultAgents` is used only by the wizard to preselect agents in `Add skill` and `Add bundle` flows. CLI `add` and `bundle add` still require explicit `--agent` arguments for compatibility and clarity.
 
@@ -284,9 +285,9 @@ Schema: [`schemas/sksync-lock.schema.json`](../schemas/sksync-lock.schema.json)
 
 Like `package-lock.json`, the lockfile stores the information needed for `sksync install` to reconstruct the same skill bodies on another environment. Supported OS targets are macOS and Linux for now; Windows-specific path/symlink differences are out of scope. Linux distribution assets use musl to avoid glibc-version coupling.
 
-### Portable lockfile v4
+### Portable lockfile v5
 
-Lockfile v4 avoids machine-local absolute paths.
+Lockfile v5 avoids machine-local absolute paths and records effective include filters.
 
 - `root` is always `"."`.
 - `skills.<name>.source` is relative to the lockfile directory.
@@ -296,12 +297,13 @@ Lockfile v4 avoids machine-local absolute paths.
   - Local sources under the project/global root can be stored as relative paths.
   - Absolute local sources outside the project/global root are non-portable.
 - `files[].path` is relative to the skill directory.
+- Optional `include` records the effective package filter. Missing means full-package install.
 - Agent target paths and symlink state are not stored.
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
-  "lockfileVersion": 4,
+  "lockfileVersion": 5,
   "generatedBy": "sksync@0.0.8",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
@@ -314,6 +316,7 @@ Lockfile v4 avoids machine-local absolute paths.
         "ref": "abc123resolvedcommit",
         "path": "crates/but/skill"
       },
+      "include": ["SKILL.md"],
       "hash": "sha256-...",
       "files": [
         { "path": "SKILL.md", "hash": "sha256-..." }
@@ -348,7 +351,7 @@ Lockfile `source` means "where the skill body should live in the current environ
 
 ### Backward compatibility
 
-Existing v3 lockfiles remain readable. If v3 contains absolute `root` / `source`, it is treated as legacy and rewritten to v4 relative form the next time `install`, `update`, or `apply` writes a lockfile.
+Existing v3/v4 lockfiles remain readable. If legacy lockfiles contain absolute `root` / `source`, they are rewritten to the current v5 relative form the next time `install`, `update`, or `apply` writes a lockfile.
 
 ### Non-portable local source
 

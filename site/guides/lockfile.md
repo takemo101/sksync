@@ -1,13 +1,13 @@
 # Lockfile & Sync
 
-`sksync-lock.json` records the exact resolved source and per-file hashes for every installed skill, so the same skills can be reconstructed and verified later. It is the portable lockfile **v4**.
+`sksync-lock.json` records the exact resolved source, optional package filter, and per-file hashes for every installed skill, so the same skills can be reconstructed and verified later. It is the portable lockfile **v5**.
 
 ## What the lockfile pins
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
-  "lockfileVersion": 4,
+  "lockfileVersion": 5,
   "generatedBy": "sksync@0.0.8",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
@@ -20,6 +20,7 @@
         "ref": "0123456789abcdef0123456789abcdef01234567",
         "path": "path/to/skills/example-skill"
       },
+      "include": ["SKILL.md", "references"],
       "hash": "sha256-placeholder",
       "files": [
         { "path": "SKILL.md", "hash": "sha256-placeholder" }
@@ -31,10 +32,11 @@
 
 | Field | Meaning |
 |---|---|
-| `lockfileVersion` | Lockfile schema version (currently `4`). |
+| `lockfileVersion` | Lockfile schema version (currently `5`). |
 | `generatedBy` / `generatedAt` | The sksync version and timestamp that produced the lockfile. |
 | `skills.<name>.source` | The local skill body path under `skillDir`. |
 | `skills.<name>.installSource` | The resolved upstream — for Git, the **commit** `ref`, `url`, and subpath. |
+| `skills.<name>.include` | Optional effective include filter. Missing means the full package was installed. |
 | `skills.<name>.hash` / `files[]` | Aggregate and per-file SHA-256 hashes used by `check`. |
 
 Because the Git `installSource.ref` is a resolved commit (not a moving branch), `sksync install` reconstructs the same content. The lockfile is portable across macOS and Linux; Linux release assets use musl binaries so the same project lockfile can be replayed across common Debian / Ubuntu environments.
@@ -99,7 +101,7 @@ sksync outdated --json
 
 ### check {#check}
 
-Compares `sksync-lock.json` against current state to detect source hash drift, missing targets, and broken symlinks. Source hashes come from the lockfile; target health is recomputed from the current config / agent mapping. Exits non-zero on any problem — suitable for CI-like verification.
+Compares `sksync-lock.json` against current state to detect source hash drift, include-filter mismatch, missing targets, and broken symlinks. Source hashes and effective include filters come from the lockfile; target health is recomputed from the current config / agent mapping. Exits non-zero on any problem — suitable for CI-like verification.
 
 ```sh
 sksync check

@@ -5,6 +5,7 @@
   "dependencies": {
     "example-skill": {
       "source": "github:owner/repo/path/to/skills/example-skill#main",
+      "include": ["SKILL.md", "references"],
       "agents": ["pi", "claude-code", "codex", "gemini", "opencode"]
     },
     "local-example": {

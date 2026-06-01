@@ -110,7 +110,7 @@ rm -rf ~/.sksync
 |---|---|---|
 | `sksync.config.json` | project | Dependencies, `skillDir`, `defaultAgents`, optional inline `agents` override. The file you share. |
 | `.sksync/skills/<skill>/` | project | Downloaded/copied skill bodies. Git-ignored. |
-| `sksync-lock.json` | project | Portable lockfile v4 — resolved sources and file hashes. Git-ignored by default. |
+| `sksync-lock.json` | project | Portable lockfile v5 — resolved sources, include filters, and file hashes. Git-ignored by default. |
 | `~/.sksync/config.json` | global | Global dependencies (`--global`). |
 | `~/.sksync/agents.json` | global | Agent target directory mappings (global + project). |
 | `~/.sksync/skills/<skill>/` | global | Globally installed skill bodies. |
