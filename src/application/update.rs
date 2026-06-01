@@ -134,6 +134,7 @@ mod tests {
                 name: SkillName::new("review").unwrap(),
                 source: SourcePath::new(skill_dir.join("review")).unwrap(),
                 install_source: Some(install_source),
+                include: None,
                 agents: vec![AgentKind::Pi],
             }],
             default_agents: Vec::new(),

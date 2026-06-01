@@ -96,6 +96,7 @@ mod tests {
                 name: name.clone(),
                 source: SourcePath::new(".sksync/skills/review").unwrap(),
                 install_source: Some(source),
+                include: None,
                 agents: Vec::new(),
             }],
             default_agents: Vec::new(),

@@ -27,6 +27,7 @@ use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, LEGACY_LOCKFILE_VERSION,
     LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::Scope;
 use crate::domain::skill::{SkillName, SourcePath, SourcePathError};
 use crate::domain::source::{GitInstallSource, InstallSource};
@@ -71,6 +72,8 @@ pub struct RawSkillConfig {
 #[serde(rename_all = "camelCase")]
 pub struct RawDependencyConfig {
     pub source: RawInstallSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
@@ -451,6 +454,7 @@ impl RawConfig {
                 name: skill_name,
                 source,
                 install_source: None,
+                include: None,
                 agents: skill_agents,
             });
         }
@@ -467,17 +471,27 @@ impl RawConfig {
             if skill_agents.is_empty() {
                 return Err(ConfigResolveError::MissingAgents { skill: name });
             }
+            let include = raw_dependency
+                .include
+                .clone()
+                .map(PackageFilter::new)
+                .transpose()
+                .map_err(|error| ConfigResolveError::InvalidInstallSource {
+                    skill: name.clone(),
+                    message: error.to_string(),
+                })?;
             let install_source = parse_install_source(&name, raw_dependency.source, config_root)?;
             let source = dependency_source_path(&skill_dir, skill_name.as_str(), &install_source)
                 .map_err(|source| ConfigResolveError::InvalidSkillSource {
-                skill: name.clone(),
-                source,
-            })?;
+                    skill: name.clone(),
+                    source,
+                })?;
 
             skills.push(ResolvedSkill {
                 name: skill_name,
                 source,
                 install_source: Some(install_source),
+                include,
                 agents: skill_agents,
             });
         }
@@ -3229,6 +3243,59 @@ mod tests {
             config.skills[0].source.as_path(),
             config_root.join("skills/owner/repo/review")
         );
+    }
+
+    #[test]
+    fn dependency_include_patterns_are_resolved() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "./vendor/review",
+                  "include": ["references", "SKILL.md"],
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect("config resolves");
+
+        let include = config.skills[0]
+            .include
+            .as_ref()
+            .expect("include filter resolves");
+        assert_eq!(include.patterns(), &["SKILL.md", "references"]);
+    }
+
+    #[test]
+    fn dependency_include_rejects_parent_components() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "./vendor/review",
+                  "include": ["../SKILL.md"],
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect_err("unsafe include should fail");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::InvalidInstallSource { .. }
+        ));
     }
 
     #[test]

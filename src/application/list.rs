@@ -222,6 +222,7 @@ mod tests {
                 name: SkillName::new("review").unwrap(),
                 source,
                 install_source: None,
+                include: None,
                 agents: vec![AgentKind::Pi],
             }],
             default_agents: Vec::new(),
