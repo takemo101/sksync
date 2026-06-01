@@ -65,12 +65,18 @@ pub enum DependencyConfigStoreError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddDependencyOptions {
+    pub include: Option<PackageFilter>,
+}
+
 pub trait DependencyConfigStore {
     fn add_dependency(
         &self,
         skill_name: &str,
         source: &str,
         agents: &[String],
+        options: AddDependencyOptions,
     ) -> Result<(), DependencyConfigStoreError>;
 
     fn add_dependency_agents(

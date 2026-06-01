@@ -4,17 +4,19 @@ use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::config::ResolvedConfig;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::{
-    DependencyConfigStore, LinkApplier, LinkStore, LockfileStore, SkillInstaller, SourceStore,
-    TargetResolver,
+    AddDependencyOptions, DependencyConfigStore, LinkApplier, LinkStore, LockfileStore,
+    SkillInstaller, SourceStore, TargetResolver,
 };
 use crate::application::update::{apply_update_report_sources, update_dependencies, UpdateReport};
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::Lockfile;
+use crate::domain::package_filter::PackageFilter;
 
 #[derive(Debug, Clone)]
 pub struct AddSelection {
     pub skill_name: String,
     pub source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,9 @@ where
             &selection.skill_name,
             &selection.source,
             agents,
+            AddDependencyOptions {
+                include: selection.include.clone(),
+            },
         )?;
         added.push(AddedDependency {
             skill_name: selection.skill_name,
@@ -99,7 +104,7 @@ mod tests {
     use super::{run_add_workflow, AddSelection, AddWorkflow};
     use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{
-        DependencyConfigStore, DependencyConfigStoreError, InstalledSkillSource, LinkApplier,
+        AddDependencyOptions, DependencyConfigStore, DependencyConfigStoreError, InstalledSkillSource, LinkApplier,
         LinkApplyError, LinkStore, LinkStoreError, LockfileStore, LockfileStoreError,
         SkillInstallError, SkillInstallRequest, SkillInstaller, SourceStore, SourceStoreError,
         TargetResolver, TargetResolverError, TargetState,
@@ -125,6 +130,7 @@ mod tests {
             skill_name: &str,
             source: &str,
             agents: &[String],
+            _options: AddDependencyOptions,
         ) -> Result<(), DependencyConfigStoreError> {
             self.added.borrow_mut().push((
                 skill_name.to_owned(),
@@ -278,6 +284,7 @@ mod tests {
             vec![AddSelection {
                 skill_name: "review".to_owned(),
                 source: "owner/repo/skills/review".to_owned(),
+                include: None,
             }],
             &["pi".to_owned()],
             false,

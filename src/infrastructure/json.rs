@@ -15,8 +15,8 @@ use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
-    display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
-    LockfileStore, LockfileStoreError,
+    display_path, AddDependencyOptions, ConfigStore, ConfigStoreError, DependencyConfigStore,
+    DependencyConfigStoreError, LockfileStore, LockfileStoreError,
 };
 use crate::application::source::{
     git_url_from_repo, parse_install_source_string as parse_source_string, validate_git_subpath,
@@ -817,6 +817,7 @@ impl DependencyConfigStore for FileDependencyConfigStore {
         skill_name: &str,
         source: &str,
         agents: &[String],
+        options: AddDependencyOptions,
     ) -> Result<(), DependencyConfigStoreError> {
         let mut value = self.load_or_default()?;
         let dependencies = dependencies_object_mut(&mut value)?;
@@ -849,6 +850,11 @@ impl DependencyConfigStore for FileDependencyConfigStore {
             ))
         })?;
         object.insert("source".to_owned(), json!(source));
+        if let Some(include) = options.include {
+            object.insert("include".to_owned(), json!(include.patterns()));
+        } else {
+            object.remove("include");
+        }
         object.insert("agents".to_owned(), json!(merged_agents));
         dependencies.insert(skill_name.to_owned(), dependency);
         self.write_value(&value)
@@ -2067,10 +2073,11 @@ mod tests {
         LockfileJsonError, RawConfig,
     };
     use crate::application::config::ConfigResolveError;
-    use crate::application::ports::{ConfigStore, DependencyConfigStore};
+    use crate::application::ports::{AddDependencyOptions, ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
     use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile, SUPPORTED_LOCKFILE_VERSION};
+    use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::source::{GitInstallSource, InstallSource};
@@ -2611,13 +2618,19 @@ mod tests {
         let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
 
         store
-            .add_dependency("review", "./review", &["pi".to_owned()])
+            .add_dependency(
+                "review",
+                "./review",
+                &["pi".to_owned()],
+                AddDependencyOptions { include: None },
+            )
             .expect("add pi dependency");
         store
             .add_dependency(
                 "review",
                 "./review",
                 &["claude-code".to_owned(), "pi".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("merge claude-code dependency");
 
@@ -2628,6 +2641,33 @@ mod tests {
         assert_eq!(
             value["dependencies"]["review"]["agents"],
             serde_json::json!(["pi", "claude-code"])
+        );
+    }
+
+    #[test]
+    fn dependency_config_store_writes_include_patterns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+
+        store
+            .add_dependency(
+                "herdr",
+                "github:ogulcancelik/herdr#main",
+                &["pi".to_owned()],
+                AddDependencyOptions {
+                    include: Some(PackageFilter::manifest_only()),
+                },
+            )
+            .expect("add dependency");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(
+            value["dependencies"]["herdr"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
     }
 
@@ -2685,6 +2725,7 @@ mod tests {
                 "review",
                 "./review",
                 &["claude".to_owned(), "claude_code".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("add dependency");
 
@@ -3510,6 +3551,7 @@ mod tests {
                 "review",
                 "./review",
                 &["pi".to_owned(), "claude".to_owned(), "gemini".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("add dependency");
         let remaining = store

@@ -27,12 +27,13 @@ use crate::application::outdated::{
     collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
 };
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
-use crate::application::ports::{DependencyConfigStore, LockfileStore};
+use crate::application::ports::{AddDependencyOptions, DependencyConfigStore, LockfileStore};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
 use crate::domain::bundle::BundleName;
 use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
 use crate::domain::skill::SkillName;
@@ -118,6 +119,12 @@ struct AddArgs {
     /// Override inferred skill name.
     #[arg(long)]
     name: Option<String>,
+    /// Copy only matched files/directories from the resolved skill package root. Repeatable.
+    #[arg(long = "include", value_name = "pattern", conflicts_with = "manifest_only")]
+    include: Vec<String>,
+    /// Shortcut for --include SKILL.md.
+    #[arg(long, conflicts_with = "include")]
+    manifest_only: bool,
     /// Write ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(short = 'g', long)]
     global: bool,
@@ -623,7 +630,12 @@ fn run_import(args: ImportArgs) -> Result<()> {
             copied_destinations.push(candidate.destination.clone());
             copy_dir_all(&candidate.source, &candidate.destination)?;
             let source = config_source_for_path(&candidate.destination, &current_dir);
-            store.add_dependency(&candidate.name, &source, &args.agents)?;
+            store.add_dependency(
+                &candidate.name,
+                &source,
+                &args.agents,
+                AddDependencyOptions { include: None },
+            )?;
             print_success(format!(
                 "Imported {} -> {}",
                 candidate.name,
@@ -1580,7 +1592,8 @@ fn run_add(args: AddArgs) -> Result<()> {
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
     print_progress("Resolving skill source...");
-    let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path)?;
+    let include = package_filter_from_add_args(&args)?;
+    let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path, include)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
         let store =
@@ -2336,10 +2349,21 @@ fn score_skill_choice(
     }
 }
 
+fn package_filter_from_add_args(args: &AddArgs) -> Result<Option<PackageFilter>> {
+    if args.manifest_only {
+        return Ok(Some(PackageFilter::manifest_only()));
+    }
+    if args.include.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PackageFilter::new(args.include.clone())?))
+}
+
 fn resolve_add_selections(
     source: &str,
     requested_name: Option<&str>,
     config_path: &Path,
+    include: Option<PackageFilter>,
 ) -> Result<Vec<AddSelection>> {
     let config_root = config_path.parent().unwrap_or_else(|| Path::new("."));
     let fallback_name = infer_skill_name(source);
@@ -2362,6 +2386,7 @@ fn resolve_add_selections(
                 &selection.relative_path,
                 discovered.rewrite_mode,
             ),
+            include: include.clone(),
         })
         .collect())
 }
@@ -3480,6 +3505,50 @@ mod tests {
         Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi", "--force"])
             .expect("attach --force parses");
         Cli::try_parse_from(["sksync", "install", "--force"]).expect("install --force parses");
+    }
+
+    #[test]
+    fn add_include_flags_parse() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--include",
+            "SKILL.md",
+            "--include",
+            "references",
+        ])
+        .expect("add --include parses");
+    }
+
+    #[test]
+    fn add_manifest_only_parses() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--manifest-only",
+        ])
+        .expect("add --manifest-only parses");
+    }
+
+    #[test]
+    fn add_manifest_only_conflicts_with_include() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--manifest-only",
+            "--include",
+            "SKILL.md",
+        ])
+        .expect_err("manifest-only conflicts with include");
     }
 
     #[test]
