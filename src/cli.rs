@@ -2173,6 +2173,7 @@ fn apply_locked_install_sources(config: &mut ResolvedConfig, lockfile: &Lockfile
             if let Some(install_source) = &locked.install_source {
                 skill.install_source = Some(install_source.clone());
             }
+            skill.include = locked.include.clone();
         }
     }
 }
@@ -2841,21 +2842,70 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, compact_revision, compact_source, copy_dir_all,
-        format_progress_message, format_selected_skill_choices, global_config_root_from_home,
-        is_managed_skill_dir, list_state_label, reject_legacy_registry_source,
-        remove_installed_skill_dir, scan_import_candidates, score_skill_choice,
-        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup,
+        agent_target_mappings_from_config, apply_locked_install_sources, compact_revision,
+        compact_source, copy_dir_all, format_progress_message, format_selected_skill_choices,
+        global_config_root_from_home, is_managed_skill_dir, list_state_label,
+        reject_legacy_registry_source, remove_installed_skill_dir, scan_import_candidates,
+        score_skill_choice, select_skill_candidates, truncate_middle, Cli, Command,
+        ConfigFileBackup,
     };
+    use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
     };
+    use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
+    use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
+    use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::InstallSource;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn locked_install_sources_apply_include_filters() {
+        let mut config = ResolvedConfig {
+            skill_dir: SourcePath::new(".sksync/skills").unwrap(),
+            agents: BTreeMap::new(),
+            skills: vec![ResolvedSkill {
+                name: SkillName::new("review").unwrap(),
+                source: SourcePath::new(".sksync/skills/review").unwrap(),
+                install_source: Some(InstallSource::Local(PathBuf::from("old"))),
+                include: None,
+                agents: Vec::new(),
+            }],
+            default_agents: Vec::new(),
+        };
+        let lockfile = Lockfile {
+            generated_by: "test".to_owned(),
+            generated_at: "test".to_owned(),
+            root: PathBuf::from("."),
+            skills: BTreeMap::from([(
+                SkillName::new("review").unwrap(),
+                LockedSkill {
+                    source: SourcePath::new(".sksync/skills/review").unwrap(),
+                    install_source: Some(InstallSource::Local(PathBuf::from("locked"))),
+                    include: Some(PackageFilter::manifest_only()),
+                    hash: Digest::new("sha256-test").unwrap(),
+                    files: Vec::new(),
+                    targets: Vec::new(),
+                },
+            )]),
+        };
+
+        apply_locked_install_sources(&mut config, &lockfile);
+
+        assert_eq!(
+            config.skills[0].install_source,
+            Some(InstallSource::Local(PathBuf::from("locked")))
+        );
+        assert_eq!(
+            config.skills[0].include,
+            Some(PackageFilter::manifest_only())
+        );
+    }
 
     #[test]
     fn progress_message_is_colored_only_for_terminal_stderr() {

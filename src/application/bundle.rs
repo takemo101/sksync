@@ -359,10 +359,14 @@ pub fn build_bundle_export_plan(
         let snapshot_destination = source_path
             .as_ref()
             .map(|_| input.output.join("skills").join(&name));
+        let include = match input.mode {
+            BundleExportMode::ManifestOnly => dependency.include.clone(),
+            BundleExportMode::Snapshot => None,
+        };
         entries.push(BundleEntry {
             skill_name: skill_name.clone(),
             source: manifest_source.clone(),
-            include: dependency.include.clone(),
+            include,
         });
         items.push(BundleExportPlanItem {
             skill_name: skill_name.as_str().to_owned(),
@@ -893,7 +897,7 @@ mod tests {
             BundleExportDependencyConfig {
                 name: "review".to_owned(),
                 source: "github:org/repo/skills/review#main".to_owned(),
-                include: None,
+                include: Some(crate::domain::package_filter::PackageFilter::manifest_only()),
             },
             BundleExportDependencyConfig {
                 name: "qa".to_owned(),
@@ -920,6 +924,10 @@ mod tests {
             plan.items[1].manifest_source,
             "github:org/repo/skills/review#main"
         );
+        assert_eq!(
+            plan.manifest.entries[1].include,
+            Some(crate::domain::package_filter::PackageFilter::manifest_only())
+        );
     }
 
     #[test]
@@ -945,7 +953,7 @@ mod tests {
         let dependencies = vec![BundleExportDependencyConfig {
             name: "review".to_owned(),
             source: "github:org/repo/skills/review#main".to_owned(),
-            include: None,
+            include: Some(crate::domain::package_filter::PackageFilter::manifest_only()),
         }];
         let resolved_skills = vec![BundleExportResolvedSkill {
             name: "review".to_owned(),
@@ -972,6 +980,7 @@ mod tests {
             plan.items[0].snapshot_destination.as_deref(),
             Some(Path::new("./bundles/team-baseline/skills/review"))
         );
+        assert_eq!(plan.manifest.entries[0].include, None);
     }
 
     #[test]
