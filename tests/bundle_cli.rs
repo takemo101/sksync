@@ -323,6 +323,55 @@ fn bundle_sync_dry_run_prints_progress_to_stderr() {
 }
 
 #[test]
+fn bundle_sync_applies_include_drift() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    fs::create_dir_all(root.join("bundle/skills/review")).expect("create skill");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review" }
+          }
+        }"#,
+    )
+    .expect("write bundle manifest");
+    write_bundle_skill(root, "bundle/skills/review", "review");
+    fs::write(root.join("bundle/skills/review/EXTRA.md"), "extra").expect("write extra");
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+    assert!(root.join(".sksync/skills/review/EXTRA.md").is_file());
+
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review", "include": ["SKILL.md"] }
+          }
+        }"#,
+    )
+    .expect("write updated bundle manifest");
+
+    assert_success(sksync(root, &["bundle", "sync", "review-workflow"]));
+
+    let config = read_project_config(root);
+    assert_eq!(
+        config["dependencies"]["review"]["include"],
+        serde_json::json!(["SKILL.md"])
+    );
+    assert!(root.join(".sksync/skills/review/SKILL.md").is_file());
+    assert!(!root.join(".sksync/skills/review/EXTRA.md").exists());
+}
+
+#[test]
 fn bundle_sync_adds_new_bundle_entry() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();

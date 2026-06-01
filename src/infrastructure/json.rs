@@ -987,7 +987,8 @@ impl FileDependencyConfigStore {
                             existing,
                             &entry.skill_name,
                             &entry.normalized_source,
-                        )? {
+                        )? || dependency_include(existing, &entry.skill_name)? != entry.include
+                        {
                             BundleAddStatus::Conflict
                         } else {
                             let existing_agents =
@@ -1012,14 +1013,22 @@ impl FileDependencyConfigStore {
                     }
                 };
                 let message = if status == BundleAddStatus::Conflict {
-                    existing
-                        .and_then(|existing| dependency_source(existing, &entry.skill_name).ok())
-                        .map(|source| {
+                    existing.and_then(|existing| {
+                        let source = dependency_source(existing, &entry.skill_name).ok()?;
+                        let include = dependency_include(existing, &entry.skill_name).ok()?;
+                        Some(if source == entry.normalized_source {
                             format!(
-                            "existing dependency source {source:?} differs from bundle source {:?}",
-                            entry.normalized_source
-                        )
+                                "existing dependency include {} differs from bundle include {}",
+                                format_include(include.as_ref()),
+                                format_include(entry.include.as_ref())
+                            )
+                        } else {
+                            format!(
+                                "existing dependency source {source:?} differs from bundle source {:?}",
+                                entry.normalized_source
+                            )
                         })
+                    })
                 } else {
                     None
                 };
@@ -1236,7 +1245,24 @@ impl FileDependencyConfigStore {
                         &entry.skill_name,
                         &entry.normalized_source,
                     )? {
-                        keep_count += 1;
+                        let local_include = dependency_include(existing, &entry.skill_name)?;
+                        if local_include == entry.include {
+                            keep_count += 1;
+                        } else {
+                            items.push(BundleSyncPlanItem {
+                                skill_name: entry.skill_name.clone(),
+                                status: BundleSyncStatus::IncludeChanged,
+                                local_source: dependency_source(existing, &entry.skill_name).ok(),
+                                manifest_source: Some(entry.normalized_source.clone()),
+                                include: entry.include.clone(),
+                                agents: Vec::new(),
+                                message: Some(format!(
+                                    "include changed: local {}, manifest {}",
+                                    format_include(local_include.as_ref()),
+                                    format_include(entry.include.as_ref())
+                                )),
+                            });
+                        }
                     } else {
                         let local_source = dependency_source(existing, &entry.skill_name).ok();
                         items.push(BundleSyncPlanItem {
@@ -1500,6 +1526,12 @@ fn dependency_export_source(
         InstallSource::Git(git) => git_source_to_config_string(&git),
         InstallSource::Local(path) => path.to_string_lossy().replace('\\', "/"),
     })
+}
+
+fn format_include(include: Option<&PackageFilter>) -> String {
+    include
+        .map(|include| include.patterns().join(", "))
+        .unwrap_or_else(|| "<full package>".to_owned())
 }
 
 fn dependency_include(
@@ -3094,6 +3126,12 @@ mod tests {
                   "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
                   "managedByBundles": true
                 },
+                "include-changed": {
+                  "source": "./include",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
                 "remove-me": {
                   "source": "./removed",
                   "agents": ["pi"],
@@ -3141,6 +3179,12 @@ mod tests {
                 normalized_source: "./new".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
+                skill_name: "include-changed".to_owned(),
+                original_source: "./include".to_owned(),
+                include: Some(PackageFilter::manifest_only()),
+                normalized_source: "./include".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
                 skill_name: "add-me".to_owned(),
                 original_source: "./add".to_owned(),
                 include: None,
@@ -3166,6 +3210,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "source-changed",
+                "include-changed",
                 "add",
                 "adopt",
                 "detach-provenance",

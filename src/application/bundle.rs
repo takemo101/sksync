@@ -131,6 +131,7 @@ pub enum BundleSyncStatus {
     Remove,
     DetachProvenance,
     SourceChanged,
+    IncludeChanged,
     MissingAgents,
 }
 
@@ -142,6 +143,7 @@ impl BundleSyncStatus {
             Self::Remove => "remove",
             Self::DetachProvenance => "detach-provenance",
             Self::SourceChanged => "source-changed",
+            Self::IncludeChanged => "include-changed",
             Self::MissingAgents => "missing-agents",
         }
     }

@@ -1017,7 +1017,9 @@ fn bundle_sync_add_plan(
             .filter_map(|item| {
                 let status = match item.status {
                     BundleSyncStatus::Add => BundleAddStatus::Create,
-                    BundleSyncStatus::Adopt => BundleAddStatus::Merge,
+                    BundleSyncStatus::Adopt | BundleSyncStatus::IncludeChanged => {
+                        BundleAddStatus::Merge
+                    }
                     _ => return None,
                 };
                 Some(BundleAddPlanItem {
