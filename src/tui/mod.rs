@@ -14,8 +14,10 @@ mod bundle;
 mod commands;
 mod config;
 mod default_agents;
+mod operations;
+mod skill;
 
-use config::{global_config_root, load_config_for_scope, ConfigScope};
+use config::{global_config_root, ConfigScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -49,34 +51,6 @@ impl fmt::Display for Intent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoveMode {
-    Normal,
-    KeepFiles,
-    ConfigOnly,
-}
-
-impl RemoveMode {
-    fn append_args(self, args: &mut Vec<String>) {
-        match self {
-            Self::Normal => {}
-            Self::KeepFiles => args.push("--keep-files".to_owned()),
-            Self::ConfigOnly => args.push("--config-only".to_owned()),
-        }
-    }
-}
-
-impl fmt::Display for RemoveMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Normal => "Normal removal (no option; removes symlinks too)",
-            Self::KeepFiles => "Keep installed skill files (--keep-files)",
-            Self::ConfigOnly => "Config and lockfile only (--config-only)",
-        };
-        formatter.write_str(label)
-    }
-}
-
 fn wizard_intents() -> Vec<Intent> {
     vec![
         Intent::AddSkill,
@@ -103,119 +77,17 @@ pub fn run(project_root: PathBuf) -> Result<()> {
 
         match intent {
             Intent::AddSkill => add_skill::run(&project_root)?,
-            Intent::AttachAgent => run_attach_agent_flow(&project_root)?,
-            Intent::RemoveSkill => run_remove_flow(&project_root)?,
-            Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
+            Intent::AttachAgent => skill::run_attach_agent(&project_root)?,
+            Intent::RemoveSkill => skill::run_remove(&project_root)?,
+            Intent::RemoveAgent => skill::run_remove_agent(&project_root)?,
             Intent::AddBundle => bundle::run_add(&project_root)?,
             Intent::RemoveBundle => bundle::run_remove(&project_root)?,
-            Intent::Status => run_status_flow(&project_root)?,
-            Intent::Apply => run_apply_flow(&project_root)?,
+            Intent::Status => operations::run_status(&project_root)?,
+            Intent::Apply => operations::run_apply(&project_root)?,
             Intent::ConfigureDefaultAgents => default_agents::run(&project_root)?,
             Intent::Quit => return Ok(()),
         }
     }
-}
-
-fn run_attach_agent_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should be updated?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "Select the skill to attach to agent(s)")?;
-    let agents = prompt_agents_not_for_skill(&config, &skill, scope)?;
-
-    let mut args = vec!["attach".to_owned(), skill];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent);
-    }
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-
-    confirm_and_run(
-        project_root,
-        "Attach this skill to the selected agent(s)?",
-        args,
-    )
-}
-
-fn run_remove_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should the skill be removed from?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skills = prompt_skills_from_config(&config, "Select skill(s) to remove")?;
-    let mode = prompt_remove_mode()?;
-
-    let mut args = vec!["remove".to_owned()];
-    args.extend(skills);
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-    mode.append_args(&mut args);
-
-    confirm_and_run(project_root, "Remove this skill?", args)
-}
-
-fn run_remove_agent_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should be updated?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "Select the skill to detach from an agent")?;
-    let agents = prompt_agents_for_skill(&config, &skill)?;
-
-    let mut args = vec!["remove".to_owned(), skill];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent);
-    }
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-
-    confirm_and_run(
-        project_root,
-        "Detach this skill from the selected agent(s)?",
-        args,
-    )
-}
-
-fn run_status_flow(project_root: &Path) -> Result<()> {
-    let global = prompt_config_scope("Which config should be inspected?")?.is_global();
-    let check = prompt_confirm("Run check after list?", true)?;
-
-    let mut list_args = vec!["list".to_owned()];
-    if global {
-        list_args.push("--global".to_owned());
-    }
-    run_sksync(project_root, &list_args)?;
-
-    if check {
-        let mut check_args = vec!["check".to_owned()];
-        if global {
-            check_args.push("--global".to_owned());
-        }
-        run_sksync(project_root, &check_args)?;
-    }
-    Ok(())
-}
-
-fn run_apply_flow(project_root: &Path) -> Result<()> {
-    let global = prompt_config_scope("Which config should be applied?")?.is_global();
-    let force = prompt_confirm("Allow safe replacement of managed links?", false)?;
-
-    let mut plan_args = vec!["plan".to_owned()];
-    if global {
-        plan_args.push("--global".to_owned());
-    }
-    println!("dry-run plan:");
-    run_sksync(project_root, &plan_args)?;
-
-    let mut apply_args = vec!["apply".to_owned()];
-    if global {
-        apply_args.push("--global".to_owned());
-    }
-    if force {
-        apply_args.push("--force".to_owned());
-    }
-
-    confirm_and_run(project_root, "Apply these link changes?", apply_args)
 }
 
 fn confirm_and_run(project_root: &Path, question: &str, args: Vec<String>) -> Result<()> {
@@ -230,20 +102,6 @@ fn prompt_config_scope(message: &str) -> Result<ConfigScope> {
     Select::new(message, vec![ConfigScope::Project, ConfigScope::Global])
         .prompt()
         .context("failed to read config scope")
-}
-
-fn prompt_remove_mode() -> Result<RemoveMode> {
-    Select::new(
-        "Select remove mode",
-        vec![
-            RemoveMode::Normal,
-            RemoveMode::KeepFiles,
-            RemoveMode::ConfigOnly,
-        ],
-    )
-    .with_help_message("Normal removal is the same as CLI `sksync remove <skill>`")
-    .prompt()
-    .context("failed to read remove mode")
 }
 
 fn prompt_skill_from_config(config: &ResolvedConfig, message: &str) -> Result<String> {
