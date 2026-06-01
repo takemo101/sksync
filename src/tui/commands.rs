@@ -1,4 +1,5 @@
-use super::{BundleProvenanceChoice, ConfigScope, PackageFilterChoice};
+use super::add_skill::PackageFilterChoice;
+use super::{BundleProvenanceChoice, ConfigScope};
 
 pub(super) fn add_skill_args(
     source: &str,
@@ -76,7 +77,8 @@ pub(super) fn bundle_remove_args(
 #[cfg(test)]
 mod tests {
     use super::{add_skill_args, bundle_add_args, bundle_remove_args};
-    use crate::tui::{BundleProvenanceChoice, ConfigScope, PackageFilterChoice};
+    use crate::tui::add_skill::PackageFilterChoice;
+    use crate::tui::{BundleProvenanceChoice, ConfigScope};
 
     #[test]
     fn add_skill_args_omit_include_flags_for_full_package() {
