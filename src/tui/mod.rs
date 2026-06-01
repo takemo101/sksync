@@ -27,6 +27,24 @@ enum Intent {
     Quit,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PackageFilterChoice {
+    FullPackage,
+    ManifestOnly,
+    Custom(Vec<String>),
+}
+
+impl fmt::Display for PackageFilterChoice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::FullPackage => "Full package",
+            Self::ManifestOnly => "Manifest only (SKILL.md)",
+            Self::Custom(_) => "Custom include patterns",
+        };
+        formatter.write_str(label)
+    }
+}
+
 impl fmt::Display for Intent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -140,26 +158,88 @@ fn run_add_flow(project_root: &Path) -> Result<()> {
         .with_help_message("Optional; leave blank to infer from source")
         .prompt()
         .context("failed to read name override")?;
+    let package_filter = prompt_package_filter_choice()?;
     let scope = prompt_config_scope("Where should this dependency be added?")?;
     let config = load_optional_config_for_scope(project_root, scope)?;
     let default_agents = default_agents_from_config(config.as_ref());
     let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
-    let global = scope.is_global();
+    let args = add_skill_args(&source, name.trim(), &agents, scope, &package_filter);
 
-    let mut args = vec!["add".to_owned(), source];
+    confirm_and_run(project_root, "Run this command?", args)
+}
+
+fn add_skill_args(
+    source: &str,
+    name: &str,
+    agents: &[String],
+    scope: ConfigScope,
+    package_filter: &PackageFilterChoice,
+) -> Vec<String> {
+    let mut args = vec!["add".to_owned(), source.to_owned()];
     for agent in agents {
         args.push("--agent".to_owned());
-        args.push(agent);
+        args.push(agent.clone());
     }
     if !name.trim().is_empty() {
         args.push("--name".to_owned());
         args.push(name.trim().to_owned());
     }
-    if global {
+    if scope.is_global() {
         args.push("--global".to_owned());
     }
+    match package_filter {
+        PackageFilterChoice::FullPackage => {}
+        PackageFilterChoice::ManifestOnly => args.push("--manifest-only".to_owned()),
+        PackageFilterChoice::Custom(patterns) => {
+            for pattern in patterns {
+                args.push("--include".to_owned());
+                args.push(pattern.clone());
+            }
+        }
+    }
+    args
+}
 
-    confirm_and_run(project_root, "Run this command?", args)
+fn prompt_package_filter_choice() -> Result<PackageFilterChoice> {
+    let choice = Select::new(
+        "Which package files should be installed?",
+        vec![
+            PackageFilterChoice::FullPackage,
+            PackageFilterChoice::ManifestOnly,
+            PackageFilterChoice::Custom(Vec::new()),
+        ],
+    )
+    .with_help_message("Full package keeps current behavior; manifest-only copies only SKILL.md.")
+    .prompt()
+    .context("failed to read package filter choice")?;
+
+    match choice {
+        PackageFilterChoice::Custom(_) => {
+            let patterns = prompt_include_patterns()?;
+            Ok(PackageFilterChoice::Custom(patterns))
+        }
+        other => Ok(other),
+    }
+}
+
+fn prompt_include_patterns() -> Result<Vec<String>> {
+    let value = Text::new("Include patterns")
+        .with_help_message("Comma-separated patterns relative to the skill package root, e.g. SKILL.md, references")
+        .prompt()
+        .context("failed to read include patterns")?;
+    parse_include_patterns(&value)
+}
+
+fn parse_include_patterns(value: &str) -> Result<Vec<String>> {
+    let patterns = value
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    crate::domain::package_filter::PackageFilter::new(patterns.clone())
+        .context("invalid include patterns")?;
+    Ok(patterns)
 }
 
 fn run_add_bundle_flow(project_root: &Path) -> Result<()> {
@@ -760,9 +840,10 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bundle_add_args, bundle_provenance_choices_from_value, bundle_remove_args,
-        config_path_for_scope, default_agent_indexes, merge_agent_options, wizard_intents,
-        write_default_agents_config, BundleProvenanceChoice, ConfigScope, Intent,
+        add_skill_args, bundle_add_args, bundle_provenance_choices_from_value, bundle_remove_args,
+        config_path_for_scope, default_agent_indexes, merge_agent_options, parse_include_patterns,
+        wizard_intents, write_default_agents_config, BundleProvenanceChoice, ConfigScope, Intent,
+        PackageFilterChoice,
     };
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
@@ -771,6 +852,76 @@ mod tests {
     use crate::infrastructure::json::AgentMappingConfig;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn add_skill_args_omit_include_flags_for_full_package() {
+        assert_eq!(
+            add_skill_args(
+                "owner/repo",
+                "",
+                &["pi".to_owned()],
+                ConfigScope::Project,
+                &PackageFilterChoice::FullPackage,
+            ),
+            vec!["add", "owner/repo", "--agent", "pi"]
+        );
+    }
+
+    #[test]
+    fn add_skill_args_include_manifest_only_flag() {
+        assert_eq!(
+            add_skill_args(
+                "ogulcancelik/herdr",
+                "herdr",
+                &["pi".to_owned()],
+                ConfigScope::Project,
+                &PackageFilterChoice::ManifestOnly,
+            ),
+            vec![
+                "add",
+                "ogulcancelik/herdr",
+                "--agent",
+                "pi",
+                "--name",
+                "herdr",
+                "--manifest-only",
+            ]
+        );
+    }
+
+    #[test]
+    fn add_skill_args_include_custom_patterns() {
+        assert_eq!(
+            add_skill_args(
+                "org/repo/skills/review",
+                "",
+                &["pi".to_owned(), "claude-code".to_owned()],
+                ConfigScope::Global,
+                &PackageFilterChoice::Custom(vec!["SKILL.md".to_owned(), "references".to_owned()]),
+            ),
+            vec![
+                "add",
+                "org/repo/skills/review",
+                "--agent",
+                "pi",
+                "--agent",
+                "claude-code",
+                "--global",
+                "--include",
+                "SKILL.md",
+                "--include",
+                "references",
+            ]
+        );
+    }
+
+    #[test]
+    fn include_patterns_parse_commas_and_newlines() {
+        assert_eq!(
+            parse_include_patterns("SKILL.md, references\nassets/*.png").unwrap(),
+            vec!["SKILL.md", "references", "assets/*.png"]
+        );
+    }
 
     #[test]
     fn wizard_intents_include_add_bundle() {
