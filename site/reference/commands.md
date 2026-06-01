@@ -28,6 +28,8 @@ Add an Agent Skills source as a dependency: append to the config, fetch the skil
 ```sh
 sksync add <source> --agent <agent> [--agent <agent> …]
 sksync add <source> --name <skill> --agent <agent>
+sksync add <source> --agent <agent> --include SKILL.md --include references
+sksync add <source> --name <skill> --agent <agent> --manifest-only
 sksync add <source> --agent <agent> -g
 sksync add <source> --agent <agent> -f
 ```
@@ -36,10 +38,12 @@ sksync add <source> --agent <agent> -f
 |---|---|
 | `--agent <agent>` | Agent to link the skill into. Repeatable. Required. |
 | `--name <skill>` | Disambiguate repo-root discovery to a single skill by frontmatter/dir name. |
+| `--include <pattern>` | Copy only matched files/directories from the resolved skill package root. Repeatable. Every pattern must match. |
+| `--manifest-only` | Shortcut for `--include SKILL.md`. Conflicts with `--include`. |
 | `-f`, `--force` | During the final link apply step, replace drifted or broken target symlinks only. Never replaces files or directories. |
 | `-g`, `--global` | Add to `~/.sksync/config.json`. |
 
-Source forms (GitHub shorthand, tree URL, skills.sh, local) and discovery rules → [Sources & Discovery](/guides/sources). Fetched skills are validated for `SKILL.md` + frontmatter `name`/`description` before install.
+Source forms (GitHub shorthand, tree URL, skills.sh, local), discovery rules, and include-filter semantics → [Sources & Discovery](/guides/sources). Fetched skills are validated for `SKILL.md` + frontmatter `name`/`description` before install.
 
 ## `sksync attach`
 
@@ -80,7 +84,7 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `add` | Add every bundle entry to the selected agents. Aborts on any conflict. |
 | `remove` | Remove local bundle provenance and delete only bundle-managed dependencies whose last provenance is removed. |
 | `sync` | Preview and apply manifest membership drift for an already-added bundle. Source changes and missing agents block writes. |
-| `export` | Generate `sksync.bundle.json` from current project or global dependencies. |
+| `export` | Generate `sksync.bundle.json` from current project or global dependencies. Manifest-only export preserves dependency include filters. |
 
 | Flag | Meaning |
 |---|---|

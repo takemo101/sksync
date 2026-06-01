@@ -222,6 +222,7 @@ mod tests {
                 name: SkillName::new("review").unwrap(),
                 source,
                 install_source: None,
+                include: None,
                 agents: vec![AgentKind::Pi],
             }],
             default_agents: Vec::new(),
@@ -293,6 +294,7 @@ mod tests {
             LockedSkill {
                 source: SourcePath::new(&source).unwrap(),
                 install_source: None,
+                include: None,
                 hash: Digest::new("sha256-locked").unwrap(),
                 files: Vec::new(),
                 targets: Vec::new(),

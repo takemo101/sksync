@@ -4,17 +4,19 @@ use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::config::ResolvedConfig;
 use crate::application::plan::build_link_plan;
 use crate::application::ports::{
-    DependencyConfigStore, LinkApplier, LinkStore, LockfileStore, SkillInstaller, SourceStore,
-    TargetResolver,
+    AddDependencyOptions, DependencyConfigStore, LinkApplier, LinkStore, LockfileStore,
+    SkillInstaller, SourceStore, TargetResolver,
 };
 use crate::application::update::{apply_update_report_sources, update_dependencies, UpdateReport};
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::Lockfile;
+use crate::domain::package_filter::PackageFilter;
 
 #[derive(Debug, Clone)]
 pub struct AddSelection {
     pub skill_name: String,
     pub source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,9 @@ where
             &selection.skill_name,
             &selection.source,
             agents,
+            AddDependencyOptions {
+                include: selection.include.clone(),
+            },
         )?;
         added.push(AddedDependency {
             skill_name: selection.skill_name,
@@ -99,10 +104,10 @@ mod tests {
     use super::{run_add_workflow, AddSelection, AddWorkflow};
     use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{
-        DependencyConfigStore, DependencyConfigStoreError, InstalledSkillSource, LinkApplier,
-        LinkApplyError, LinkStore, LinkStoreError, LockfileStore, LockfileStoreError,
-        SkillInstallError, SkillInstaller, SourceStore, SourceStoreError, TargetResolver,
-        TargetResolverError, TargetState,
+        AddDependencyOptions, DependencyConfigStore, DependencyConfigStoreError,
+        InstalledSkillSource, LinkApplier, LinkApplyError, LinkStore, LinkStoreError,
+        LockfileStore, LockfileStoreError, SkillInstallError, SkillInstallRequest, SkillInstaller,
+        SourceStore, SourceStoreError, TargetResolver, TargetResolverError, TargetState,
     };
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::Lockfile;
@@ -125,6 +130,7 @@ mod tests {
             skill_name: &str,
             source: &str,
             agents: &[String],
+            _options: AddDependencyOptions,
         ) -> Result<(), DependencyConfigStoreError> {
             self.added.borrow_mut().push((
                 skill_name.to_owned(),
@@ -160,13 +166,13 @@ mod tests {
     impl SkillInstaller for FakeInstaller {
         fn install_skill(
             &self,
-            source: &InstallSource,
+            request: &SkillInstallRequest,
             _destination: &Path,
             _skill_name: &str,
         ) -> Result<InstalledSkillSource, SkillInstallError> {
             Ok(InstalledSkillSource {
                 label: "installed".to_owned(),
-                resolved_source: source.clone(),
+                resolved_source: request.source.clone(),
             })
         }
     }
@@ -257,6 +263,7 @@ mod tests {
                 name: SkillName::new("review").unwrap(),
                 source: SourcePath::new("skills/review").unwrap(),
                 install_source: Some(InstallSource::Local(PathBuf::from("remote/review"))),
+                include: None,
                 agents: vec![AgentKind::Pi],
             }],
             default_agents: Vec::new(),
@@ -277,6 +284,7 @@ mod tests {
             vec![AddSelection {
                 skill_name: "review".to_owned(),
                 source: "owner/repo/skills/review".to_owned(),
+                include: None,
             }],
             &["pi".to_owned()],
             false,

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod bundle;
 pub mod link_plan;
 pub mod lockfile;
+pub mod package_filter;
 pub mod removal;
 pub mod scope;
 pub mod skill;

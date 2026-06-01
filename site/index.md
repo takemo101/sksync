@@ -28,7 +28,7 @@ features:
     details: Add skills from GitHub shorthand, tree URLs, skills.sh, or local directories. Repo-root sources auto-discover SKILL.md so you can point at a whole repo and pick.
   - icon: 🔒
     title: Reproducible via lockfile
-    details: A portable lockfile v4 pins resolved commits and file hashes so `sksync install` reconstructs the exact same skills across macOS and Linux.
+    details: A portable lockfile v5 pins resolved commits, include filters, and file hashes so `sksync install` reconstructs the exact same skills across macOS and Linux.
   - icon: 🛡️
     title: Safe by default
     details: Never overwrites plain files, only removes symlinks it manages, rolls back config on failed adds, and refuses to escape the project root for project-scope targets.

@@ -29,7 +29,7 @@ Explicitly out of scope for now:
 - GitHub, `skills.sh`, and local source support.
 - `skills.sh` input normalization to exact GitHub tree URLs.
 - Dependency install/update/apply/check/list/outdated flows.
-- Portable lockfile v4 for macOS / Linux reproduction.
+- Portable lockfile v5 for macOS / Linux reproduction, including dependency include filters.
 - Lockfile-backed source and symlink checks.
 - Add / attach / remove / detach workflows.
 - Prompt wizard as a thin CLI wrapper.
@@ -103,7 +103,7 @@ Required safety behavior:
 ## Current stabilization notes
 
 - `defaultAgents` is intentionally a wizard preselection aid. CLI `sksync add <source>` still requires explicit `--agent` arguments.
-- `sksync-lock.json` v4 is the current portable format; v2/v3 remain read-compatible but new writes use v4.
+- `sksync-lock.json` v5 is the current portable format; v2/v3/v4 remain read-compatible but new writes use v5.
 - `skills.sh` remains input-only; persisted config should use exact GitHub tree URLs after add-time discovery.
 - Linux installer defaults to musl release assets (`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`) so Debian / Ubuntu users do not depend on the build runner's glibc version.
 - Docker smoke tests cover `debian:bookworm`, `debian:trixie`, `ubuntu:22.04`, and `ubuntu:24.04`; Windows remains out of scope for now.

@@ -15,8 +15,8 @@ use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
-    display_path, ConfigStore, ConfigStoreError, DependencyConfigStore, DependencyConfigStoreError,
-    LockfileStore, LockfileStoreError,
+    display_path, AddDependencyOptions, ConfigStore, ConfigStoreError, DependencyConfigStore,
+    DependencyConfigStoreError, LockfileStore, LockfileStoreError,
 };
 use crate::application::source::{
     git_url_from_repo, parse_install_source_string as parse_source_string, validate_git_subpath,
@@ -25,8 +25,9 @@ use crate::domain::agent::AgentKind;
 use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName, BundleNameError};
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, LEGACY_LOCKFILE_VERSION,
-    LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
+    LEGACY_LOCKFILE_VERSION_V4, LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::Scope;
 use crate::domain::skill::{SkillName, SourcePath, SourcePathError};
 use crate::domain::source::{GitInstallSource, InstallSource};
@@ -71,6 +72,8 @@ pub struct RawSkillConfig {
 #[serde(rename_all = "camelCase")]
 pub struct RawDependencyConfig {
     pub source: RawInstallSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
@@ -100,6 +103,8 @@ pub struct RawBundleManifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawBundleEntry {
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -124,6 +129,7 @@ pub struct RawStructuredInstallSource {
 pub struct BundleExportDependencyConfig {
     pub name: String,
     pub source: String,
+    pub include: Option<PackageFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +229,8 @@ pub enum BundleManifestJsonError {
     },
     #[error("bundle entry '{name}' duplicates another entry after name normalization")]
     DuplicateEntryName { name: String },
+    #[error("invalid bundle manifest field: {0}")]
+    InvalidField(String),
     #[error("bundle entry '{name}' source must not be empty")]
     EmptyEntrySource { name: String },
 }
@@ -258,6 +266,10 @@ pub fn write_bundle_manifest(
                 entry.skill_name.as_str().to_owned(),
                 RawBundleEntry {
                     source: entry.source.clone(),
+                    include: entry
+                        .include
+                        .as_ref()
+                        .map(|include| include.patterns().to_vec()),
                 },
             )
         })
@@ -321,9 +333,19 @@ pub fn parse_bundle_manifest(
         if entry.source.trim().is_empty() {
             return Err(BundleManifestJsonError::EmptyEntrySource { name: entry_name });
         }
+        let include = entry
+            .include
+            .map(PackageFilter::new)
+            .transpose()
+            .map_err(|source| {
+                BundleManifestJsonError::InvalidField(format!(
+                    "bundle entry '{entry_name}' include: {source}"
+                ))
+            })?;
         entries.push(BundleEntry {
             skill_name,
             source: entry.source,
+            include,
         });
     }
 
@@ -451,6 +473,7 @@ impl RawConfig {
                 name: skill_name,
                 source,
                 install_source: None,
+                include: None,
                 agents: skill_agents,
             });
         }
@@ -467,6 +490,15 @@ impl RawConfig {
             if skill_agents.is_empty() {
                 return Err(ConfigResolveError::MissingAgents { skill: name });
             }
+            let include = raw_dependency
+                .include
+                .clone()
+                .map(PackageFilter::new)
+                .transpose()
+                .map_err(|error| ConfigResolveError::InvalidInstallSource {
+                    skill: name.clone(),
+                    message: error.to_string(),
+                })?;
             let install_source = parse_install_source(&name, raw_dependency.source, config_root)?;
             let source = dependency_source_path(&skill_dir, skill_name.as_str(), &install_source)
                 .map_err(|source| ConfigResolveError::InvalidSkillSource {
@@ -478,6 +510,7 @@ impl RawConfig {
                 name: skill_name,
                 source,
                 install_source: Some(install_source),
+                include,
                 agents: skill_agents,
             });
         }
@@ -790,6 +823,7 @@ impl FileDependencyConfigStore {
             exported.push(BundleExportDependencyConfig {
                 name: name.clone(),
                 source: dependency_export_source(dependency, name)?,
+                include: dependency_include(dependency, name)?,
             });
         }
         exported.sort_by(|left, right| left.name.cmp(&right.name));
@@ -803,6 +837,7 @@ impl DependencyConfigStore for FileDependencyConfigStore {
         skill_name: &str,
         source: &str,
         agents: &[String],
+        options: AddDependencyOptions,
     ) -> Result<(), DependencyConfigStoreError> {
         let mut value = self.load_or_default()?;
         let dependencies = dependencies_object_mut(&mut value)?;
@@ -835,6 +870,11 @@ impl DependencyConfigStore for FileDependencyConfigStore {
             ))
         })?;
         object.insert("source".to_owned(), json!(source));
+        if let Some(include) = options.include {
+            object.insert("include".to_owned(), json!(include.patterns()));
+        } else {
+            object.remove("include");
+        }
         object.insert("agents".to_owned(), json!(merged_agents));
         dependencies.insert(skill_name.to_owned(), dependency);
         self.write_value(&value)
@@ -947,7 +987,8 @@ impl FileDependencyConfigStore {
                             existing,
                             &entry.skill_name,
                             &entry.normalized_source,
-                        )? {
+                        )? || dependency_include(existing, &entry.skill_name)? != entry.include
+                        {
                             BundleAddStatus::Conflict
                         } else {
                             let existing_agents =
@@ -972,20 +1013,29 @@ impl FileDependencyConfigStore {
                     }
                 };
                 let message = if status == BundleAddStatus::Conflict {
-                    existing
-                        .and_then(|existing| dependency_source(existing, &entry.skill_name).ok())
-                        .map(|source| {
+                    existing.and_then(|existing| {
+                        let source = dependency_source(existing, &entry.skill_name).ok()?;
+                        let include = dependency_include(existing, &entry.skill_name).ok()?;
+                        Some(if source == entry.normalized_source {
                             format!(
-                            "existing dependency source {source:?} differs from bundle source {:?}",
-                            entry.normalized_source
-                        )
+                                "existing dependency include {} differs from bundle include {}",
+                                format_include(include.as_ref()),
+                                format_include(entry.include.as_ref())
+                            )
+                        } else {
+                            format!(
+                                "existing dependency source {source:?} differs from bundle source {:?}",
+                                entry.normalized_source
+                            )
                         })
+                    })
                 } else {
                     None
                 };
                 Ok(BundleAddPlanItem {
                     skill_name: entry.skill_name.clone(),
                     source: entry.normalized_source.clone(),
+                    include: entry.include.clone(),
                     agents: agents.clone(),
                     provenance: provenance.clone(),
                     status,
@@ -1012,18 +1062,22 @@ impl FileDependencyConfigStore {
             match existing {
                 Some(dependency) => merge_bundle_dependency(dependency, item)?,
                 None => {
-                    dependencies.insert(
-                        item.skill_name.clone(),
-                        json!({
-                            "source": item.source,
-                            "agents": item.agents,
-                            "bundles": [{
-                                "name": item.provenance.name.as_str(),
-                                "source": item.provenance.source,
-                            }],
-                            "managedByBundles": true,
-                        }),
-                    );
+                    let mut dependency = json!({
+                        "source": item.source,
+                        "agents": item.agents,
+                        "bundles": [{
+                            "name": item.provenance.name.as_str(),
+                            "source": item.provenance.source,
+                        }],
+                        "managedByBundles": true,
+                    });
+                    if let Some(include) = &item.include {
+                        dependency
+                            .as_object_mut()
+                            .expect("dependency is an object")
+                            .insert("include".to_owned(), json!(include.patterns()));
+                    }
+                    dependencies.insert(item.skill_name.clone(), dependency);
                 }
             }
         }
@@ -1191,7 +1245,24 @@ impl FileDependencyConfigStore {
                         &entry.skill_name,
                         &entry.normalized_source,
                     )? {
-                        keep_count += 1;
+                        let local_include = dependency_include(existing, &entry.skill_name)?;
+                        if local_include == entry.include {
+                            keep_count += 1;
+                        } else {
+                            items.push(BundleSyncPlanItem {
+                                skill_name: entry.skill_name.clone(),
+                                status: BundleSyncStatus::IncludeChanged,
+                                local_source: dependency_source(existing, &entry.skill_name).ok(),
+                                manifest_source: Some(entry.normalized_source.clone()),
+                                include: entry.include.clone(),
+                                agents: Vec::new(),
+                                message: Some(format!(
+                                    "include changed: local {}, manifest {}",
+                                    format_include(local_include.as_ref()),
+                                    format_include(entry.include.as_ref())
+                                )),
+                            });
+                        }
                     } else {
                         let local_source = dependency_source(existing, &entry.skill_name).ok();
                         items.push(BundleSyncPlanItem {
@@ -1199,6 +1270,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::SourceChanged,
                             local_source: local_source.clone(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: Vec::new(),
                             message: Some(format!(
                                 "local source {:?} differs from bundle manifest source {:?}",
@@ -1219,6 +1291,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::Adopt,
                             local_source: dependency_source(existing, &entry.skill_name).ok(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: agents.clone(),
                             message: None,
                         });
@@ -1229,6 +1302,7 @@ impl FileDependencyConfigStore {
                             status: BundleSyncStatus::SourceChanged,
                             local_source: local_source.clone(),
                             manifest_source: Some(entry.normalized_source.clone()),
+                            include: entry.include.clone(),
                             agents: Vec::new(),
                             message: Some(format!(
                                 "existing dependency source {:?} differs from bundle manifest source {:?}",
@@ -1243,6 +1317,7 @@ impl FileDependencyConfigStore {
                     status: BundleSyncStatus::MissingAgents,
                     local_source: None,
                     manifest_source: Some(entry.normalized_source.clone()),
+                    include: entry.include.clone(),
                     agents: Vec::new(),
                     message: Some(
                         "no dependency agents could be inferred; pass --agent".to_owned(),
@@ -1253,6 +1328,7 @@ impl FileDependencyConfigStore {
                     status: BundleSyncStatus::Add,
                     local_source: None,
                     manifest_source: Some(entry.normalized_source.clone()),
+                    include: entry.include.clone(),
                     agents: agents.clone(),
                     message: None,
                 }),
@@ -1284,6 +1360,7 @@ impl FileDependencyConfigStore {
                 status,
                 local_source: dependency_source(dependency, skill_name).ok(),
                 manifest_source: None,
+                include: None,
                 agents: Vec::new(),
                 message: None,
             });
@@ -1448,6 +1525,46 @@ fn dependency_export_source(
     Ok(match install_source {
         InstallSource::Git(git) => git_source_to_config_string(&git),
         InstallSource::Local(path) => path.to_string_lossy().replace('\\', "/"),
+    })
+}
+
+fn format_include(include: Option<&PackageFilter>) -> String {
+    include
+        .map(|include| include.patterns().join(", "))
+        .unwrap_or_else(|| "<full package>".to_owned())
+}
+
+fn dependency_include(
+    dependency: &serde_json::Value,
+    skill_name: &str,
+) -> Result<Option<PackageFilter>, DependencyConfigStoreError> {
+    let dependency = dependency.as_object().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name} must be an object"
+        ))
+    })?;
+    let Some(include) = dependency.get("include") else {
+        return Ok(None);
+    };
+    let patterns = include.as_array().ok_or_else(|| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.include must be an array"
+        ))
+    })?;
+    let patterns = patterns
+        .iter()
+        .map(|pattern| {
+            pattern.as_str().map(str::to_owned).ok_or_else(|| {
+                DependencyConfigStoreError::InvalidField(format!(
+                    "dependencies.{skill_name}.include must contain only strings"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    PackageFilter::new(patterns).map(Some).map_err(|error| {
+        DependencyConfigStoreError::InvalidField(format!(
+            "dependencies.{skill_name}.include is invalid: {error}"
+        ))
     })
 }
 
@@ -1647,6 +1764,11 @@ fn merge_bundle_dependency(
             merged_agents.push(agent.clone());
         }
     }
+    if let Some(include) = &item.include {
+        object.insert("include".to_owned(), json!(include.patterns()));
+    } else {
+        object.remove("include");
+    }
     object.insert("agents".to_owned(), json!(merged_agents));
 
     let bundles_value = object.entry("bundles").or_insert_with(|| json!([]));
@@ -1768,6 +1890,8 @@ struct RawLockedSkill {
     source: PathBuf,
     #[serde(default)]
     install_source: Option<RawLockedInstallSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
     hash: String,
     files: Vec<RawLockedFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1861,7 +1985,10 @@ pub fn read_lockfile(path: impl AsRef<Path>) -> Result<Lockfile, LockfileJsonErr
 fn is_supported_lockfile_version(version: u32) -> bool {
     matches!(
         version,
-        SUPPORTED_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION_WITH_TARGETS
+        SUPPORTED_LOCKFILE_VERSION
+            | LEGACY_LOCKFILE_VERSION_V4
+            | LEGACY_LOCKFILE_VERSION
+            | LEGACY_LOCKFILE_VERSION_WITH_TARGETS
     )
 }
 
@@ -1934,6 +2061,13 @@ impl RawLockfile {
             let source = SourcePath::new(source_path).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill '{name}' source: {source}"))
             })?;
+            let include = raw_skill
+                .include
+                .map(PackageFilter::new)
+                .transpose()
+                .map_err(|source| {
+                    LockfileJsonError::InvalidField(format!("skill '{name}' include: {source}"))
+                })?;
             let hash = Digest::new(raw_skill.hash).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill '{name}' hash: {source}"))
             })?;
@@ -1989,6 +2123,7 @@ impl RawLockfile {
                         .install_source
                         .map(|source| source.try_into_domain(lockfile_root))
                         .transpose()?,
+                    include,
                     hash,
                     files,
                     targets,
@@ -2020,6 +2155,10 @@ impl RawLockfile {
                         install_source: skill.install_source.as_ref().map(|source| {
                             RawLockedInstallSource::from_domain(source, lockfile_root)
                         }),
+                        include: skill
+                            .include
+                            .as_ref()
+                            .map(|include| include.patterns().to_vec()),
                         hash: skill.hash.as_str().to_owned(),
                         files: skill
                             .files
@@ -2053,10 +2192,11 @@ mod tests {
         LockfileJsonError, RawConfig,
     };
     use crate::application::config::ConfigResolveError;
-    use crate::application::ports::{ConfigStore, DependencyConfigStore};
+    use crate::application::ports::{AddDependencyOptions, ConfigStore, DependencyConfigStore};
     use crate::domain::agent::AgentKind;
     use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile, SUPPORTED_LOCKFILE_VERSION};
+    use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::source::{GitInstallSource, InstallSource};
@@ -2115,7 +2255,7 @@ mod tests {
               "name": "review-workflow",
               "description": "Review workflow skills.",
               "entries": {
-                "review": { "source": "./skills/review" },
+                "review": { "source": "./skills/review", "include": ["SKILL.md"] },
                 "qa": { "source": "github:org/qa-skills/skills/qa#main" }
               }
             }"#,
@@ -2126,7 +2266,12 @@ mod tests {
         assert_eq!(manifest.name.as_str(), "review-workflow");
         assert_eq!(manifest.entries.len(), 2);
         assert_eq!(manifest.entries[0].skill_name.as_str(), "qa");
+        assert_eq!(manifest.entries[0].include, None);
         assert_eq!(manifest.entries[1].skill_name.as_str(), "review");
+        assert_eq!(
+            manifest.entries[1].include,
+            Some(PackageFilter::manifest_only())
+        );
     }
 
     #[test]
@@ -2140,10 +2285,12 @@ mod tests {
                 BundleEntry {
                     skill_name: SkillName::new("review").unwrap(),
                     source: "./skills/review".to_owned(),
+                    include: Some(PackageFilter::manifest_only()),
                 },
                 BundleEntry {
                     skill_name: SkillName::new("qa").unwrap(),
                     source: "./skills/qa".to_owned(),
+                    include: None,
                 },
             ],
         };
@@ -2164,6 +2311,10 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>(),
             vec!["qa".to_owned(), "review".to_owned()]
+        );
+        assert_eq!(
+            value["entries"]["review"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
         parse_bundle_manifest(&content, path.to_string_lossy().as_ref())
             .expect("written manifest should parse");
@@ -2377,7 +2528,7 @@ mod tests {
     }
 
     #[test]
-    fn write_lockfile_serializes_portable_v4_paths_relative_to_lockfile_directory() {
+    fn write_lockfile_serializes_portable_v5_paths_and_include() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let root = temp_dir.path();
         let lockfile_path = root.join("sksync-lock.json");
@@ -2389,6 +2540,7 @@ mod tests {
             LockedSkill {
                 source: SourcePath::new(source).expect("source path"),
                 install_source: Some(InstallSource::Local(local_source)),
+                include: Some(PackageFilter::manifest_only()),
                 hash: Digest::new("sha256-review").expect("hash"),
                 files: Vec::new(),
                 targets: Vec::new(),
@@ -2407,7 +2559,7 @@ mod tests {
             &std::fs::read_to_string(&lockfile_path).expect("read lockfile"),
         )
         .expect("parse lockfile");
-        assert_eq!(value["lockfileVersion"], 4);
+        assert_eq!(value["lockfileVersion"], 5);
         assert_eq!(value["root"], ".");
         assert_eq!(
             value["skills"]["review"]["source"],
@@ -2416,6 +2568,10 @@ mod tests {
         assert_eq!(
             value["skills"]["review"]["installSource"]["path"],
             "vendor/review"
+        );
+        assert_eq!(
+            value["skills"]["review"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
     }
 
@@ -2461,6 +2617,7 @@ mod tests {
             skill.install_source,
             Some(InstallSource::Local(root.join("vendor/review")))
         );
+        assert_eq!(skill.include, None);
     }
 
     #[test]
@@ -2561,6 +2718,7 @@ mod tests {
                     reference: Some("abc123".to_owned()),
                     path: PathBuf::from("skills/review"),
                 })),
+                include: None,
                 hash: Digest::new("sha256-review").expect("hash"),
                 files: Vec::new(),
                 targets: Vec::new(),
@@ -2597,13 +2755,19 @@ mod tests {
         let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
 
         store
-            .add_dependency("review", "./review", &["pi".to_owned()])
+            .add_dependency(
+                "review",
+                "./review",
+                &["pi".to_owned()],
+                AddDependencyOptions { include: None },
+            )
             .expect("add pi dependency");
         store
             .add_dependency(
                 "review",
                 "./review",
                 &["claude-code".to_owned(), "pi".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("merge claude-code dependency");
 
@@ -2614,6 +2778,33 @@ mod tests {
         assert_eq!(
             value["dependencies"]["review"]["agents"],
             serde_json::json!(["pi", "claude-code"])
+        );
+    }
+
+    #[test]
+    fn dependency_config_store_writes_include_patterns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("sksync.config.json");
+        let store = FileDependencyConfigStore::new(&config_path, "./.sksync/skills");
+
+        store
+            .add_dependency(
+                "herdr",
+                "github:ogulcancelik/herdr#main",
+                &["pi".to_owned()],
+                AddDependencyOptions {
+                    include: Some(PackageFilter::manifest_only()),
+                },
+            )
+            .expect("add dependency");
+
+        let value = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&config_path).expect("read config"),
+        )
+        .expect("parse config");
+        assert_eq!(
+            value["dependencies"]["herdr"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
     }
 
@@ -2671,6 +2862,7 @@ mod tests {
                 "review",
                 "./review",
                 &["claude".to_owned(), "claude_code".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("add dependency");
 
@@ -2723,22 +2915,26 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "new-skill".to_owned(),
                 original_source: "./new".to_owned(),
+                include: None,
                 normalized_source: "./new".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "merge-me".to_owned(),
                 original_source: "github:org/repo/skills/merge-me".to_owned(),
+                include: None,
                 normalized_source: "https://github.com/org/repo/tree/HEAD/skills/merge-me"
                     .to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "skip-me".to_owned(),
                 original_source: "./skip".to_owned(),
+                include: None,
                 normalized_source: "./skip".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "conflict-me".to_owned(),
                 original_source: "./same".to_owned(),
+                include: None,
                 normalized_source: "./same".to_owned(),
             },
         ];
@@ -2794,11 +2990,13 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "review".to_owned(),
                 original_source: "./review".to_owned(),
+                include: None,
                 normalized_source: "./review".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "qa".to_owned(),
                 original_source: "./qa".to_owned(),
+                include: Some(PackageFilter::manifest_only()),
                 normalized_source: "./qa".to_owned(),
             },
         ];
@@ -2820,7 +3018,15 @@ mod tests {
             value["dependencies"]["review"]["managedByBundles"],
             serde_json::Value::Null
         );
+        assert_eq!(
+            value["dependencies"]["review"]["include"],
+            serde_json::Value::Null
+        );
         assert_eq!(value["dependencies"]["qa"]["managedByBundles"], true);
+        assert_eq!(
+            value["dependencies"]["qa"]["include"],
+            serde_json::json!(["SKILL.md"])
+        );
     }
 
     #[test]
@@ -2835,6 +3041,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "review".to_owned(),
             original_source: "./review".to_owned(),
+            include: None,
             normalized_source: "./review".to_owned(),
         }];
 
@@ -2923,6 +3130,12 @@ mod tests {
                   "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
                   "managedByBundles": true
                 },
+                "include-changed": {
+                  "source": "./include",
+                  "agents": ["pi"],
+                  "bundles": [{ "name": "baseline", "source": "./bundles/a" }],
+                  "managedByBundles": true
+                },
                 "remove-me": {
                   "source": "./removed",
                   "agents": ["pi"],
@@ -2960,21 +3173,31 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "keep-me".to_owned(),
                 original_source: "./keep".to_owned(),
+                include: None,
                 normalized_source: "./keep".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "source-changed".to_owned(),
                 original_source: "./new".to_owned(),
+                include: None,
                 normalized_source: "./new".to_owned(),
+            },
+            crate::application::bundle::LoadedBundleEntry {
+                skill_name: "include-changed".to_owned(),
+                original_source: "./include".to_owned(),
+                include: Some(PackageFilter::manifest_only()),
+                normalized_source: "./include".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "add-me".to_owned(),
                 original_source: "./add".to_owned(),
+                include: None,
                 normalized_source: "./add".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "adopt-me".to_owned(),
                 original_source: "./adopt".to_owned(),
+                include: None,
                 normalized_source: "./adopt".to_owned(),
             },
         ];
@@ -2991,6 +3214,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "source-changed",
+                "include-changed",
                 "add",
                 "adopt",
                 "detach-provenance",
@@ -3027,6 +3251,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "new-entry".to_owned(),
             original_source: "./new".to_owned(),
+            include: None,
             normalized_source: "./new".to_owned(),
         }];
 
@@ -3064,6 +3289,7 @@ mod tests {
         let entries = vec![crate::application::bundle::LoadedBundleEntry {
             skill_name: "new-entry".to_owned(),
             original_source: "./new".to_owned(),
+            include: None,
             normalized_source: "./new".to_owned(),
         }];
 
@@ -3229,6 +3455,59 @@ mod tests {
             config.skills[0].source.as_path(),
             config_root.join("skills/owner/repo/review")
         );
+    }
+
+    #[test]
+    fn dependency_include_patterns_are_resolved() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "./vendor/review",
+                  "include": ["references", "SKILL.md"],
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let config = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect("config resolves");
+
+        let include = config.skills[0]
+            .include
+            .as_ref()
+            .expect("include filter resolves");
+        assert_eq!(include.patterns(), &["SKILL.md", "references"]);
+    }
+
+    #[test]
+    fn dependency_include_rejects_parent_components() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "skillDir": "./.sksync/skills",
+              "dependencies": {
+                "review": {
+                  "source": "./vendor/review",
+                  "include": ["../SKILL.md"],
+                  "agents": ["pi"]
+                }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw
+            .resolve_with_default_scope(Scope::Project)
+            .expect_err("unsafe include should fail");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::InvalidInstallSource { .. }
+        ));
     }
 
     #[test]
@@ -3443,6 +3722,7 @@ mod tests {
                 "review",
                 "./review",
                 &["pi".to_owned(), "claude".to_owned(), "gemini".to_owned()],
+                AddDependencyOptions { include: None },
             )
             .expect("add dependency");
         let remaining = store
@@ -3503,7 +3783,7 @@ mod tests {
         std::fs::write(
             &lockfile_path,
             include_str!("../../sksync-lock.example.json")
-                .replace("\"lockfileVersion\": 4", "\"lockfileVersion\": 999"),
+                .replace("\"lockfileVersion\": 5", "\"lockfileVersion\": 999"),
         )
         .expect("write lockfile fixture");
 

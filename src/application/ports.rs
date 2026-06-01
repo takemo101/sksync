@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::config::{ConfigResolveError, ResolvedConfig};
 use crate::domain::agent::AgentKind;
 use crate::domain::lockfile::{Digest, Lockfile};
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::Scope;
 use crate::domain::skill::SourcePath;
 use crate::domain::source::InstallSource;
@@ -64,12 +65,18 @@ pub enum DependencyConfigStoreError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddDependencyOptions {
+    pub include: Option<PackageFilter>,
+}
+
 pub trait DependencyConfigStore {
     fn add_dependency(
         &self,
         skill_name: &str,
         source: &str,
         agents: &[String],
+        options: AddDependencyOptions,
     ) -> Result<(), DependencyConfigStoreError>;
 
     fn add_dependency_agents(
@@ -208,10 +215,16 @@ pub struct InstalledSkillSource {
     pub resolved_source: InstallSource,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInstallRequest {
+    pub source: InstallSource,
+    pub include: Option<PackageFilter>,
+}
+
 pub trait SkillInstaller {
     fn install_skill(
         &self,
-        source: &InstallSource,
+        request: &SkillInstallRequest,
         destination: &Path,
         skill_name: &str,
     ) -> Result<InstalledSkillSource, SkillInstallError>;

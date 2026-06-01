@@ -43,7 +43,8 @@ A bundle source is a directory containing `sksync.bundle.json`.
   "description": "Skills for review and QA workflows.",
   "entries": {
     "review": {
-      "source": "./skills/review"
+      "source": "./skills/review",
+      "include": ["SKILL.md", "references"]
     },
     "qa": {
       "source": "github:org/qa-skills/skills/qa#main"
@@ -57,6 +58,7 @@ A bundle source is a directory containing `sksync.bundle.json`.
 - `entries` keys are final skill names in `sksync.config.json`.
 - Entry `source` values use the same source forms as `sksync add`.
 - Relative entry sources resolve from the bundle manifest directory.
+- Optional entry `include` values copy only selected files/directories from the resolved skill package root. Missing means copy the full package.
 - Agents are intentionally not allowed in the manifest.
 
 A local bundle can keep its skills next to the manifest:
@@ -224,7 +226,7 @@ If a dependency already exists with the same normalized source as a bundle entry
 
 That means a later `bundle remove` detaches provenance but keeps the manual dependency. This is the safest way to introduce bundles to an existing project.
 
-If the skill name exists with a different source, `bundle add` reports `conflict` and writes nothing. Resolve that manually by renaming the bundle entry, removing the old dependency, or updating the dependency source.
+If the skill name exists with a different source, `bundle add` reports `conflict` and writes nothing. Resolve that manually by renaming the bundle entry, removing the old dependency, or updating the dependency source. Bundle entries also propagate `include` filters into dependency config; a manifest-only entry such as `"include": ["SKILL.md"]` installs only that subset.
 
 ## Exporting a bundle from existing dependencies
 
@@ -242,7 +244,7 @@ sksync bundle export team-baseline --output ./bundles/team-baseline --snapshot
 sksync bundle export team-baseline --output ./bundles/team-baseline --skill review --skill qa
 ```
 
-Manifest-only export creates only `sksync.bundle.json` and keeps each dependency's source reference. Snapshot export copies installed skill bodies to `./skills/<name>` under the output directory and writes manifest-relative entries.
+Manifest-only export creates only `sksync.bundle.json`, keeps each dependency's source reference, and preserves dependency `include` filters on exported entries. Snapshot export copies installed skill bodies to `./skills/<name>` under the output directory and writes manifest-relative entries.
 
 Safety rules:
 

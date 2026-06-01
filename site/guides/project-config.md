@@ -22,6 +22,7 @@ sksync init --agents        # only force-refresh ~/.sksync/agents.json
   "dependencies": {
     "example-skill": {
       "source": "github:owner/repo/path/to/skills/example-skill#main",
+      "include": ["SKILL.md", "references"],
       "agents": ["pi", "claude-code", "codex", "gemini", "opencode"]
     },
     "local-example": {
@@ -38,6 +39,7 @@ sksync init --agents        # only force-refresh ~/.sksync/agents.json
 | `skillDir` | Directory where fetched skill bodies are stored. Defaults to `./.sksync/skills` (project) or `~/.sksync/skills` (global). |
 | `defaultAgents` | Agents pre-selected in the wizard's *Add skill* step. Does **not** change CLI behavior. |
 | `dependencies.<name>` | One managed skill: a `source` and the list of `agents` it links into. |
+| `dependencies.<name>.include` | Optional packaging filter. When present, only matching files/directories are copied from the resolved skill package root. Missing means copy the full package. |
 | `dependencies.<name>.bundles` | Optional local provenance for bundles that installed or adopted the dependency. |
 | `dependencies.<name>.managedByBundles` | Optional boolean. Defaults to `false`; `true` means bundle removal can delete the dependency when its last bundle provenance is removed. |
 
@@ -66,6 +68,24 @@ Use the structured form when you need an explicit provider, for example to clone
 ::: info
 sksync has no `--token` / `--github-token` option and never stores credentials in config. Private repositories work whenever `git clone <repo>` already works in your environment — auth is delegated to your Git credential helper, GitHub CLI, or PAT. See [Sources → Private repositories](/guides/sources#private-repositories).
 :::
+
+## Include filters
+
+Use `include` when a source points at a larger package but only part of it should be installed as the skill body:
+
+```json
+{
+  "dependencies": {
+    "herdr": {
+      "source": "github:ogulcancelik/herdr#main",
+      "include": ["SKILL.md"],
+      "agents": ["pi"]
+    }
+  }
+}
+```
+
+Patterns are relative to the resolved skill package root. Literal directory patterns copy recursively, simple glob patterns such as `assets/*.png` are supported, and every pattern must match at least one file. Absolute paths, `..`, empty patterns, and protected directories such as `.git`, `.sksync`, and `node_modules` are rejected/skipped. The CLI shortcut `sksync add <source> --manifest-only` stores `include: ["SKILL.md"]`; repeat `--include <pattern>` for custom filters.
 
 ## Bundle provenance
 
@@ -114,7 +134,7 @@ Project-local generated artifacts should be git-ignored:
 ```sh
 .sksync/           # downloaded/copied skill bodies (.sksync/skills/<skill>)
 skills/            # legacy generated skill store from older defaults
-sksync-lock.json   # portable lockfile v4 (local state until sharing policy is final)
+sksync-lock.json   # portable lockfile v5 (local state until sharing policy is final)
 ```
 
 The file you share is `sksync.config.json`. The lockfile is portable and *can* be shared to reproduce installs across machines, but is currently treated as local state — see [Lockfile & Sync](/guides/lockfile).

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use super::config::ResolvedConfig;
-use super::ports::{SkillInstallError, SkillInstaller};
+use super::ports::{SkillInstallError, SkillInstallRequest, SkillInstaller};
 use crate::domain::source::InstallSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,8 +41,11 @@ pub fn update_dependencies(
             continue;
         };
         let destination = skill.source.as_path().to_path_buf();
-        let installed =
-            installer.install_skill(install_source, &destination, skill.name.as_str())?;
+        let request = SkillInstallRequest {
+            source: install_source.clone(),
+            include: skill.include.clone(),
+        };
+        let installed = installer.install_skill(&request, &destination, skill.name.as_str())?;
         report.updated.push(UpdatedSkill {
             name: skill.name.as_str().to_owned(),
             source: installed.label,
@@ -70,7 +73,9 @@ pub fn apply_update_report_sources(config: &mut ResolvedConfig, report: &UpdateR
 mod tests {
     use super::update_dependencies;
     use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
-    use crate::application::ports::{InstalledSkillSource, SkillInstallError, SkillInstaller};
+    use crate::application::ports::{
+        InstalledSkillSource, SkillInstallError, SkillInstallRequest, SkillInstaller,
+    };
     use crate::domain::agent::AgentKind;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
@@ -86,14 +91,14 @@ mod tests {
     impl SkillInstaller for FakeInstaller {
         fn install_skill(
             &self,
-            source: &InstallSource,
+            request: &SkillInstallRequest,
             destination: &Path,
             _skill_name: &str,
         ) -> Result<InstalledSkillSource, SkillInstallError> {
             self.installed.borrow_mut().push(destination.to_path_buf());
             Ok(InstalledSkillSource {
-                label: format!("{source:?}"),
-                resolved_source: source.clone(),
+                label: format!("{:?}", request.source),
+                resolved_source: request.source.clone(),
             })
         }
     }
@@ -134,6 +139,7 @@ mod tests {
                 name: SkillName::new("review").unwrap(),
                 source: SourcePath::new(skill_dir.join("review")).unwrap(),
                 install_source: Some(install_source),
+                include: None,
                 agents: vec![AgentKind::Pi],
             }],
             default_agents: Vec::new(),

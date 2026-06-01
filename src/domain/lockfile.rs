@@ -5,12 +5,14 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use super::agent::AgentKind;
+use super::package_filter::PackageFilter;
 use super::scope::Scope;
 use super::skill::{SkillName, SourcePath};
 use super::source::InstallSource;
 use super::target::TargetPath;
 
-pub const SUPPORTED_LOCKFILE_VERSION: u32 = 4;
+pub const SUPPORTED_LOCKFILE_VERSION: u32 = 5;
+pub const LEGACY_LOCKFILE_VERSION_V4: u32 = 4;
 pub const LEGACY_LOCKFILE_VERSION: u32 = 3;
 pub const LEGACY_LOCKFILE_VERSION_WITH_TARGETS: u32 = 2;
 
@@ -91,6 +93,7 @@ pub struct Lockfile {
 pub struct LockedSkill {
     pub source: SourcePath,
     pub install_source: Option<InstallSource>,
+    pub include: Option<PackageFilter>,
     pub hash: Digest,
     pub files: Vec<LockedFile>,
     pub targets: Vec<LockedTarget>,

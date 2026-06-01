@@ -96,6 +96,7 @@ mod tests {
                 name: name.clone(),
                 source: SourcePath::new(".sksync/skills/review").unwrap(),
                 install_source: Some(source),
+                include: None,
                 agents: Vec::new(),
             }],
             default_agents: Vec::new(),
@@ -112,6 +113,7 @@ mod tests {
                 LockedSkill {
                     source: SourcePath::new(".sksync/skills/review").unwrap(),
                     install_source: Some(source),
+                    include: None,
                     hash: Digest::new("sha256-test").unwrap(),
                     files: Vec::new(),
                     targets: Vec::new(),

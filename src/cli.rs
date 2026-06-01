@@ -16,7 +16,7 @@ use crate::application::bundle::{
     BundleExportResolvedSkill, BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus,
     BundleSyncPlan, BundleSyncSourceResolution, BundleSyncStatus,
 };
-use crate::application::check::{check_lockfile_with_plan, CheckProblem};
+use crate::application::check::{check_lockfile_with_config_and_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
@@ -27,12 +27,13 @@ use crate::application::outdated::{
     collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
 };
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
-use crate::application::ports::{DependencyConfigStore, LockfileStore};
+use crate::application::ports::{AddDependencyOptions, DependencyConfigStore, LockfileStore};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
 use crate::domain::bundle::BundleName;
 use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
 use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
 use crate::domain::skill::SkillName;
@@ -118,6 +119,16 @@ struct AddArgs {
     /// Override inferred skill name.
     #[arg(long)]
     name: Option<String>,
+    /// Copy only matched files/directories from the resolved skill package root. Repeatable.
+    #[arg(
+        long = "include",
+        value_name = "pattern",
+        conflicts_with = "manifest_only"
+    )]
+    include: Vec<String>,
+    /// Shortcut for --include SKILL.md.
+    #[arg(long, conflicts_with = "include")]
+    manifest_only: bool,
     /// Write ~/.sksync/config.json instead of ./sksync.config.json.
     #[arg(short = 'g', long)]
     global: bool,
@@ -501,7 +512,8 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 
                     match read_lockfile(lockfile_path_for(args.global, &current_dir)?) {
                         Ok(lockfile) => {
-                            let report = check_lockfile_with_plan(
+                            let report = check_lockfile_with_config_and_plan(
+                                &config,
                                 &lockfile,
                                 &plan,
                                 &Sha256SourceHashStore,
@@ -623,7 +635,12 @@ fn run_import(args: ImportArgs) -> Result<()> {
             copied_destinations.push(candidate.destination.clone());
             copy_dir_all(&candidate.source, &candidate.destination)?;
             let source = config_source_for_path(&candidate.destination, &current_dir);
-            store.add_dependency(&candidate.name, &source, &args.agents)?;
+            store.add_dependency(
+                &candidate.name,
+                &source,
+                &args.agents,
+                AddDependencyOptions { include: None },
+            )?;
             print_success(format!(
                 "Imported {} -> {}",
                 candidate.name,
@@ -1000,12 +1017,15 @@ fn bundle_sync_add_plan(
             .filter_map(|item| {
                 let status = match item.status {
                     BundleSyncStatus::Add => BundleAddStatus::Create,
-                    BundleSyncStatus::Adopt => BundleAddStatus::Merge,
+                    BundleSyncStatus::Adopt | BundleSyncStatus::IncludeChanged => {
+                        BundleAddStatus::Merge
+                    }
                     _ => return None,
                 };
                 Some(BundleAddPlanItem {
                     skill_name: item.skill_name.clone(),
                     source: item.manifest_source.clone().unwrap_or_default(),
+                    include: item.include.clone(),
                     agents: item.agents.clone(),
                     provenance: provenance.clone(),
                     status,
@@ -1580,7 +1600,9 @@ fn run_add(args: AddArgs) -> Result<()> {
     let config_path = config_path_for(args.global, &current_dir)?;
     reject_legacy_registry_source(&args.source)?;
     print_progress("Resolving skill source...");
-    let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path)?;
+    let include = package_filter_from_add_args(&args)?;
+    let selections =
+        resolve_add_selections(&args.source, args.name.as_deref(), &config_path, include)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
         let store =
@@ -2151,6 +2173,7 @@ fn apply_locked_install_sources(config: &mut ResolvedConfig, lockfile: &Lockfile
             if let Some(install_source) = &locked.install_source {
                 skill.install_source = Some(install_source.clone());
             }
+            skill.include = locked.include.clone();
         }
     }
 }
@@ -2336,10 +2359,21 @@ fn score_skill_choice(
     }
 }
 
+fn package_filter_from_add_args(args: &AddArgs) -> Result<Option<PackageFilter>> {
+    if args.manifest_only {
+        return Ok(Some(PackageFilter::manifest_only()));
+    }
+    if args.include.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PackageFilter::new(args.include.clone())?))
+}
+
 fn resolve_add_selections(
     source: &str,
     requested_name: Option<&str>,
     config_path: &Path,
+    include: Option<PackageFilter>,
 ) -> Result<Vec<AddSelection>> {
     let config_root = config_path.parent().unwrap_or_else(|| Path::new("."));
     let fallback_name = infer_skill_name(source);
@@ -2362,6 +2396,7 @@ fn resolve_add_selections(
                 &selection.relative_path,
                 discovered.rewrite_mode,
             ),
+            include: include.clone(),
         })
         .collect())
 }
@@ -2717,6 +2752,7 @@ fn build_lockfile_from_plan(
             LockedSkill {
                 source: skill.source.clone(),
                 install_source: skill.install_source.clone(),
+                include: skill.include.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files
@@ -2758,7 +2794,8 @@ fn run_check(args: CheckArgs) -> Result<()> {
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
     let plan = build_desired_link_plan(&config, &target_resolver)?;
-    let report = check_lockfile_with_plan(
+    let report = check_lockfile_with_config_and_plan(
+        &config,
         &lockfile,
         &plan,
         &Sha256SourceHashStore,
@@ -2805,21 +2842,70 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, compact_revision, compact_source, copy_dir_all,
-        format_progress_message, format_selected_skill_choices, global_config_root_from_home,
-        is_managed_skill_dir, list_state_label, reject_legacy_registry_source,
-        remove_installed_skill_dir, scan_import_candidates, score_skill_choice,
-        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup,
+        agent_target_mappings_from_config, apply_locked_install_sources, compact_revision,
+        compact_source, copy_dir_all, format_progress_message, format_selected_skill_choices,
+        global_config_root_from_home, is_managed_skill_dir, list_state_label,
+        reject_legacy_registry_source, remove_installed_skill_dir, scan_import_candidates,
+        score_skill_choice, select_skill_candidates, truncate_middle, Cli, Command,
+        ConfigFileBackup,
     };
+    use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
     };
+    use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
+    use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
+    use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::InstallSource;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn locked_install_sources_apply_include_filters() {
+        let mut config = ResolvedConfig {
+            skill_dir: SourcePath::new(".sksync/skills").unwrap(),
+            agents: BTreeMap::new(),
+            skills: vec![ResolvedSkill {
+                name: SkillName::new("review").unwrap(),
+                source: SourcePath::new(".sksync/skills/review").unwrap(),
+                install_source: Some(InstallSource::Local(PathBuf::from("old"))),
+                include: None,
+                agents: Vec::new(),
+            }],
+            default_agents: Vec::new(),
+        };
+        let lockfile = Lockfile {
+            generated_by: "test".to_owned(),
+            generated_at: "test".to_owned(),
+            root: PathBuf::from("."),
+            skills: BTreeMap::from([(
+                SkillName::new("review").unwrap(),
+                LockedSkill {
+                    source: SourcePath::new(".sksync/skills/review").unwrap(),
+                    install_source: Some(InstallSource::Local(PathBuf::from("locked"))),
+                    include: Some(PackageFilter::manifest_only()),
+                    hash: Digest::new("sha256-test").unwrap(),
+                    files: Vec::new(),
+                    targets: Vec::new(),
+                },
+            )]),
+        };
+
+        apply_locked_install_sources(&mut config, &lockfile);
+
+        assert_eq!(
+            config.skills[0].install_source,
+            Some(InstallSource::Local(PathBuf::from("locked")))
+        );
+        assert_eq!(
+            config.skills[0].include,
+            Some(PackageFilter::manifest_only())
+        );
+    }
 
     #[test]
     fn progress_message_is_colored_only_for_terminal_stderr() {
@@ -3480,6 +3566,50 @@ mod tests {
         Cli::try_parse_from(["sksync", "attach", "review", "--agent", "pi", "--force"])
             .expect("attach --force parses");
         Cli::try_parse_from(["sksync", "install", "--force"]).expect("install --force parses");
+    }
+
+    #[test]
+    fn add_include_flags_parse() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--include",
+            "SKILL.md",
+            "--include",
+            "references",
+        ])
+        .expect("add --include parses");
+    }
+
+    #[test]
+    fn add_manifest_only_parses() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--manifest-only",
+        ])
+        .expect("add --manifest-only parses");
+    }
+
+    #[test]
+    fn add_manifest_only_conflicts_with_include() {
+        Cli::try_parse_from([
+            "sksync",
+            "add",
+            "ogulcancelik/herdr",
+            "--agent",
+            "pi",
+            "--manifest-only",
+            "--include",
+            "SKILL.md",
+        ])
+        .expect_err("manifest-only conflicts with include");
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::domain::agent::{AgentKind, AgentKindError};
+use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::{Scope, ScopeError};
 use crate::domain::skill::{SkillName, SkillNameError, SourcePath, SourcePathError};
 use crate::domain::source::InstallSource;
@@ -72,6 +73,7 @@ pub struct ResolvedSkill {
     pub name: SkillName,
     pub source: SourcePath,
     pub install_source: Option<InstallSource>,
+    pub include: Option<PackageFilter>,
     pub agents: Vec<AgentKind>,
 }
 
