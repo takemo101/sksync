@@ -2990,13 +2990,13 @@ mod tests {
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "review".to_owned(),
                 original_source: "./review".to_owned(),
-                include: Some(PackageFilter::manifest_only()),
+                include: None,
                 normalized_source: "./review".to_owned(),
             },
             crate::application::bundle::LoadedBundleEntry {
                 skill_name: "qa".to_owned(),
                 original_source: "./qa".to_owned(),
-                include: None,
+                include: Some(PackageFilter::manifest_only()),
                 normalized_source: "./qa".to_owned(),
             },
         ];
@@ -3020,9 +3020,13 @@ mod tests {
         );
         assert_eq!(
             value["dependencies"]["review"]["include"],
-            serde_json::json!(["SKILL.md"])
+            serde_json::Value::Null
         );
         assert_eq!(value["dependencies"]["qa"]["managedByBundles"], true);
+        assert_eq!(
+            value["dependencies"]["qa"]["include"],
+            serde_json::json!(["SKILL.md"])
+        );
     }
 
     #[test]
@@ -3779,7 +3783,7 @@ mod tests {
         std::fs::write(
             &lockfile_path,
             include_str!("../../sksync-lock.example.json")
-                .replace("\"lockfileVersion\": 4", "\"lockfileVersion\": 999"),
+                .replace("\"lockfileVersion\": 5", "\"lockfileVersion\": 999"),
         )
         .expect("write lockfile fixture");
 
