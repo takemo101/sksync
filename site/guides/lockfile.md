@@ -8,7 +8,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.8",
+  "generatedBy": "sksync@0.0.9",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
