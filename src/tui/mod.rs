@@ -2,16 +2,22 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::application::config::ResolvedConfig;
+use crate::infrastructure::json::{
+    default_agent_mapping_config, read_agent_mapping_config, AgentMappingConfig,
+};
 use anyhow::{bail, Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
-use serde_json::json;
 
-use crate::application::bundle::load_bundle_from_source;
-use crate::application::config::ResolvedConfig;
-use crate::application::ports::ConfigStore;
-use crate::infrastructure::json::{
-    default_agent_mapping_config, read_agent_mapping_config, AgentMappingConfig, FileConfigStore,
-};
+mod add_skill;
+mod bundle;
+mod commands;
+mod config;
+mod default_agents;
+mod operations;
+mod skill;
+
+use config::{global_config_root, ConfigScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -27,24 +33,6 @@ enum Intent {
     Quit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PackageFilterChoice {
-    FullPackage,
-    ManifestOnly,
-    Custom(Vec<String>),
-}
-
-impl fmt::Display for PackageFilterChoice {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::FullPackage => "Full package",
-            Self::ManifestOnly => "Manifest only (SKILL.md)",
-            Self::Custom(_) => "Custom include patterns",
-        };
-        formatter.write_str(label)
-    }
-}
-
 impl fmt::Display for Intent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -58,56 +46,6 @@ impl fmt::Display for Intent {
             Self::Apply => "Apply links",
             Self::ConfigureDefaultAgents => "Configure default agents",
             Self::Quit => "Quit",
-        };
-        formatter.write_str(label)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigScope {
-    Project,
-    Global,
-}
-
-impl ConfigScope {
-    fn is_global(self) -> bool {
-        matches!(self, Self::Global)
-    }
-}
-
-impl fmt::Display for ConfigScope {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Project => "project config (./sksync.config.json)",
-            Self::Global => "global config (~/.sksync/config.json)",
-        };
-        formatter.write_str(label)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoveMode {
-    Normal,
-    KeepFiles,
-    ConfigOnly,
-}
-
-impl RemoveMode {
-    fn append_args(self, args: &mut Vec<String>) {
-        match self {
-            Self::Normal => {}
-            Self::KeepFiles => args.push("--keep-files".to_owned()),
-            Self::ConfigOnly => args.push("--config-only".to_owned()),
-        }
-    }
-}
-
-impl fmt::Display for RemoveMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Normal => "Normal removal (no option; removes symlinks too)",
-            Self::KeepFiles => "Keep installed skill files (--keep-files)",
-            Self::ConfigOnly => "Config and lockfile only (--config-only)",
         };
         formatter.write_str(label)
     }
@@ -138,375 +76,18 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             .context("failed to read wizard selection")?;
 
         match intent {
-            Intent::AddSkill => run_add_flow(&project_root)?,
-            Intent::AttachAgent => run_attach_agent_flow(&project_root)?,
-            Intent::RemoveSkill => run_remove_flow(&project_root)?,
-            Intent::RemoveAgent => run_remove_agent_flow(&project_root)?,
-            Intent::AddBundle => run_add_bundle_flow(&project_root)?,
-            Intent::RemoveBundle => run_remove_bundle_flow(&project_root)?,
-            Intent::Status => run_status_flow(&project_root)?,
-            Intent::Apply => run_apply_flow(&project_root)?,
-            Intent::ConfigureDefaultAgents => run_configure_default_agents_flow(&project_root)?,
+            Intent::AddSkill => add_skill::run(&project_root)?,
+            Intent::AttachAgent => skill::run_attach_agent(&project_root)?,
+            Intent::RemoveSkill => skill::run_remove(&project_root)?,
+            Intent::RemoveAgent => skill::run_remove_agent(&project_root)?,
+            Intent::AddBundle => bundle::run_add(&project_root)?,
+            Intent::RemoveBundle => bundle::run_remove(&project_root)?,
+            Intent::Status => operations::run_status(&project_root)?,
+            Intent::Apply => operations::run_apply(&project_root)?,
+            Intent::ConfigureDefaultAgents => default_agents::run(&project_root)?,
             Intent::Quit => return Ok(()),
         }
     }
-}
-
-fn run_add_flow(project_root: &Path) -> Result<()> {
-    let source = prompt_required("Skill source")?;
-    let name = Text::new("Name override")
-        .with_help_message("Optional; leave blank to infer from source")
-        .prompt()
-        .context("failed to read name override")?;
-    let package_filter = prompt_package_filter_choice()?;
-    let scope = prompt_config_scope("Where should this dependency be added?")?;
-    let config = load_optional_config_for_scope(project_root, scope)?;
-    let default_agents = default_agents_from_config(config.as_ref());
-    let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
-    let args = add_skill_args(&source, name.trim(), &agents, scope, &package_filter);
-
-    confirm_and_run(project_root, "Run this command?", args)
-}
-
-fn add_skill_args(
-    source: &str,
-    name: &str,
-    agents: &[String],
-    scope: ConfigScope,
-    package_filter: &PackageFilterChoice,
-) -> Vec<String> {
-    let mut args = vec!["add".to_owned(), source.to_owned()];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent.clone());
-    }
-    if !name.trim().is_empty() {
-        args.push("--name".to_owned());
-        args.push(name.trim().to_owned());
-    }
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-    match package_filter {
-        PackageFilterChoice::FullPackage => {}
-        PackageFilterChoice::ManifestOnly => args.push("--manifest-only".to_owned()),
-        PackageFilterChoice::Custom(patterns) => {
-            for pattern in patterns {
-                args.push("--include".to_owned());
-                args.push(pattern.clone());
-            }
-        }
-    }
-    args
-}
-
-fn prompt_package_filter_choice() -> Result<PackageFilterChoice> {
-    let choice = Select::new(
-        "Which package files should be installed?",
-        vec![
-            PackageFilterChoice::FullPackage,
-            PackageFilterChoice::ManifestOnly,
-            PackageFilterChoice::Custom(Vec::new()),
-        ],
-    )
-    .with_help_message("Full package keeps current behavior; manifest-only copies only SKILL.md.")
-    .prompt()
-    .context("failed to read package filter choice")?;
-
-    match choice {
-        PackageFilterChoice::Custom(_) => {
-            let patterns = prompt_include_patterns()?;
-            Ok(PackageFilterChoice::Custom(patterns))
-        }
-        other => Ok(other),
-    }
-}
-
-fn prompt_include_patterns() -> Result<Vec<String>> {
-    let mut patterns = Vec::new();
-    loop {
-        let value = Text::new("Include pattern")
-            .with_help_message(
-                "One pattern relative to the skill package root, e.g. SKILL.md or references",
-            )
-            .prompt()
-            .context("failed to read include pattern")?;
-        patterns.push(validate_include_pattern(&value)?);
-
-        if !prompt_confirm("Add another include pattern?", false)? {
-            break;
-        }
-    }
-    crate::domain::package_filter::PackageFilter::new(patterns.clone())
-        .context("invalid include patterns")?;
-    Ok(patterns)
-}
-
-fn validate_include_pattern(value: &str) -> Result<String> {
-    let pattern = value.trim();
-    if pattern.contains(',') || pattern.contains('\n') || pattern.contains('\r') {
-        bail!("enter one include pattern at a time")
-    }
-    crate::domain::package_filter::PackageFilter::new(vec![pattern.to_owned()])
-        .context("invalid include pattern")?;
-    Ok(pattern.to_owned())
-}
-
-fn run_add_bundle_flow(project_root: &Path) -> Result<()> {
-    let source = prompt_required("Bundle source")?;
-    let scope = prompt_config_scope("Where should this bundle be added?")?;
-    let root_dir = if scope.is_global() {
-        global_config_root()?
-    } else {
-        project_root.to_path_buf()
-    };
-    let bundle = load_bundle_from_source(&source, &root_dir)?;
-
-    println!("Bundle");
-    println!("Name: {}", bundle.manifest.name);
-    println!("Description: {}", bundle.manifest.description);
-    println!("Source: {}", bundle.provenance.source);
-    println!("Entries ({})", bundle.entries.len());
-    for entry in &bundle.entries {
-        println!(
-            "- {}: {} -> {}",
-            entry.skill_name, entry.original_source, entry.normalized_source
-        );
-    }
-    if !prompt_confirm("Continue with this bundle?", true)? {
-        return Ok(());
-    }
-
-    let config = load_optional_config_for_scope(project_root, scope)?;
-    let default_agents = default_agents_from_config(config.as_ref());
-    let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
-    let dry_run_args = bundle_add_args(&source, &agents, scope.is_global(), true);
-    println!("dry-run plan:");
-    run_sksync(project_root, &dry_run_args)?;
-
-    let apply_args = bundle_add_args(&source, &agents, scope.is_global(), false);
-    confirm_and_run(project_root, "Add this bundle?", apply_args)
-}
-
-fn bundle_add_args(source: &str, agents: &[String], global: bool, dry_run: bool) -> Vec<String> {
-    let mut args = vec!["bundle".to_owned(), "add".to_owned(), source.to_owned()];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent.clone());
-    }
-    if global {
-        args.push("--global".to_owned());
-    }
-    if dry_run {
-        args.push("--dry-run".to_owned());
-    }
-    args
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct BundleProvenanceChoice {
-    name: String,
-    source: String,
-}
-
-impl fmt::Display for BundleProvenanceChoice {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} — {}", self.name, self.source)
-    }
-}
-
-fn run_remove_bundle_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should the bundle be removed from?")?;
-    let config_path = config_path_for_scope(project_root, scope)?;
-    let choices = bundle_provenance_choices_from_config_path(&config_path)?;
-    if choices.is_empty() {
-        println!(
-            "No bundle provenance is configured in {}",
-            config_path.display()
-        );
-        return Ok(());
-    }
-    let choice = Select::new("Select bundle provenance to remove", choices)
-        .prompt()
-        .context("failed to read bundle provenance selection")?;
-    let dry_run_args = bundle_remove_args(&choice, scope.is_global(), true);
-    println!("dry-run plan:");
-    run_sksync(project_root, &dry_run_args)?;
-
-    let apply_args = bundle_remove_args(&choice, scope.is_global(), false);
-    confirm_and_run(project_root, "Remove this bundle provenance?", apply_args)
-}
-
-fn bundle_remove_args(choice: &BundleProvenanceChoice, global: bool, dry_run: bool) -> Vec<String> {
-    let mut args = vec![
-        "bundle".to_owned(),
-        "remove".to_owned(),
-        choice.name.clone(),
-        "--source".to_owned(),
-        choice.source.clone(),
-    ];
-    if global {
-        args.push("--global".to_owned());
-    }
-    if dry_run {
-        args.push("--dry-run".to_owned());
-    }
-    args
-}
-
-fn bundle_provenance_choices_from_config_path(
-    config_path: &Path,
-) -> Result<Vec<BundleProvenanceChoice>> {
-    if !config_path.exists() {
-        return Ok(Vec::new());
-    }
-    let value = serde_json::from_str::<serde_json::Value>(
-        &std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", config_path.display()))?;
-    Ok(bundle_provenance_choices_from_value(&value))
-}
-
-fn bundle_provenance_choices_from_value(value: &serde_json::Value) -> Vec<BundleProvenanceChoice> {
-    let mut choices = BTreeSet::new();
-    let Some(dependencies) = value
-        .get("dependencies")
-        .and_then(|value| value.as_object())
-    else {
-        return Vec::new();
-    };
-    for dependency in dependencies.values() {
-        let Some(bundles) = dependency.get("bundles").and_then(|value| value.as_array()) else {
-            continue;
-        };
-        for bundle in bundles {
-            let (Some(name), Some(source)) = (
-                bundle.get("name").and_then(|value| value.as_str()),
-                bundle.get("source").and_then(|value| value.as_str()),
-            ) else {
-                continue;
-            };
-            choices.insert(BundleProvenanceChoice {
-                name: name.to_owned(),
-                source: source.to_owned(),
-            });
-        }
-    }
-    choices.into_iter().collect()
-}
-
-fn run_attach_agent_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should be updated?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "Select the skill to attach to agent(s)")?;
-    let agents = prompt_agents_not_for_skill(&config, &skill, scope)?;
-
-    let mut args = vec!["attach".to_owned(), skill];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent);
-    }
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-
-    confirm_and_run(
-        project_root,
-        "Attach this skill to the selected agent(s)?",
-        args,
-    )
-}
-
-fn run_remove_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should the skill be removed from?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skills = prompt_skills_from_config(&config, "Select skill(s) to remove")?;
-    let mode = prompt_remove_mode()?;
-
-    let mut args = vec!["remove".to_owned()];
-    args.extend(skills);
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-    mode.append_args(&mut args);
-
-    confirm_and_run(project_root, "Remove this skill?", args)
-}
-
-fn run_remove_agent_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should be updated?")?;
-    let config = load_config_for_scope(project_root, scope)?;
-    let skill = prompt_skill_from_config(&config, "Select the skill to detach from an agent")?;
-    let agents = prompt_agents_for_skill(&config, &skill)?;
-
-    let mut args = vec!["remove".to_owned(), skill];
-    for agent in agents {
-        args.push("--agent".to_owned());
-        args.push(agent);
-    }
-    if scope.is_global() {
-        args.push("--global".to_owned());
-    }
-
-    confirm_and_run(
-        project_root,
-        "Detach this skill from the selected agent(s)?",
-        args,
-    )
-}
-
-fn run_configure_default_agents_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should store default agents?")?;
-    let config = load_optional_config_for_scope(project_root, scope)?;
-    let current_defaults = default_agents_from_config(config.as_ref());
-    let agents = prompt_default_agents(scope, config.as_ref(), &current_defaults)?;
-    let config_path = config_path_for_scope(project_root, scope)?;
-    write_default_agents_config(&config_path, default_skill_dir_for_scope(scope), &agents)?;
-    println!("✓ Updated default agents in {}", config_path.display());
-    Ok(())
-}
-
-fn run_status_flow(project_root: &Path) -> Result<()> {
-    let global = prompt_config_scope("Which config should be inspected?")?.is_global();
-    let check = prompt_confirm("Run check after list?", true)?;
-
-    let mut list_args = vec!["list".to_owned()];
-    if global {
-        list_args.push("--global".to_owned());
-    }
-    run_sksync(project_root, &list_args)?;
-
-    if check {
-        let mut check_args = vec!["check".to_owned()];
-        if global {
-            check_args.push("--global".to_owned());
-        }
-        run_sksync(project_root, &check_args)?;
-    }
-    Ok(())
-}
-
-fn run_apply_flow(project_root: &Path) -> Result<()> {
-    let global = prompt_config_scope("Which config should be applied?")?.is_global();
-    let force = prompt_confirm("Allow safe replacement of managed links?", false)?;
-
-    let mut plan_args = vec!["plan".to_owned()];
-    if global {
-        plan_args.push("--global".to_owned());
-    }
-    println!("dry-run plan:");
-    run_sksync(project_root, &plan_args)?;
-
-    let mut apply_args = vec!["apply".to_owned()];
-    if global {
-        apply_args.push("--global".to_owned());
-    }
-    if force {
-        apply_args.push("--force".to_owned());
-    }
-
-    confirm_and_run(project_root, "Apply these link changes?", apply_args)
 }
 
 fn confirm_and_run(project_root: &Path, question: &str, args: Vec<String>) -> Result<()> {
@@ -521,20 +102,6 @@ fn prompt_config_scope(message: &str) -> Result<ConfigScope> {
     Select::new(message, vec![ConfigScope::Project, ConfigScope::Global])
         .prompt()
         .context("failed to read config scope")
-}
-
-fn prompt_remove_mode() -> Result<RemoveMode> {
-    Select::new(
-        "Select remove mode",
-        vec![
-            RemoveMode::Normal,
-            RemoveMode::KeepFiles,
-            RemoveMode::ConfigOnly,
-        ],
-    )
-    .with_help_message("Normal removal is the same as CLI `sksync remove <skill>`")
-    .prompt()
-    .context("failed to read remove mode")
 }
 
 fn prompt_skill_from_config(config: &ResolvedConfig, message: &str) -> Result<String> {
@@ -621,37 +188,6 @@ fn configured_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Res
         .collect())
 }
 
-fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<ResolvedConfig> {
-    let path = config_path_for_scope(project_root, scope)?;
-    if !path.exists() {
-        bail!("config not found: {}", path.display());
-    }
-    FileConfigStore::new(path)
-        .load()
-        .context("failed to load config")
-}
-
-fn load_optional_config_for_scope(
-    project_root: &Path,
-    scope: ConfigScope,
-) -> Result<Option<ResolvedConfig>> {
-    let path = config_path_for_scope(project_root, scope)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    FileConfigStore::new(path)
-        .load()
-        .map(Some)
-        .context("failed to load config")
-}
-
-fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<PathBuf> {
-    match scope {
-        ConfigScope::Project => Ok(project_root.join("sksync.config.json")),
-        ConfigScope::Global => Ok(global_config_root()?.join("config.json")),
-    }
-}
-
 fn prompt_agents(
     scope: ConfigScope,
     config: Option<&ResolvedConfig>,
@@ -732,59 +268,6 @@ fn merge_agent_options(
     agents.into_iter().collect()
 }
 
-fn default_agents_from_config(config: Option<&ResolvedConfig>) -> Vec<String> {
-    config
-        .map(|config| {
-            config
-                .default_agents
-                .iter()
-                .map(|agent| agent.as_str().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn write_default_agents_config(
-    config_path: &Path,
-    default_skill_dir: &str,
-    agents: &[String],
-) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut value = if config_path.exists() {
-        serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(config_path)
-                .with_context(|| format!("failed to read {}", config_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", config_path.display()))?
-    } else {
-        json!({
-            "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
-            "skillDir": default_skill_dir,
-            "dependencies": {}
-        })
-    };
-    let object = value
-        .as_object_mut()
-        .context("config root must be a JSON object")?;
-    object.insert("defaultAgents".to_owned(), json!(agents));
-    std::fs::write(
-        config_path,
-        format!("{}\n", serde_json::to_string_pretty(&value)?),
-    )
-    .with_context(|| format!("failed to write {}", config_path.display()))
-}
-
-fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
-    if scope.is_global() {
-        "~/.sksync/skills"
-    } else {
-        "./.sksync/skills"
-    }
-}
-
 fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
     let mut mappings = default_agent_mapping_config()?;
     let mapping_path = global_config_root()?.join("agents.json");
@@ -792,12 +275,6 @@ fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
         mappings.merge(read_agent_mapping_config(&mapping_path)?);
     }
     Ok(mappings)
-}
-
-fn global_config_root() -> Result<PathBuf> {
-    dirs::home_dir()
-        .map(|dir| dir.join(".sksync"))
-        .context("failed to determine home directory for global sksync directory")
 }
 
 fn prompt_required(label: &str) -> Result<String> {
@@ -849,88 +326,14 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        add_skill_args, bundle_add_args, bundle_provenance_choices_from_value, bundle_remove_args,
-        config_path_for_scope, default_agent_indexes, merge_agent_options,
-        validate_include_pattern, wizard_intents, write_default_agents_config,
-        BundleProvenanceChoice, ConfigScope, Intent, PackageFilterChoice,
-    };
+    use super::{default_agent_indexes, merge_agent_options, wizard_intents, ConfigScope, Intent};
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
     use crate::domain::scope::Scope;
     use crate::domain::skill::SourcePath;
     use crate::infrastructure::json::AgentMappingConfig;
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn add_skill_args_omit_include_flags_for_full_package() {
-        assert_eq!(
-            add_skill_args(
-                "owner/repo",
-                "",
-                &["pi".to_owned()],
-                ConfigScope::Project,
-                &PackageFilterChoice::FullPackage,
-            ),
-            vec!["add", "owner/repo", "--agent", "pi"]
-        );
-    }
-
-    #[test]
-    fn add_skill_args_include_manifest_only_flag() {
-        assert_eq!(
-            add_skill_args(
-                "ogulcancelik/herdr",
-                "herdr",
-                &["pi".to_owned()],
-                ConfigScope::Project,
-                &PackageFilterChoice::ManifestOnly,
-            ),
-            vec![
-                "add",
-                "ogulcancelik/herdr",
-                "--agent",
-                "pi",
-                "--name",
-                "herdr",
-                "--manifest-only",
-            ]
-        );
-    }
-
-    #[test]
-    fn add_skill_args_include_custom_patterns() {
-        assert_eq!(
-            add_skill_args(
-                "org/repo/skills/review",
-                "",
-                &["pi".to_owned(), "claude-code".to_owned()],
-                ConfigScope::Global,
-                &PackageFilterChoice::Custom(vec!["SKILL.md".to_owned(), "references".to_owned()]),
-            ),
-            vec![
-                "add",
-                "org/repo/skills/review",
-                "--agent",
-                "pi",
-                "--agent",
-                "claude-code",
-                "--global",
-                "--include",
-                "SKILL.md",
-                "--include",
-                "references",
-            ]
-        );
-    }
-
-    #[test]
-    fn include_pattern_prompt_accepts_one_pattern_at_a_time() {
-        assert_eq!(validate_include_pattern(" SKILL.md ").unwrap(), "SKILL.md");
-        assert!(validate_include_pattern("SKILL.md, references").is_err());
-        assert!(validate_include_pattern("SKILL.md\nreferences").is_err());
-    }
+    use std::path::PathBuf;
 
     #[test]
     fn wizard_intents_include_add_bundle() {
@@ -938,95 +341,8 @@ mod tests {
     }
 
     #[test]
-    fn bundle_add_args_include_agents_scope_and_dry_run() {
-        assert_eq!(
-            bundle_add_args(
-                "./bundle",
-                &["pi".to_owned(), "claude-code".to_owned()],
-                true,
-                true,
-            ),
-            vec![
-                "bundle",
-                "add",
-                "./bundle",
-                "--agent",
-                "pi",
-                "--agent",
-                "claude-code",
-                "--global",
-                "--dry-run"
-            ]
-        );
-    }
-
-    #[test]
     fn wizard_intents_include_remove_bundle() {
         assert!(wizard_intents().contains(&Intent::RemoveBundle));
-    }
-
-    #[test]
-    fn bundle_remove_args_include_exact_source_scope_and_dry_run() {
-        let choice = BundleProvenanceChoice {
-            name: "review-workflow".to_owned(),
-            source: "./bundle".to_owned(),
-        };
-
-        assert_eq!(
-            bundle_remove_args(&choice, true, true),
-            vec![
-                "bundle",
-                "remove",
-                "review-workflow",
-                "--source",
-                "./bundle",
-                "--global",
-                "--dry-run"
-            ]
-        );
-    }
-
-    #[test]
-    fn bundle_provenance_choices_are_unique_exact_name_source_pairs() {
-        let value = serde_json::json!({
-            "dependencies": {
-                "review": {
-                    "bundles": [
-                        { "name": "baseline", "source": "./bundle-a" },
-                        { "name": "baseline", "source": "./bundle-a" }
-                    ]
-                },
-                "qa": {
-                    "bundles": [
-                        { "name": "baseline", "source": "./bundle-b" }
-                    ]
-                }
-            }
-        });
-
-        let choices = bundle_provenance_choices_from_value(&value);
-
-        assert_eq!(
-            choices,
-            vec![
-                BundleProvenanceChoice {
-                    name: "baseline".to_owned(),
-                    source: "./bundle-a".to_owned(),
-                },
-                BundleProvenanceChoice {
-                    name: "baseline".to_owned(),
-                    source: "./bundle-b".to_owned(),
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn project_scope_uses_project_config_path() {
-        assert_eq!(
-            config_path_for_scope(Path::new("/tmp/project"), ConfigScope::Project).unwrap(),
-            Path::new("/tmp/project/sksync.config.json")
-        );
     }
 
     #[test]
@@ -1070,60 +386,6 @@ mod tests {
             merge_agent_options(ConfigScope::Project, &mappings, Some(&config)),
             vec!["my-agent", "pi"]
         );
-    }
-
-    #[test]
-    fn write_default_agents_config_creates_missing_config() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let config_path = temp.path().join("sksync.config.json");
-
-        write_default_agents_config(
-            &config_path,
-            "./.sksync/skills",
-            &["universal".to_owned(), "pi".to_owned()],
-        )
-        .expect("write defaults");
-
-        let value = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&config_path).expect("read config"),
-        )
-        .expect("parse config");
-        assert_eq!(value["skillDir"], "./.sksync/skills");
-        assert_eq!(value["dependencies"], serde_json::json!({}));
-        assert_eq!(
-            value["defaultAgents"],
-            serde_json::json!(["universal", "pi"])
-        );
-    }
-
-    #[test]
-    fn write_default_agents_config_preserves_existing_config_fields() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let config_path = temp.path().join("sksync.config.json");
-        std::fs::write(
-            &config_path,
-            r#"{
-              "skillDir": "skills",
-              "dependencies": {
-                "review": { "source": "./review", "agents": ["pi"] }
-              }
-            }"#,
-        )
-        .expect("write config");
-
-        write_default_agents_config(&config_path, "./.sksync/skills", &["universal".to_owned()])
-            .expect("write defaults");
-
-        let value = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&config_path).expect("read config"),
-        )
-        .expect("parse config");
-        assert_eq!(value["skillDir"], "skills");
-        assert_eq!(
-            value["dependencies"]["review"]["agents"],
-            serde_json::json!(["pi"])
-        );
-        assert_eq!(value["defaultAgents"], serde_json::json!(["universal"]));
     }
 
     #[test]
