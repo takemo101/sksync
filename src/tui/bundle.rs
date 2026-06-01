@@ -6,10 +6,11 @@ use anyhow::{Context, Result};
 use inquire::Select;
 
 use super::commands::{bundle_add_args, bundle_remove_args};
+use super::config::{config_path_for_scope, global_config_root, load_optional_config_for_scope};
+use super::default_agents::default_agents_from_config;
 use super::{
-    config_path_for_scope, confirm_and_run, default_agents_from_config, global_config_root,
-    load_optional_config_for_scope, prompt_agents, prompt_config_scope, prompt_confirm,
-    prompt_required, run_sksync,
+    confirm_and_run, prompt_agents, prompt_config_scope, prompt_confirm, prompt_required,
+    run_sksync,
 };
 use crate::application::bundle::load_bundle_from_source;
 

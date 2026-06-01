@@ -2,19 +2,20 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::application::config::ResolvedConfig;
+use crate::infrastructure::json::{
+    default_agent_mapping_config, read_agent_mapping_config, AgentMappingConfig,
+};
 use anyhow::{bail, Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
-use serde_json::json;
-
-use crate::application::config::ResolvedConfig;
-use crate::application::ports::ConfigStore;
-use crate::infrastructure::json::{
-    default_agent_mapping_config, read_agent_mapping_config, AgentMappingConfig, FileConfigStore,
-};
 
 mod add_skill;
 mod bundle;
 mod commands;
+mod config;
+mod default_agents;
+
+use config::{global_config_root, load_config_for_scope, ConfigScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -43,28 +44,6 @@ impl fmt::Display for Intent {
             Self::Apply => "Apply links",
             Self::ConfigureDefaultAgents => "Configure default agents",
             Self::Quit => "Quit",
-        };
-        formatter.write_str(label)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigScope {
-    Project,
-    Global,
-}
-
-impl ConfigScope {
-    fn is_global(self) -> bool {
-        matches!(self, Self::Global)
-    }
-}
-
-impl fmt::Display for ConfigScope {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Project => "project config (./sksync.config.json)",
-            Self::Global => "global config (~/.sksync/config.json)",
         };
         formatter.write_str(label)
     }
@@ -131,7 +110,7 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             Intent::RemoveBundle => bundle::run_remove(&project_root)?,
             Intent::Status => run_status_flow(&project_root)?,
             Intent::Apply => run_apply_flow(&project_root)?,
-            Intent::ConfigureDefaultAgents => run_configure_default_agents_flow(&project_root)?,
+            Intent::ConfigureDefaultAgents => default_agents::run(&project_root)?,
             Intent::Quit => return Ok(()),
         }
     }
@@ -195,17 +174,6 @@ fn run_remove_agent_flow(project_root: &Path) -> Result<()> {
         "Detach this skill from the selected agent(s)?",
         args,
     )
-}
-
-fn run_configure_default_agents_flow(project_root: &Path) -> Result<()> {
-    let scope = prompt_config_scope("Which config should store default agents?")?;
-    let config = load_optional_config_for_scope(project_root, scope)?;
-    let current_defaults = default_agents_from_config(config.as_ref());
-    let agents = prompt_default_agents(scope, config.as_ref(), &current_defaults)?;
-    let config_path = config_path_for_scope(project_root, scope)?;
-    write_default_agents_config(&config_path, default_skill_dir_for_scope(scope), &agents)?;
-    println!("✓ Updated default agents in {}", config_path.display());
-    Ok(())
 }
 
 fn run_status_flow(project_root: &Path) -> Result<()> {
@@ -362,37 +330,6 @@ fn configured_agents_for_skill(config: &ResolvedConfig, skill_name: &str) -> Res
         .collect())
 }
 
-fn load_config_for_scope(project_root: &Path, scope: ConfigScope) -> Result<ResolvedConfig> {
-    let path = config_path_for_scope(project_root, scope)?;
-    if !path.exists() {
-        bail!("config not found: {}", path.display());
-    }
-    FileConfigStore::new(path)
-        .load()
-        .context("failed to load config")
-}
-
-fn load_optional_config_for_scope(
-    project_root: &Path,
-    scope: ConfigScope,
-) -> Result<Option<ResolvedConfig>> {
-    let path = config_path_for_scope(project_root, scope)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    FileConfigStore::new(path)
-        .load()
-        .map(Some)
-        .context("failed to load config")
-}
-
-fn config_path_for_scope(project_root: &Path, scope: ConfigScope) -> Result<PathBuf> {
-    match scope {
-        ConfigScope::Project => Ok(project_root.join("sksync.config.json")),
-        ConfigScope::Global => Ok(global_config_root()?.join("config.json")),
-    }
-}
-
 fn prompt_agents(
     scope: ConfigScope,
     config: Option<&ResolvedConfig>,
@@ -473,59 +410,6 @@ fn merge_agent_options(
     agents.into_iter().collect()
 }
 
-fn default_agents_from_config(config: Option<&ResolvedConfig>) -> Vec<String> {
-    config
-        .map(|config| {
-            config
-                .default_agents
-                .iter()
-                .map(|agent| agent.as_str().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn write_default_agents_config(
-    config_path: &Path,
-    default_skill_dir: &str,
-    agents: &[String],
-) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let mut value = if config_path.exists() {
-        serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(config_path)
-                .with_context(|| format!("failed to read {}", config_path.display()))?,
-        )
-        .with_context(|| format!("failed to parse {}", config_path.display()))?
-    } else {
-        json!({
-            "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.schema.json",
-            "skillDir": default_skill_dir,
-            "dependencies": {}
-        })
-    };
-    let object = value
-        .as_object_mut()
-        .context("config root must be a JSON object")?;
-    object.insert("defaultAgents".to_owned(), json!(agents));
-    std::fs::write(
-        config_path,
-        format!("{}\n", serde_json::to_string_pretty(&value)?),
-    )
-    .with_context(|| format!("failed to write {}", config_path.display()))
-}
-
-fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
-    if scope.is_global() {
-        "~/.sksync/skills"
-    } else {
-        "./.sksync/skills"
-    }
-}
-
 fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
     let mut mappings = default_agent_mapping_config()?;
     let mapping_path = global_config_root()?.join("agents.json");
@@ -533,12 +417,6 @@ fn merged_agent_mapping_config() -> Result<AgentMappingConfig> {
         mappings.merge(read_agent_mapping_config(&mapping_path)?);
     }
     Ok(mappings)
-}
-
-fn global_config_root() -> Result<PathBuf> {
-    dirs::home_dir()
-        .map(|dir| dir.join(".sksync"))
-        .context("failed to determine home directory for global sksync directory")
 }
 
 fn prompt_required(label: &str) -> Result<String> {
@@ -590,17 +468,14 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        config_path_for_scope, default_agent_indexes, merge_agent_options, wizard_intents,
-        write_default_agents_config, ConfigScope, Intent,
-    };
+    use super::{default_agent_indexes, merge_agent_options, wizard_intents, ConfigScope, Intent};
     use crate::application::config::{ResolvedAgent, ResolvedConfig};
     use crate::domain::agent::AgentKind;
     use crate::domain::scope::Scope;
     use crate::domain::skill::SourcePath;
     use crate::infrastructure::json::AgentMappingConfig;
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     #[test]
     fn wizard_intents_include_add_bundle() {
@@ -610,14 +485,6 @@ mod tests {
     #[test]
     fn wizard_intents_include_remove_bundle() {
         assert!(wizard_intents().contains(&Intent::RemoveBundle));
-    }
-
-    #[test]
-    fn project_scope_uses_project_config_path() {
-        assert_eq!(
-            config_path_for_scope(Path::new("/tmp/project"), ConfigScope::Project).unwrap(),
-            Path::new("/tmp/project/sksync.config.json")
-        );
     }
 
     #[test]
@@ -661,60 +528,6 @@ mod tests {
             merge_agent_options(ConfigScope::Project, &mappings, Some(&config)),
             vec!["my-agent", "pi"]
         );
-    }
-
-    #[test]
-    fn write_default_agents_config_creates_missing_config() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let config_path = temp.path().join("sksync.config.json");
-
-        write_default_agents_config(
-            &config_path,
-            "./.sksync/skills",
-            &["universal".to_owned(), "pi".to_owned()],
-        )
-        .expect("write defaults");
-
-        let value = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&config_path).expect("read config"),
-        )
-        .expect("parse config");
-        assert_eq!(value["skillDir"], "./.sksync/skills");
-        assert_eq!(value["dependencies"], serde_json::json!({}));
-        assert_eq!(
-            value["defaultAgents"],
-            serde_json::json!(["universal", "pi"])
-        );
-    }
-
-    #[test]
-    fn write_default_agents_config_preserves_existing_config_fields() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let config_path = temp.path().join("sksync.config.json");
-        std::fs::write(
-            &config_path,
-            r#"{
-              "skillDir": "skills",
-              "dependencies": {
-                "review": { "source": "./review", "agents": ["pi"] }
-              }
-            }"#,
-        )
-        .expect("write config");
-
-        write_default_agents_config(&config_path, "./.sksync/skills", &["universal".to_owned()])
-            .expect("write defaults");
-
-        let value = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&config_path).expect("read config"),
-        )
-        .expect("parse config");
-        assert_eq!(value["skillDir"], "skills");
-        assert_eq!(
-            value["dependencies"]["review"]["agents"],
-            serde_json::json!(["pi"])
-        );
-        assert_eq!(value["defaultAgents"], serde_json::json!(["universal"]));
     }
 
     #[test]

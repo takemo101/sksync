@@ -5,10 +5,9 @@ use anyhow::{bail, Context, Result};
 use inquire::{Select, Text};
 
 use super::commands::add_skill_args;
-use super::{
-    confirm_and_run, default_agents_from_config, load_optional_config_for_scope, prompt_agents,
-    prompt_config_scope, prompt_confirm, prompt_required,
-};
+use super::config::load_optional_config_for_scope;
+use super::default_agents::default_agents_from_config;
+use super::{confirm_and_run, prompt_agents, prompt_config_scope, prompt_confirm, prompt_required};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PackageFilterChoice {
