@@ -559,7 +559,14 @@ src/
   apply.rs         # symlink create/update
   check.rs         # drift / broken link detection
   tui/
-    mod.rs         # prompt / wizard entry
+    mod.rs             # prompt wizard coordinator and shared helpers
+    add_skill.rs       # Add skill flow and include-filter prompts
+    bundle.rs          # Add/Remove bundle flows
+    commands.rs        # CLI argument builders used by wizard flows
+    config.rs          # config scope/path/load helpers
+    default_agents.rs  # Configure default agents flow
+    operations.rs      # status/list+check and plan+apply flows
+    skill.rs           # attach/remove/detach skill flows
 ```
 
 ### Architecture direction
@@ -568,6 +575,7 @@ src/
 - Apply executes only planner results.
 - CLI and TUI share planner / apply / check logic.
 - TUI contains no core logic.
+- TUI flows stay split by user intent, with command argument construction isolated from prompt collection.
 - OS differences are contained in agent resolution and apply/filesystem layers.
 
 ## 11. Minimum MVP

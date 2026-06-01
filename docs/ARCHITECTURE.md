@@ -84,42 +84,49 @@ src/
   main.rs
   cli.rs
   tui/
-    mod.rs
-    app.rs
-    ui.rs
-    events.rs
+    mod.rs             # wizard coordinator and shared prompt/runtime helpers
+    add_skill.rs       # Add skill flow, including include-filter prompts
+    bundle.rs          # Add/Remove bundle flows and provenance choices
+    commands.rs        # command argument builders used by prompt flows
+    config.rs          # wizard config scope/path/load helpers
+    default_agents.rs  # Configure default agents flow and JSON update helper
+    operations.rs      # status/list+check and plan+apply flows
+    skill.rs           # attach/remove/detach skill flows
   application/
     mod.rs
     init.rs
     add.rs
-    install.rs
+    source.rs
     update.rs
-    remove.rs
     outdated.rs
     plan.rs
     apply.rs
     check.rs
     list.rs
-    lockfile_build.rs
+    bundle.rs
+    config.rs
+    discovery.rs
     ports.rs
   domain/
     mod.rs
     agent.rs
+    bundle.rs
     skill.rs
+    skill_manifest.rs
+    source.rs
     scope.rs
     target.rs
     link_plan.rs
     lockfile.rs
-    problem.rs
+    package_filter.rs
+    removal.rs
   infrastructure/
     mod.rs
     fs.rs
-    json/
-      config.rs
-      dependency_config.rs
-      lockfile.rs
-      agents.rs
+    git.rs
     hash.rs
+    install.rs
+    json.rs
     builtin_agents.rs
 ```
 
@@ -311,6 +318,8 @@ The TUI is a thin adapter around application use cases. It is a prompt-style wiz
 - TUI does not directly perform symlink, source install, or lockfile filesystem operations.
 - Wizard preference config updates preserve existing JSON fields and stay adapter-level.
 - TUI state contains only in-progress prompt answers, current selections, and confirmation state.
+- Prompt flows live in focused modules (`add_skill`, `bundle`, `skill`, `default_agents`, and `operations`) while `mod.rs` coordinates intent selection and shared helpers.
+- Command argument construction lives in `tui::commands` so prompt flows can stay behavior-preserving wrappers around CLI/application use cases.
 - Add / remove / agent changes / default agents configuration collect required values through prompt flows.
 - Destructive operations show a dry-run summary and require explicit confirmation.
 - No persistent list screen; status should be shown as `list` / `check` summaries.
