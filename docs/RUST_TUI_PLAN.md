@@ -24,23 +24,29 @@
 6. Add symlink apply.
 7. Add check / list.
 8. Add the prompt wizard shell.
-9. Call add / remove / remove-agent / check / apply from the prompt wizard.
+9. Call add / attach / remove / detach-agent / bundle add-remove / check / apply from the prompt wizard.
+10. Split the wizard into focused modules once flows are stable.
 
 ## Prompt Wizard MVP
 
 - Runtime prompt labels, help, and confirmations are shown in English for international users.
 - Ask for the user's intent first:
   - Add skill
+  - Attach skill to agent
   - Remove skill
   - Detach skill from agent
+  - Add bundle
+  - Remove bundle
   - Show status
   - Apply links
+  - Configure default agents
 - Ask for the required values for each intent in order.
 - Remove / remove-agent flows select project/global scope first, then choose from skill and agent lists loaded from config.
 - Remove mode is a single-select choice: `Normal removal (no option)`, `--keep-files`, or `--config-only`.
 - Remove-agent selects agents from the selected skill's configured agent list.
 - Show a summary / dry-run before destructive actions.
 - After explicit confirmation, call the same application use case as the CLI.
+- Keep `src/tui/mod.rs` as the coordinator; place intent-specific flows in focused modules (`add_skill`, `bundle`, `skill`, `default_agents`, `operations`) and command argument builders in `commands`.
 
 ## Notes
 

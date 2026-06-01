@@ -34,5 +34,5 @@ features:
     details: Never overwrites plain files, only removes symlinks it manages, rolls back config on failed adds, and refuses to escape the project root for project-scope targets.
   - icon: 🧙
     title: CLI + interactive wizard
-    details: Drive everything from the CLI, or run `sksync wizard` for a guided prompt flow to add, attach, detach, remove, and apply.
+    details: Drive everything from the CLI, or run `sksync wizard` for a guided prompt flow to add skills, manage bundles, configure defaults, inspect status, and apply links.
 ---
