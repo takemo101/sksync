@@ -97,6 +97,49 @@ fn write_export_project(root: &Path) {
 }
 
 #[test]
+fn bundle_add_installs_and_records_manifest_only_include() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_bundle_e2e_config(root);
+    fs::create_dir_all(root.join("bundle/skills/review")).expect("create skill");
+    fs::write(
+        root.join("bundle/sksync.bundle.json"),
+        r#"{
+          "name": "review-workflow",
+          "description": "Review workflow skills.",
+          "entries": {
+            "review": { "source": "./skills/review", "include": ["SKILL.md"] }
+          }
+        }"#,
+    )
+    .expect("write bundle manifest");
+    write_bundle_skill(root, "bundle/skills/review", "review");
+    fs::write(root.join("bundle/skills/review/EXTRA.md"), "extra").expect("write extra file");
+
+    assert_success(sksync(
+        root,
+        &["bundle", "add", "./bundle", "--agent", "universal"],
+    ));
+
+    let config = read_project_config(root);
+    assert_eq!(
+        config["dependencies"]["review"]["include"],
+        serde_json::json!(["SKILL.md"])
+    );
+    let lockfile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("sksync-lock.json")).expect("read lockfile"),
+    )
+    .expect("lockfile json");
+    assert_eq!(lockfile["lockfileVersion"], 5);
+    assert_eq!(
+        lockfile["skills"]["review"]["include"],
+        serde_json::json!(["SKILL.md"])
+    );
+    assert!(root.join(".sksync/skills/review/SKILL.md").is_file());
+    assert!(!root.join(".sksync/skills/review/EXTRA.md").exists());
+}
+
+#[test]
 fn bundle_add_and_remove_flow_manages_dependencies_files_and_symlinks() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
@@ -689,6 +732,46 @@ fn add_preserves_bundle_provenance_for_existing_same_source_dependency() {
         serde_json::json!([{ "name": "review-workflow", "source": "./bundle" }])
     );
     assert_eq!(review["agents"], serde_json::json!(["universal", "pi"]));
+}
+
+#[test]
+fn bundle_export_preserves_dependency_include() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    fs::write(
+        root.join("sksync.config.json"),
+        r#"{
+          "skillDir": "./.sksync/skills",
+          "dependencies": {
+            "review": {
+              "source": "github:org/repo/skills/review#main",
+              "include": ["SKILL.md"],
+              "agents": ["pi"]
+            }
+          }
+        }"#,
+    )
+    .expect("write config");
+
+    assert_success(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--output",
+            "./bundle-out",
+        ],
+    ));
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("bundle-out/sksync.bundle.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["entries"]["review"]["include"],
+        serde_json::json!(["SKILL.md"])
+    );
 }
 
 #[test]
