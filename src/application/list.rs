@@ -294,6 +294,7 @@ mod tests {
             LockedSkill {
                 source: SourcePath::new(&source).unwrap(),
                 install_source: None,
+                include: None,
                 hash: Digest::new("sha256-locked").unwrap(),
                 files: Vec::new(),
                 targets: Vec::new(),

@@ -25,7 +25,7 @@ use crate::domain::agent::AgentKind;
 use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName, BundleNameError};
 use crate::domain::lockfile::{
     Digest, LinkType, LockedFile, LockedSkill, LockedTarget, Lockfile, LEGACY_LOCKFILE_VERSION,
-    LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
+    LEGACY_LOCKFILE_VERSION_V4, LEGACY_LOCKFILE_VERSION_WITH_TARGETS, SUPPORTED_LOCKFILE_VERSION,
 };
 use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::Scope;
@@ -1788,6 +1788,8 @@ struct RawLockedSkill {
     source: PathBuf,
     #[serde(default)]
     install_source: Option<RawLockedInstallSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
     hash: String,
     files: Vec<RawLockedFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1881,7 +1883,10 @@ pub fn read_lockfile(path: impl AsRef<Path>) -> Result<Lockfile, LockfileJsonErr
 fn is_supported_lockfile_version(version: u32) -> bool {
     matches!(
         version,
-        SUPPORTED_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION | LEGACY_LOCKFILE_VERSION_WITH_TARGETS
+        SUPPORTED_LOCKFILE_VERSION
+            | LEGACY_LOCKFILE_VERSION_V4
+            | LEGACY_LOCKFILE_VERSION
+            | LEGACY_LOCKFILE_VERSION_WITH_TARGETS
     )
 }
 
@@ -1954,6 +1959,13 @@ impl RawLockfile {
             let source = SourcePath::new(source_path).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill '{name}' source: {source}"))
             })?;
+            let include = raw_skill
+                .include
+                .map(PackageFilter::new)
+                .transpose()
+                .map_err(|source| {
+                    LockfileJsonError::InvalidField(format!("skill '{name}' include: {source}"))
+                })?;
             let hash = Digest::new(raw_skill.hash).map_err(|source| {
                 LockfileJsonError::InvalidField(format!("skill '{name}' hash: {source}"))
             })?;
@@ -2009,6 +2021,7 @@ impl RawLockfile {
                         .install_source
                         .map(|source| source.try_into_domain(lockfile_root))
                         .transpose()?,
+                    include,
                     hash,
                     files,
                     targets,
@@ -2040,6 +2053,10 @@ impl RawLockfile {
                         install_source: skill.install_source.as_ref().map(|source| {
                             RawLockedInstallSource::from_domain(source, lockfile_root)
                         }),
+                        include: skill
+                            .include
+                            .as_ref()
+                            .map(|include| include.patterns().to_vec()),
                         hash: skill.hash.as_str().to_owned(),
                         files: skill
                             .files
@@ -2398,7 +2415,7 @@ mod tests {
     }
 
     #[test]
-    fn write_lockfile_serializes_portable_v4_paths_relative_to_lockfile_directory() {
+    fn write_lockfile_serializes_portable_v5_paths_and_include() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let root = temp_dir.path();
         let lockfile_path = root.join("sksync-lock.json");
@@ -2410,6 +2427,7 @@ mod tests {
             LockedSkill {
                 source: SourcePath::new(source).expect("source path"),
                 install_source: Some(InstallSource::Local(local_source)),
+                include: Some(PackageFilter::manifest_only()),
                 hash: Digest::new("sha256-review").expect("hash"),
                 files: Vec::new(),
                 targets: Vec::new(),
@@ -2428,7 +2446,7 @@ mod tests {
             &std::fs::read_to_string(&lockfile_path).expect("read lockfile"),
         )
         .expect("parse lockfile");
-        assert_eq!(value["lockfileVersion"], 4);
+        assert_eq!(value["lockfileVersion"], 5);
         assert_eq!(value["root"], ".");
         assert_eq!(
             value["skills"]["review"]["source"],
@@ -2437,6 +2455,10 @@ mod tests {
         assert_eq!(
             value["skills"]["review"]["installSource"]["path"],
             "vendor/review"
+        );
+        assert_eq!(
+            value["skills"]["review"]["include"],
+            serde_json::json!(["SKILL.md"])
         );
     }
 
@@ -2482,6 +2504,7 @@ mod tests {
             skill.install_source,
             Some(InstallSource::Local(root.join("vendor/review")))
         );
+        assert_eq!(skill.include, None);
     }
 
     #[test]
@@ -2582,6 +2605,7 @@ mod tests {
                     reference: Some("abc123".to_owned()),
                     path: PathBuf::from("skills/review"),
                 })),
+                include: None,
                 hash: Digest::new("sha256-review").expect("hash"),
                 files: Vec::new(),
                 targets: Vec::new(),

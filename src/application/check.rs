@@ -1,3 +1,4 @@
+use crate::application::config::ResolvedConfig;
 use crate::application::ports::{LinkStore, SourceHashStore, TargetState};
 use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
@@ -65,6 +66,11 @@ pub enum CheckProblem {
         skill: String,
         message: String,
     },
+    IncludeMismatch {
+        skill: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl CheckProblem {
@@ -108,6 +114,11 @@ impl CheckProblem {
             Self::HashFailed { skill, message } => {
                 format!("hash failed: skill={skill}, {message}")
             }
+            Self::IncludeMismatch {
+                skill,
+                expected,
+                actual,
+            } => format!("include mismatch: skill={skill}, config={expected}, lockfile={actual}"),
         }
     }
 }
@@ -143,9 +154,34 @@ pub fn check_lockfile_with_plan(
 ) -> CheckReport {
     let mut problems = check_source_hashes(lockfile, source_hash_store);
 
+    inspect_plan_targets(&mut problems, plan, link_store);
+
+    CheckReport { problems }
+}
+
+pub fn check_lockfile_with_config_and_plan(
+    config: &ResolvedConfig,
+    lockfile: &Lockfile,
+    plan: &LinkPlan,
+    source_hash_store: &impl SourceHashStore,
+    link_store: &impl LinkStore,
+) -> CheckReport {
+    let mut problems = check_include_filters(config, lockfile);
+    problems.extend(check_source_hashes(lockfile, source_hash_store));
+
+    inspect_plan_targets(&mut problems, plan, link_store);
+
+    CheckReport { problems }
+}
+
+fn inspect_plan_targets(
+    problems: &mut Vec<CheckProblem>,
+    plan: &LinkPlan,
+    link_store: &impl LinkStore,
+) {
     for item in &plan.items {
         inspect_target(
-            &mut problems,
+            problems,
             item.skill.as_str(),
             &item.agent,
             &item.target,
@@ -153,8 +189,29 @@ pub fn check_lockfile_with_plan(
             link_store,
         );
     }
+}
 
-    CheckReport { problems }
+fn check_include_filters(config: &ResolvedConfig, lockfile: &Lockfile) -> Vec<CheckProblem> {
+    let mut problems = Vec::new();
+    for skill in &config.skills {
+        let Some(locked) = lockfile.skills.get(&skill.name) else {
+            continue;
+        };
+        if skill.include != locked.include {
+            problems.push(CheckProblem::IncludeMismatch {
+                skill: skill.name.as_str().to_owned(),
+                expected: format_include(skill.include.as_ref()),
+                actual: format_include(locked.include.as_ref()),
+            });
+        }
+    }
+    problems
+}
+
+fn format_include(include: Option<&crate::domain::package_filter::PackageFilter>) -> String {
+    include
+        .map(|include| include.patterns().join(", "))
+        .unwrap_or_else(|| "<full package>".to_owned())
 }
 
 fn check_source_hashes(
@@ -237,13 +294,17 @@ fn inspect_target(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_lockfile, check_lockfile_with_plan, CheckProblem};
+    use super::{
+        check_lockfile, check_lockfile_with_config_and_plan, check_lockfile_with_plan, CheckProblem,
+    };
+    use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{
         LinkStore, LinkStoreError, SourceHash, SourceHashStore, SourceHashStoreError, TargetState,
     };
     use crate::domain::agent::AgentKind;
     use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::{Digest, LinkType, LockedSkill, LockedTarget, Lockfile};
+    use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
@@ -276,6 +337,21 @@ mod tests {
         }
     }
 
+    fn config_with_manifest_only() -> ResolvedConfig {
+        ResolvedConfig {
+            skill_dir: SourcePath::new("skills").unwrap(),
+            agents: BTreeMap::new(),
+            skills: vec![ResolvedSkill {
+                name: SkillName::new("review").unwrap(),
+                source: SourcePath::new("skills/review").unwrap(),
+                install_source: None,
+                include: Some(PackageFilter::manifest_only()),
+                agents: vec![AgentKind::Pi],
+            }],
+            default_agents: Vec::new(),
+        }
+    }
+
     fn lockfile() -> Lockfile {
         let mut skills = BTreeMap::new();
         skills.insert(
@@ -283,6 +359,7 @@ mod tests {
             LockedSkill {
                 source: SourcePath::new("skills/review").unwrap(),
                 install_source: None,
+                include: None,
                 hash: Digest::new("sha256-expected").unwrap(),
                 files: Vec::new(),
                 targets: vec![LockedTarget {
@@ -349,6 +426,34 @@ mod tests {
         assert!(matches!(
             report.problems[0],
             CheckProblem::TargetMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn include_mismatch_is_reported() {
+        let plan = LinkPlan::new(vec![LinkPlanItem {
+            skill: SkillName::new("review").unwrap(),
+            agent: AgentKind::Pi,
+            source: SourcePath::new("skills/review").unwrap(),
+            target: TargetPath::new(".pi/agent/skills/review").unwrap(),
+            action: PlanAction::AlreadySynced,
+        }]);
+
+        let report = check_lockfile_with_config_and_plan(
+            &config_with_manifest_only(),
+            &lockfile(),
+            &plan,
+            &FakeHashStore {
+                hash: "sha256-expected",
+            },
+            &FakeLinkStore {
+                state: TargetState::SymlinkToExpectedSource,
+            },
+        );
+
+        assert!(matches!(
+            report.problems[0],
+            CheckProblem::IncludeMismatch { .. }
         ));
     }
 

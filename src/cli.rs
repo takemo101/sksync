@@ -16,7 +16,7 @@ use crate::application::bundle::{
     BundleExportResolvedSkill, BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus,
     BundleSyncPlan, BundleSyncSourceResolution, BundleSyncStatus,
 };
-use crate::application::check::{check_lockfile_with_plan, CheckProblem};
+use crate::application::check::{check_lockfile_with_config_and_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
@@ -120,7 +120,11 @@ struct AddArgs {
     #[arg(long)]
     name: Option<String>,
     /// Copy only matched files/directories from the resolved skill package root. Repeatable.
-    #[arg(long = "include", value_name = "pattern", conflicts_with = "manifest_only")]
+    #[arg(
+        long = "include",
+        value_name = "pattern",
+        conflicts_with = "manifest_only"
+    )]
     include: Vec<String>,
     /// Shortcut for --include SKILL.md.
     #[arg(long, conflicts_with = "include")]
@@ -508,7 +512,8 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 
                     match read_lockfile(lockfile_path_for(args.global, &current_dir)?) {
                         Ok(lockfile) => {
-                            let report = check_lockfile_with_plan(
+                            let report = check_lockfile_with_config_and_plan(
+                                &config,
                                 &lockfile,
                                 &plan,
                                 &Sha256SourceHashStore,
@@ -1593,7 +1598,8 @@ fn run_add(args: AddArgs) -> Result<()> {
     reject_legacy_registry_source(&args.source)?;
     print_progress("Resolving skill source...");
     let include = package_filter_from_add_args(&args)?;
-    let selections = resolve_add_selections(&args.source, args.name.as_deref(), &config_path, include)?;
+    let selections =
+        resolve_add_selections(&args.source, args.name.as_deref(), &config_path, include)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
         let store =
@@ -2742,6 +2748,7 @@ fn build_lockfile_from_plan(
             LockedSkill {
                 source: skill.source.clone(),
                 install_source: skill.install_source.clone(),
+                include: skill.include.clone(),
                 hash: hash.hash.clone(),
                 files: hash
                     .files
@@ -2783,7 +2790,8 @@ fn run_check(args: CheckArgs) -> Result<()> {
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
     let plan = build_desired_link_plan(&config, &target_resolver)?;
-    let report = check_lockfile_with_plan(
+    let report = check_lockfile_with_config_and_plan(
+        &config,
         &lockfile,
         &plan,
         &Sha256SourceHashStore,

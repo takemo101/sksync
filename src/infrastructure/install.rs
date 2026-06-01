@@ -812,7 +812,9 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error.to_string().contains("include pattern matched no files"));
+        assert!(error
+            .to_string()
+            .contains("include pattern matched no files"));
     }
 
     #[test]

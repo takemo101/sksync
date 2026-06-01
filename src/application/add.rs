@@ -104,10 +104,10 @@ mod tests {
     use super::{run_add_workflow, AddSelection, AddWorkflow};
     use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{
-        AddDependencyOptions, DependencyConfigStore, DependencyConfigStoreError, InstalledSkillSource, LinkApplier,
-        LinkApplyError, LinkStore, LinkStoreError, LockfileStore, LockfileStoreError,
-        SkillInstallError, SkillInstallRequest, SkillInstaller, SourceStore, SourceStoreError,
-        TargetResolver, TargetResolverError, TargetState,
+        AddDependencyOptions, DependencyConfigStore, DependencyConfigStoreError,
+        InstalledSkillSource, LinkApplier, LinkApplyError, LinkStore, LinkStoreError,
+        LockfileStore, LockfileStoreError, SkillInstallError, SkillInstallRequest, SkillInstaller,
+        SourceStore, SourceStoreError, TargetResolver, TargetResolverError, TargetState,
     };
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::Lockfile;
