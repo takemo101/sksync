@@ -101,8 +101,8 @@ mod tests {
     use crate::application::ports::{
         DependencyConfigStore, DependencyConfigStoreError, InstalledSkillSource, LinkApplier,
         LinkApplyError, LinkStore, LinkStoreError, LockfileStore, LockfileStoreError,
-        SkillInstallError, SkillInstaller, SourceStore, SourceStoreError, TargetResolver,
-        TargetResolverError, TargetState,
+        SkillInstallError, SkillInstallRequest, SkillInstaller, SourceStore, SourceStoreError,
+        TargetResolver, TargetResolverError, TargetState,
     };
     use crate::domain::agent::AgentKind;
     use crate::domain::lockfile::Lockfile;
@@ -160,13 +160,13 @@ mod tests {
     impl SkillInstaller for FakeInstaller {
         fn install_skill(
             &self,
-            source: &InstallSource,
+            request: &SkillInstallRequest,
             _destination: &Path,
             _skill_name: &str,
         ) -> Result<InstalledSkillSource, SkillInstallError> {
             Ok(InstalledSkillSource {
                 label: "installed".to_owned(),
-                resolved_source: source.clone(),
+                resolved_source: request.source.clone(),
             })
         }
     }

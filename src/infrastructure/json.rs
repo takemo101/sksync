@@ -483,9 +483,9 @@ impl RawConfig {
             let install_source = parse_install_source(&name, raw_dependency.source, config_root)?;
             let source = dependency_source_path(&skill_dir, skill_name.as_str(), &install_source)
                 .map_err(|source| ConfigResolveError::InvalidSkillSource {
-                    skill: name.clone(),
-                    source,
-                })?;
+                skill: name.clone(),
+                source,
+            })?;
 
             skills.push(ResolvedSkill {
                 name: skill_name,

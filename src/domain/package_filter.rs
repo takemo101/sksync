@@ -43,7 +43,9 @@ impl PackageFilter {
             if path
                 .components()
                 .any(|component| matches!(component, Component::ParentDir))
-                || normalized_pattern.split('/').any(|component| component == "..")
+                || normalized_pattern
+                    .split('/')
+                    .any(|component| component == "..")
             {
                 return Err(PackagePatternError::ParentComponent);
             }
@@ -51,7 +53,9 @@ impl PackageFilter {
         }
         normalized.sort();
         normalized.dedup();
-        Ok(Self { patterns: normalized })
+        Ok(Self {
+            patterns: normalized,
+        })
     }
 
     pub fn manifest_only() -> Self {
