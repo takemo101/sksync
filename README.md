@@ -2,6 +2,10 @@
 
 `sksync` is a CLI tool that syncs Agent Skills target directories for multiple coding agents from a single configuration file.
 
+## Manual
+
+Read the sksync manual at <https://takemo101.github.io/sksync/>.
+
 ## Purpose
 
 - Create symlinks from one shared skill body into each agent's expected skills directory.
