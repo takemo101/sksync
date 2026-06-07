@@ -34,7 +34,7 @@ sksync bundle remove review-workflow
 
 ## Manifest
 
-A bundle source is a directory containing `sksync.bundle.json`.
+A bundle is described by a `sksync.bundle.json` manifest. You can point `bundle add` / `bundle inspect` at the manifest file itself, at the directory containing it, or at a repo/parent that is searched for it — see [Manifest discovery](#manifest-discovery).
 
 ```json
 {
@@ -70,6 +70,61 @@ bundles/review-workflow/
    ├─ review/SKILL.md
    └─ qa/SKILL.md
 ```
+
+## Manifest discovery
+
+`bundle add <source>` and `bundle inspect <source>` resolve **exactly one** `sksync.bundle.json` before reading any entries. The `<source>` no longer has to be the manifest's own directory — sksync finds the manifest for you.
+
+Resolution is exact-first:
+
+1. **Direct manifest file** — if `<source>` points straight at a `sksync.bundle.json`, its parent directory becomes the bundle source.
+2. **Preferred child** — otherwise, if `<source>/sksync.bundle.json` exists, it is used.
+3. **Search** — otherwise sksync searches under `<source>` for `sksync.bundle.json`, up to depth 5, skipping `.git`, `node_modules`, and `.sksync`.
+
+This means you can point at a repo root or a parent directory and let sksync locate the manifest, the same way [`sksync add`](/guides/sources#discovery-behavior) discovers `SKILL.md`.
+
+```sh
+# Directory that contains the manifest.
+sksync bundle inspect ./bundles/review-workflow
+
+# Direct manifest file — resolves to ./bundles/review-workflow.
+sksync bundle inspect ./bundles/review-workflow/sksync.bundle.json
+
+# Repo root / parent — searched up to depth 5.
+sksync bundle inspect org/team-bundles#main
+```
+
+### Multiple manifests
+
+When discovery finds more than one manifest under `<source>`:
+
+- **Interactive terminal** → sksync prompts you to choose one. The prompt filters on each manifest's relative path, `name`, and `description`.
+- **Non-interactive environment** (CI, scripts, no TTY) → it is an error. sksync prints the candidate rows (path and name) and asks you to pass a narrower `<source>` or `--name <bundle>`.
+
+### Selecting with `--name`
+
+`bundle add` and `bundle inspect` accept `--name <bundle>` to pick one candidate without a prompt. The selector must match **exactly one** manifest by its manifest `name` or its parent directory name.
+
+```sh
+sksync bundle add org/team-bundles#main --name review-workflow --agent pi
+```
+
+Zero matches, multiple matches, or a direct manifest file whose name/path does not match `--name` are all errors.
+
+### Resolved source and provenance
+
+Whatever wide `<source>` you start from, the **selected manifest's parent directory** becomes the resolved bundle source. `bundle inspect` prints it, and `bundle add` stores it as the bundle provenance on each dependency. That keeps later [`bundle sync`](#sync-statuses) and [`bundle remove`](#remove-and-dry-run-statuses) deterministic — they reuse the stored exact source and never re-run discovery.
+
+### GitHub blob URLs
+
+A GitHub `/blob/<ref>/.../sksync.bundle.json` URL is accepted as a direct manifest source and normalized to the corresponding parent `/tree/<ref>/...` directory source, so you can paste a manifest link straight from the GitHub file view.
+
+```text
+https://github.com/org/repo/blob/main/bundles/review/sksync.bundle.json
+→ https://github.com/org/repo/tree/main/bundles/review
+```
+
+> Discovery applies only to `bundle add` and `bundle inspect`. `bundle sync` and `bundle remove` operate on a bundle **name** and the exact provenance source already recorded in config, so they stay deterministic and never search for manifests.
 
 ## Source behavior
 
@@ -270,8 +325,10 @@ Safety rules:
 |---|---|
 | `conflict` during add | A skill name already exists with a different source. Rename the entry or resolve the existing dependency first. |
 | `ambiguous` during remove | Pass `--source <exact-source>` from the stored provenance. |
+| multiple manifests found / no TTY to prompt | Pass `--name <bundle>` or a narrower `<source>`; the printed candidate rows show valid names. |
+| `--name` matches nothing or several | The selector matches manifest `name` or parent directory name and must hit exactly one; adjust the value or narrow `<source>`. |
 | bundle add succeeds but target links are blocked | Inspect with `sksync plan --dry-run`; existing unmanaged files are never overwritten. |
-| remote bundle cannot be read | Verify the source points to a directory containing `sksync.bundle.json` and that `git clone` works locally. |
+| remote bundle cannot be read | Verify the source resolves to a `sksync.bundle.json` (file, directory, or repo/parent that contains one) and that `git clone` works locally. |
 
 ## Related
 
