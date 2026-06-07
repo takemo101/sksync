@@ -77,6 +77,7 @@ If those capabilities become necessary, they should be external integrations or 
 | source | Install source such as GitHub / `skills.sh` / local directory, or the concrete skill body directory. |
 | dependency | Config entry describing where a skill comes from and which agents receive links. |
 | bundle | Curated install set whose entries expand into normal dependencies. Bundles are not runtime folders. |
+| bundle manifest | Shareable document that defines a bundle by naming its bundle entries. |
 | bundle entry | Skill reference inside a bundle. The key is the resulting skill name; the entry source points to the skill body. |
 | bundle provenance | Local dependency metadata recording which bundle(s) installed or adopted a dependency. |
 | target | Directory where an agent reads skills. |
@@ -205,6 +206,25 @@ Bundle manifests do not contain agents. `sksync bundle add <source> --agent ...`
 Bundle add planning reports `create`, `merge`, `conflict`, and `skipped`. Any conflict aborts the whole add before writes. Bundle remove planning reports `remove`, `detach-provenance`, `ambiguous`, and `not-found`. Dependencies created by bundles use `managedByBundles: true`; manual dependencies adopted by matching source keep `managedByBundles: false`, so removing the bundle only detaches provenance.
 
 Agent symlink targets stay flat. Agents never see bundle folders, and the lockfile does not store bundle provenance. Bundle provenance is local UX/config metadata, not content reproducibility state.
+
+#### Bundle manifest discovery
+
+`sksync bundle add <source>` and `sksync bundle inspect <source>` resolve one bundle manifest before loading entries. TUI bundle add uses the same resolver and passes the resolved source into dry-run/apply commands so users do not answer the same selection twice. `bundle sync` and `bundle remove` do not discover manifests; they use the exact bundle provenance source already stored in config.
+
+Resolution is exact-first:
+
+- If `<source>` points directly at `sksync.bundle.json`, use its parent directory as the bundle source.
+- Otherwise, if `<source>/sksync.bundle.json` exists, use `<source>` directly.
+- Otherwise, search under `<source>` up to depth 5 for `sksync.bundle.json`.
+- Exclude `.git`, `node_modules`, and `.sksync` from discovery.
+
+If discovery finds one manifest, select it automatically. If it finds multiple manifests in an interactive terminal, prompt for one selection. The prompt and filtering use the manifest's relative path, manifest `name`, and `description`. In a non-interactive environment, multiple manifests are an error; print the candidate paths and names and ask the user to pass a more specific source or `--name <bundle>`.
+
+`bundle add` and `bundle inspect` support `--name <bundle>` as an explicit selector. The selector must match exactly one candidate by manifest `name` or manifest parent directory name. Zero matches, multiple matches, or a direct manifest whose name/path does not match `--name` are errors.
+
+The selected manifest's parent directory becomes the resolved bundle source. That resolved source is printed by `bundle inspect` and stored as bundle provenance by `bundle add`, even if the user originally supplied a wider repo root. This keeps later `bundle sync` deterministic.
+
+GitHub `/blob/<ref>/.../sksync.bundle.json` URLs are accepted as direct manifest sources and normalize to the corresponding parent `/tree/<ref>/...` source. Tests for discovery should use temporary local directories and pure source-normalization functions rather than real network clones.
 
 #### Bundle sync
 

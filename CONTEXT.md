@@ -24,6 +24,10 @@ _Avoid_: installed bundle, runtime package
 A curated install set that names multiple bundle entries for sharing a skill setup.
 _Avoid_: runtime folder, agent-visible group, package
 
+**Bundle manifest**:
+A shareable document that defines a bundle by naming its bundle entries.
+_Avoid_: bundle folder, runtime object
+
 **Bundle entry**:
 A named skill reference inside a bundle. The entry name is the local skill name the bundle proposes.
 _Avoid_: dependency, installed skill

@@ -12,7 +12,47 @@ use super::{
     confirm_and_run, prompt_agents, prompt_config_scope, prompt_confirm, prompt_required,
     run_sksync,
 };
-use crate::application::bundle::load_bundle_from_source;
+use crate::application::bundle::{discover_bundle_manifest_candidates, BundleManifestCandidate};
+
+#[derive(Debug, Clone)]
+struct BundleManifestChoice(BundleManifestCandidate);
+
+impl fmt::Display for BundleManifestChoice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} — {}",
+            self.0.manifest.name,
+            self.0.relative_path.display()
+        )
+    }
+}
+
+fn score_bundle_manifest_choice(
+    input: &str,
+    choice: &BundleManifestChoice,
+    _display: &str,
+    _index: usize,
+) -> Option<i64> {
+    let filter = input.trim().to_lowercase();
+    if filter.is_empty() {
+        return Some(0);
+    }
+
+    let name = choice.0.manifest.name.as_str().to_lowercase();
+    let path = choice.0.relative_path.to_string_lossy().to_lowercase();
+    let description = choice.0.manifest.description.to_lowercase();
+
+    if name.contains(&filter) {
+        Some(100)
+    } else if path.contains(&filter) {
+        Some(50)
+    } else if description.contains(&filter) {
+        Some(10)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct BundleProvenanceChoice {
@@ -34,7 +74,10 @@ pub(super) fn run_add(project_root: &Path) -> Result<()> {
     } else {
         project_root.to_path_buf()
     };
-    let bundle = load_bundle_from_source(&source, &root_dir)?;
+    let candidates = discover_bundle_manifest_candidates(&source, &root_dir)?;
+    let candidate = select_bundle_manifest_candidate(&source, candidates)?;
+    let resolved_source = candidate.resolved_source.clone();
+    let bundle = candidate.into_loaded_bundle();
 
     println!("Bundle");
     println!("Name: {}", bundle.manifest.name);
@@ -54,12 +97,31 @@ pub(super) fn run_add(project_root: &Path) -> Result<()> {
     let config = load_optional_config_for_scope(project_root, scope)?;
     let default_agents = default_agents_from_config(config.as_ref());
     let agents = prompt_agents(scope, config.as_ref(), &default_agents)?;
-    let dry_run_args = bundle_add_args(&source, &agents, scope.is_global(), true);
+    let dry_run_args = bundle_add_args(&resolved_source, &agents, scope.is_global(), true);
     println!("dry-run plan:");
     run_sksync(project_root, &dry_run_args)?;
 
-    let apply_args = bundle_add_args(&source, &agents, scope.is_global(), false);
+    let apply_args = bundle_add_args(&resolved_source, &agents, scope.is_global(), false);
     confirm_and_run(project_root, "Add this bundle?", apply_args)
+}
+
+fn select_bundle_manifest_candidate(
+    source: &str,
+    candidates: Vec<BundleManifestCandidate>,
+) -> Result<BundleManifestCandidate> {
+    match candidates.len() {
+        0 => anyhow::bail!("no sksync.bundle.json files found under source '{source}'"),
+        1 => Ok(candidates.into_iter().next().expect("one candidate")),
+        _ => Ok(Select::new(
+            "Select bundle to add",
+            candidates.into_iter().map(BundleManifestChoice).collect(),
+        )
+        .with_scorer(&score_bundle_manifest_choice)
+        .with_help_message("type: filter name/path/description · enter: confirm")
+        .prompt()
+        .context("failed to read bundle selection")?
+        .0),
+    }
 }
 
 pub(super) fn run_remove(project_root: &Path) -> Result<()> {
@@ -128,7 +190,50 @@ fn bundle_provenance_choices_from_value(value: &serde_json::Value) -> Vec<Bundle
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle_provenance_choices_from_value, BundleProvenanceChoice};
+    use super::{
+        bundle_provenance_choices_from_value, score_bundle_manifest_choice, BundleManifestChoice,
+        BundleProvenanceChoice,
+    };
+    use crate::application::bundle::BundleManifestCandidate;
+    use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
+    use std::path::PathBuf;
+
+    fn bundle_manifest_choice_for_test() -> BundleManifestChoice {
+        let name = BundleName::new("team-standard").unwrap();
+        BundleManifestChoice(BundleManifestCandidate {
+            manifest: BundleManifest {
+                name: name.clone(),
+                description: "Review and QA workflow".to_owned(),
+                entries: Vec::new(),
+            },
+            provenance: BundleProvenance {
+                name,
+                source: "./bundles/base".to_owned(),
+            },
+            entries: Vec::new(),
+            relative_path: PathBuf::from("bundles/base"),
+            resolved_source: "./bundles/base".to_owned(),
+        })
+    }
+
+    #[test]
+    fn bundle_manifest_choice_scorer_searches_description() {
+        let choice = bundle_manifest_choice_for_test();
+
+        assert_eq!(
+            score_bundle_manifest_choice("team", &choice, "", 0),
+            Some(100)
+        );
+        assert_eq!(
+            score_bundle_manifest_choice("base", &choice, "", 0),
+            Some(50)
+        );
+        assert_eq!(score_bundle_manifest_choice("qa", &choice, "", 0), Some(10));
+        assert_eq!(
+            score_bundle_manifest_choice("missing", &choice, "", 0),
+            None
+        );
+    }
 
     #[test]
     fn bundle_provenance_choices_are_unique_exact_name_source_pairs() {

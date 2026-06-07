@@ -168,6 +168,21 @@ mod tests {
     }
 
     #[test]
+    fn bundle_add_args_accept_resolved_discovered_source() {
+        assert_eq!(
+            bundle_add_args("./repo/bundles/base", &["pi".to_owned()], false, true),
+            vec![
+                "bundle",
+                "add",
+                "./repo/bundles/base",
+                "--agent",
+                "pi",
+                "--dry-run"
+            ]
+        );
+    }
+
+    #[test]
     fn bundle_remove_args_include_exact_source_scope_and_dry_run() {
         let choice = BundleProvenanceChoice {
             name: "review-workflow".to_owned(),
