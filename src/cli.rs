@@ -10,11 +10,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
 use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::bundle::{
-    apply_bundle_export_plan, build_bundle_export_plan, load_bundle_from_source,
-    validate_bundle_export_plan, BundleAddPlan, BundleAddPlanItem, BundleAddStatus,
-    BundleExportApplyOptions, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
-    BundleExportResolvedSkill, BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus,
-    BundleSyncPlan, BundleSyncSourceResolution, BundleSyncStatus,
+    apply_bundle_export_plan, build_bundle_export_plan, discover_bundle_manifest_candidates,
+    load_bundle_from_source, validate_bundle_export_plan, BundleAddPlan, BundleAddPlanItem,
+    BundleAddStatus, BundleExportApplyOptions, BundleExportMode, BundleExportPlan,
+    BundleExportPlanInput, BundleExportResolvedSkill, BundleManifestCandidate, BundleRemovePlan,
+    BundleRemovePlanItem, BundleRemoveStatus, BundleSyncPlan, BundleSyncSourceResolution,
+    BundleSyncStatus,
 };
 use crate::application::check::{check_lockfile_with_config_and_plan, CheckProblem};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
@@ -212,14 +213,20 @@ enum BundleCommand {
 
 #[derive(Debug, Args)]
 struct BundleInspectArgs {
-    /// Bundle source directory containing sksync.bundle.json.
+    /// Bundle source directory, repo, or sksync.bundle.json file.
     source: String,
+    /// Select one discovered bundle by manifest name or manifest parent directory name.
+    #[arg(long)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Args)]
 struct BundleAddArgs {
-    /// Bundle source directory containing sksync.bundle.json.
+    /// Bundle source directory, repo, or sksync.bundle.json file.
     source: String,
+    /// Select one discovered bundle by manifest name or manifest parent directory name.
+    #[arg(long)]
+    name: Option<String>,
     /// Agent to link bundle entries into. Can be passed multiple times.
     #[arg(short, long = "agent", required = true)]
     agents: Vec<String>,
@@ -818,7 +825,9 @@ fn print_bundle_export_plan(plan: &BundleExportPlan) {
 fn run_bundle_inspect(args: BundleInspectArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     print_progress("Loading bundle manifest...");
-    let bundle = load_bundle_from_source(&args.source, &current_dir)?;
+    let candidates = discover_bundle_manifest_candidates(&args.source, &current_dir)?;
+    let bundle = select_bundle_manifest_candidates(&args.source, args.name.as_deref(), candidates)?
+        .into_loaded_bundle();
 
     print_section("Bundle");
     println!("Name: {}", bundle.manifest.name);
@@ -1072,7 +1081,9 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
         current_dir.clone()
     };
     print_progress("Loading bundle manifest...");
-    let bundle = load_bundle_from_source(&args.source, &root_dir)?;
+    let candidates = discover_bundle_manifest_candidates(&args.source, &root_dir)?;
+    let bundle = select_bundle_manifest_candidates(&args.source, args.name.as_deref(), candidates)?
+        .into_loaded_bundle();
     let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
     print_progress("Planning changes...");
     let plan = store.plan_bundle_add(&bundle.entries, &args.agents, &bundle.provenance)?;
@@ -2304,6 +2315,116 @@ fn default_skill_dir_for(global: bool) -> Result<PathBuf> {
 }
 
 #[derive(Debug, Clone)]
+struct BundleChoice(BundleManifestCandidate);
+
+impl std::fmt::Display for BundleChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}  {}",
+            self.0.manifest.name,
+            self.0.relative_path.display()
+        )
+    }
+}
+
+fn score_bundle_choice(
+    input: &str,
+    choice: &BundleChoice,
+    _display: &str,
+    _index: usize,
+) -> Option<i64> {
+    let filter = input.trim().to_lowercase();
+    if filter.is_empty() {
+        return Some(0);
+    }
+
+    let name = choice.0.manifest.name.as_str().to_lowercase();
+    let path = choice.0.relative_path.to_string_lossy().to_lowercase();
+    let description = choice.0.manifest.description.to_lowercase();
+
+    if name.contains(&filter) {
+        Some(100)
+    } else if path.contains(&filter) {
+        Some(50)
+    } else if description.contains(&filter) {
+        Some(10)
+    } else {
+        None
+    }
+}
+
+fn bundle_candidate_matches_name(candidate: &BundleManifestCandidate, name: &str) -> bool {
+    candidate.manifest.name.as_str() == name
+        || candidate
+            .relative_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            == Some(name)
+        || Path::new(&candidate.resolved_source)
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            == Some(name)
+}
+
+fn bundle_candidate_rows(candidates: &[BundleManifestCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "- {} ({})",
+                candidate.relative_path.display(),
+                candidate.manifest.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn select_bundle_manifest_candidates(
+    source: &str,
+    requested_name: Option<&str>,
+    candidates: Vec<BundleManifestCandidate>,
+) -> Result<BundleManifestCandidate> {
+    if candidates.is_empty() {
+        bail!("no sksync.bundle.json files found under source '{source}'");
+    }
+
+    if let Some(name) = requested_name {
+        let matches = candidates
+            .into_iter()
+            .filter(|candidate| bundle_candidate_matches_name(candidate, name))
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [candidate] => Ok(candidate.clone()),
+            [] => bail!("no discovered bundle named '{name}' under source '{source}'"),
+            _ => bail!(
+                "multiple discovered bundles matched '{name}' under source '{source}':\n{}",
+                bundle_candidate_rows(&matches)
+            ),
+        };
+    }
+
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next().expect("one candidate"));
+    }
+
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "multiple bundles found under source '{source}'; pass --name <bundle> or use a more specific source:\n{}",
+            bundle_candidate_rows(&candidates)
+        );
+    }
+
+    let choices = candidates.into_iter().map(BundleChoice).collect::<Vec<_>>();
+    Ok(inquire::Select::new("Select bundle manifest", choices)
+        .with_scorer(&score_bundle_choice)
+        .with_help_message("type: filter name/path/description · enter: confirm")
+        .prompt()?
+        .0)
+}
+
+#[derive(Debug, Clone)]
 struct SkillChoice(SkillCandidate);
 
 impl std::fmt::Display for SkillChoice {
@@ -2846,13 +2967,15 @@ mod tests {
         compact_source, copy_dir_all, format_progress_message, format_selected_skill_choices,
         global_config_root_from_home, is_managed_skill_dir, list_state_label,
         reject_legacy_registry_source, remove_installed_skill_dir, scan_import_candidates,
-        score_skill_choice, select_skill_candidates, truncate_middle, Cli, Command,
-        ConfigFileBackup,
+        score_skill_choice, select_bundle_manifest_candidates, select_skill_candidates,
+        truncate_middle, Cli, Command, ConfigFileBackup,
     };
+    use crate::application::bundle::BundleManifestCandidate;
     use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
     };
+    use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
@@ -2989,6 +3112,111 @@ mod tests {
             "--dry-run",
         ])
         .expect("import --agent --dry-run parses");
+    }
+
+    fn bundle_candidate_for_test(name: &str, relative_path: &str) -> BundleManifestCandidate {
+        let bundle_name = BundleName::new(name).unwrap();
+        BundleManifestCandidate {
+            manifest: BundleManifest {
+                name: bundle_name.clone(),
+                description: format!("{name} description"),
+                entries: Vec::new(),
+            },
+            provenance: BundleProvenance {
+                name: bundle_name,
+                source: format!("./{relative_path}"),
+            },
+            entries: Vec::new(),
+            relative_path: PathBuf::from(relative_path),
+            resolved_source: format!("./{relative_path}"),
+        }
+    }
+
+    #[test]
+    fn bundle_add_accepts_name_selector() {
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "add",
+            "owner/repo",
+            "--name",
+            "team-baseline",
+            "--agent",
+            "pi",
+        ])
+        .expect("bundle add --name parses");
+    }
+
+    #[test]
+    fn bundle_inspect_accepts_name_selector() {
+        Cli::try_parse_from([
+            "sksync",
+            "bundle",
+            "inspect",
+            "owner/repo",
+            "--name",
+            "team-baseline",
+        ])
+        .expect("bundle inspect --name parses");
+    }
+
+    #[test]
+    fn bundle_name_selector_matches_manifest_name_or_parent_dir() {
+        let selected = select_bundle_manifest_candidates(
+            "owner/repo",
+            Some("base"),
+            vec![
+                bundle_candidate_for_test("review-workflow", "bundles/review"),
+                bundle_candidate_for_test("team-baseline", "bundles/base"),
+            ],
+        )
+        .expect("select candidate");
+
+        assert_eq!(selected.relative_path, Path::new("bundles/base"));
+    }
+
+    #[test]
+    fn bundle_name_selector_matches_manifest_name() {
+        let selected = select_bundle_manifest_candidates(
+            "owner/repo",
+            Some("team-baseline"),
+            vec![bundle_candidate_for_test("team-baseline", "bundles/base")],
+        )
+        .expect("select candidate");
+
+        assert_eq!(selected.manifest.name.as_str(), "team-baseline");
+    }
+
+    #[test]
+    fn bundle_name_selector_matches_resolved_parent_dir_for_direct_manifest() {
+        let mut candidate = bundle_candidate_for_test("team-baseline", ".");
+        candidate.resolved_source = "./repo/bundles/base".to_owned();
+        candidate.provenance.source = candidate.resolved_source.clone();
+
+        let selected =
+            select_bundle_manifest_candidates("./repo/bundles/base", Some("base"), vec![candidate])
+                .expect("select candidate");
+
+        assert_eq!(selected.resolved_source, "./repo/bundles/base");
+    }
+
+    #[test]
+    fn bundle_name_selector_rejects_multiple_matches() {
+        let error = select_bundle_manifest_candidates(
+            "owner/repo",
+            Some("base"),
+            vec![
+                bundle_candidate_for_test("team-baseline", "bundles/base"),
+                bundle_candidate_for_test("other", "examples/base"),
+            ],
+        )
+        .expect_err("multiple matches should fail");
+
+        assert!(error
+            .to_string()
+            .contains("multiple discovered bundles matched"));
+        assert!(error.to_string().contains("bundles/base"));
+        assert!(error.to_string().contains("examples/base"));
     }
 
     #[test]

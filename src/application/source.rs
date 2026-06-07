@@ -151,7 +151,7 @@ fn parse_github_tree_url(value: &str) -> Option<GitInstallSource> {
     let repo = format!("{}/{}", parts[0], parts[1]);
     let mut reference = reference_override.map(str::to_owned);
     let mut path = PathBuf::from(".");
-    if parts.get(2) == Some(&"tree") && parts.len() >= 4 {
+    if matches!(parts.get(2), Some(&"tree") | Some(&"blob")) && parts.len() >= 4 {
         reference = Some(parts[3].to_owned());
         if parts.len() > 4 {
             path = PathBuf::from(parts[4..].join("/"));
@@ -216,6 +216,21 @@ mod tests {
         assert_eq!(git.url, "https://github.com/owner/repo.git");
         assert_eq!(git.reference.as_deref(), Some("main"));
         assert_eq!(git.path, Path::new("skills/review"));
+    }
+
+    #[test]
+    fn github_blob_url_source_parses_as_git_source() {
+        let source = parse_install_source_string(
+            "https://github.com/owner/repo/blob/main/bundles/base/sksync.bundle.json",
+        )
+        .expect("source parses");
+        let InstallSource::Git(git) = source else {
+            panic!("expected git source");
+        };
+
+        assert_eq!(git.url, "https://github.com/owner/repo.git");
+        assert_eq!(git.reference.as_deref(), Some("main"));
+        assert_eq!(git.path, Path::new("bundles/base/sksync.bundle.json"));
     }
 
     #[test]

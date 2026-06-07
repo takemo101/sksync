@@ -18,6 +18,26 @@ use crate::infrastructure::json::{
 };
 
 pub const BUNDLE_MANIFEST_FILE: &str = "sksync.bundle.json";
+pub const BUNDLE_MANIFEST_DISCOVERY_MAX_DEPTH: usize = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleManifestCandidate {
+    pub manifest: BundleManifest,
+    pub provenance: BundleProvenance,
+    pub entries: Vec<LoadedBundleEntry>,
+    pub relative_path: PathBuf,
+    pub resolved_source: String,
+}
+
+impl BundleManifestCandidate {
+    pub fn into_loaded_bundle(self) -> LoadedBundle {
+        LoadedBundle {
+            manifest: self.manifest,
+            provenance: self.provenance,
+            entries: self.entries,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedBundle {
@@ -586,6 +606,18 @@ fn temporary_bundle_export_staging_dir(output: &Path) -> PathBuf {
         ))
 }
 
+pub fn discover_bundle_manifest_candidates(
+    raw_source: &str,
+    config_root: &Path,
+) -> Result<Vec<BundleManifestCandidate>> {
+    let source = parse_install_source_string(raw_source)
+        .with_context(|| format!("invalid bundle source {raw_source:?}"))?;
+    match source {
+        InstallSource::Local(path) => discover_local_bundle_manifest_candidates(&path, config_root),
+        InstallSource::Git(git) => discover_git_bundle_manifest_candidates(&git),
+    }
+}
+
 pub fn load_bundle_from_source(raw_source: &str, config_root: &Path) -> Result<LoadedBundle> {
     let source = parse_install_source_string(raw_source)
         .with_context(|| format!("invalid bundle source {raw_source:?}"))?;
@@ -593,6 +625,298 @@ pub fn load_bundle_from_source(raw_source: &str, config_root: &Path) -> Result<L
         InstallSource::Local(path) => load_local_bundle(raw_source, &path, config_root),
         InstallSource::Git(git) => load_git_bundle(&git),
     }
+}
+
+fn discover_local_bundle_manifest_candidates(
+    path: &Path,
+    config_root: &Path,
+) -> Result<Vec<BundleManifestCandidate>> {
+    let resolved = absolutize_config_path(path, config_root);
+    let root = if is_bundle_manifest_file_path(&resolved) {
+        resolved
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        resolved
+    };
+
+    if root.join(BUNDLE_MANIFEST_FILE).is_file() {
+        return Ok(vec![load_local_bundle_manifest_candidate(
+            &root,
+            &root,
+            config_root,
+        )?]);
+    }
+
+    let mut candidates = Vec::new();
+    discover_local_bundle_manifest_candidates_inner(
+        &root,
+        &root,
+        config_root,
+        BUNDLE_MANIFEST_DISCOVERY_MAX_DEPTH,
+        0,
+        &mut candidates,
+    )?;
+    candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(candidates)
+}
+
+fn discover_local_bundle_manifest_candidates_inner(
+    root: &Path,
+    current: &Path,
+    config_root: &Path,
+    max_depth: usize,
+    depth: usize,
+    candidates: &mut Vec<BundleManifestCandidate>,
+) -> Result<()> {
+    if depth > max_depth || is_skipped_bundle_discovery_dir(current) {
+        return Ok(());
+    }
+
+    if current.join(BUNDLE_MANIFEST_FILE).is_file() {
+        candidates.push(load_local_bundle_manifest_candidate(
+            root,
+            current,
+            config_root,
+        )?);
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(current)
+        .with_context(|| format!("failed to read directory {}", current.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", current.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        if file_type.is_dir() {
+            discover_local_bundle_manifest_candidates_inner(
+                root,
+                &entry.path(),
+                config_root,
+                max_depth,
+                depth + 1,
+                candidates,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_local_bundle_manifest_candidate(
+    root: &Path,
+    manifest_dir: &Path,
+    config_root: &Path,
+) -> Result<BundleManifestCandidate> {
+    let manifest = read_bundle_manifest(manifest_dir.join(BUNDLE_MANIFEST_FILE))?;
+    let resolved_source = normalize_local_source_for_config(manifest_dir, config_root);
+    let entries = manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            let normalized_source = normalize_bundle_entry_source(
+                &entry.source,
+                Some(manifest_dir),
+                None,
+                config_root,
+            )?;
+            Ok(LoadedBundleEntry {
+                skill_name: entry.skill_name.as_str().to_owned(),
+                original_source: entry.source.clone(),
+                normalized_source,
+                include: entry.include.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(BundleManifestCandidate {
+        provenance: BundleProvenance {
+            name: manifest.name.clone(),
+            source: resolved_source.clone(),
+        },
+        manifest,
+        entries,
+        relative_path: relative_bundle_manifest_path(root, manifest_dir),
+        resolved_source,
+    })
+}
+
+fn discover_git_bundle_manifest_candidates(
+    git: &GitInstallSource,
+) -> Result<Vec<BundleManifestCandidate>> {
+    let base_git = bundle_manifest_parent_git_source(git)?;
+    let clone_dir = temporary_bundle_clone_dir();
+    let result = (|| {
+        GitClient.clone_checkout(&base_git, &clone_dir)?;
+        let search_root = clone_dir.join(&base_git.path);
+        if search_root.join(BUNDLE_MANIFEST_FILE).is_file() {
+            return Ok(vec![load_git_bundle_manifest_candidate(
+                &clone_dir,
+                &search_root,
+                &search_root,
+                &base_git,
+            )?]);
+        }
+
+        let mut candidates = Vec::new();
+        discover_git_bundle_manifest_candidates_inner(
+            &clone_dir,
+            &search_root,
+            &search_root,
+            &base_git,
+            BUNDLE_MANIFEST_DISCOVERY_MAX_DEPTH,
+            0,
+            &mut candidates,
+        )?;
+        candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(candidates)
+    })();
+
+    if clone_dir.exists() {
+        let _ = std::fs::remove_dir_all(&clone_dir);
+    }
+
+    result
+}
+
+fn discover_git_bundle_manifest_candidates_inner(
+    clone_root: &Path,
+    search_root: &Path,
+    current: &Path,
+    base_git: &GitInstallSource,
+    max_depth: usize,
+    depth: usize,
+    candidates: &mut Vec<BundleManifestCandidate>,
+) -> Result<()> {
+    if depth > max_depth || is_skipped_bundle_discovery_dir(current) {
+        return Ok(());
+    }
+
+    if current.join(BUNDLE_MANIFEST_FILE).is_file() {
+        candidates.push(load_git_bundle_manifest_candidate(
+            clone_root,
+            search_root,
+            current,
+            base_git,
+        )?);
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(current)
+        .with_context(|| format!("failed to read directory {}", current.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", current.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        if file_type.is_dir() {
+            discover_git_bundle_manifest_candidates_inner(
+                clone_root,
+                search_root,
+                &entry.path(),
+                base_git,
+                max_depth,
+                depth + 1,
+                candidates,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_git_bundle_manifest_candidate(
+    clone_root: &Path,
+    search_root: &Path,
+    manifest_dir: &Path,
+    base_git: &GitInstallSource,
+) -> Result<BundleManifestCandidate> {
+    let manifest = read_bundle_manifest(manifest_dir.join(BUNDLE_MANIFEST_FILE))?;
+    let selected_git_path = manifest_dir
+        .strip_prefix(clone_root)
+        .unwrap_or(manifest_dir)
+        .to_path_buf();
+    let selected_git_path = if selected_git_path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        selected_git_path
+    };
+    let resolved_git = GitInstallSource {
+        url: base_git.url.clone(),
+        reference: base_git.reference.clone(),
+        path: selected_git_path,
+    };
+    let resolved_source = git_source_to_config_string(&resolved_git);
+    let entries = manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            let normalized_source = normalize_bundle_entry_source(
+                &entry.source,
+                None,
+                Some(&resolved_git),
+                Path::new("."),
+            )?;
+            Ok(LoadedBundleEntry {
+                skill_name: entry.skill_name.as_str().to_owned(),
+                original_source: entry.source.clone(),
+                normalized_source,
+                include: entry.include.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(BundleManifestCandidate {
+        provenance: BundleProvenance {
+            name: manifest.name.clone(),
+            source: resolved_source.clone(),
+        },
+        manifest,
+        entries,
+        relative_path: relative_bundle_manifest_path(search_root, manifest_dir),
+        resolved_source,
+    })
+}
+
+fn bundle_manifest_parent_git_source(git: &GitInstallSource) -> Result<GitInstallSource> {
+    if !is_bundle_manifest_file_path(&git.path) {
+        return Ok(git.clone());
+    }
+    let parent = git
+        .path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok(GitInstallSource {
+        url: git.url.clone(),
+        reference: git.reference.clone(),
+        path: parent,
+    })
+}
+
+fn relative_bundle_manifest_path(root: &Path, manifest_dir: &Path) -> PathBuf {
+    let relative_path = manifest_dir
+        .strip_prefix(root)
+        .unwrap_or(manifest_dir)
+        .to_path_buf();
+    if relative_path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative_path
+    }
+}
+
+fn is_skipped_bundle_discovery_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, ".git" | "node_modules" | ".sksync"))
+}
+
+fn is_bundle_manifest_file_path(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some(BUNDLE_MANIFEST_FILE)
 }
 
 fn load_local_bundle(raw_source: &str, path: &Path, config_root: &Path) -> Result<LoadedBundle> {
@@ -824,10 +1148,11 @@ fn temporary_bundle_clone_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_bundle_export_plan, build_bundle_export_plan, git_source_to_config_string,
-        load_bundle_from_source, normalize_bundle_entry_source, validate_snapshot_export_source,
-        BundleExportApplyOptions, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
-        BundleExportPlanItem, BundleExportResolvedSkill,
+        apply_bundle_export_plan, build_bundle_export_plan, bundle_manifest_parent_git_source,
+        discover_bundle_manifest_candidates, git_source_to_config_string, load_bundle_from_source,
+        normalize_bundle_entry_source, validate_snapshot_export_source, BundleExportApplyOptions,
+        BundleExportMode, BundleExportPlan, BundleExportPlanInput, BundleExportPlanItem,
+        BundleExportResolvedSkill,
     };
     use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
     use crate::domain::skill::SkillName;
@@ -835,6 +1160,80 @@ mod tests {
     use crate::infrastructure::json::BundleExportDependencyConfig;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    fn write_bundle_manifest(path: &Path, name: &str, description: &str) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(
+            path.join("sksync.bundle.json"),
+            format!(
+                r#"{{
+                  "name": "{name}",
+                  "description": "{description}",
+                  "entries": {{ "review": {{ "source": "./skills/review" }} }}
+                }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discovers_bundle_manifests_under_local_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("repo");
+        write_bundle_manifest(&root.join("bundles/base"), "team-baseline", "Team baseline");
+        write_bundle_manifest(
+            &root.join("node_modules/ignored"),
+            "ignored",
+            "Ignored bundle",
+        );
+
+        let candidates = discover_bundle_manifest_candidates("./repo", temp.path())
+            .expect("discover candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].manifest.name.as_str(), "team-baseline");
+        assert_eq!(candidates[0].relative_path, Path::new("bundles/base"));
+        assert_eq!(candidates[0].resolved_source, "./repo/bundles/base");
+        assert_eq!(candidates[0].provenance.source, "./repo/bundles/base");
+        assert_eq!(
+            candidates[0].entries[0].normalized_source,
+            "./repo/bundles/base/skills/review"
+        );
+    }
+
+    #[test]
+    fn direct_bundle_manifest_file_resolves_to_parent_source() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let bundle_dir = temp.path().join("repo/bundles/base");
+        write_bundle_manifest(&bundle_dir, "team-baseline", "Team baseline");
+
+        let candidates = discover_bundle_manifest_candidates(
+            "./repo/bundles/base/sksync.bundle.json",
+            temp.path(),
+        )
+        .expect("discover candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].relative_path, Path::new("."));
+        assert_eq!(candidates[0].resolved_source, "./repo/bundles/base");
+    }
+
+    #[test]
+    fn git_bundle_manifest_file_source_resolves_to_parent_tree_source() {
+        let git = GitInstallSource {
+            url: "https://github.com/org/bundles.git".to_owned(),
+            reference: Some("main".to_owned()),
+            path: PathBuf::from("bundles/base/sksync.bundle.json"),
+        };
+
+        let parent = bundle_manifest_parent_git_source(&git).unwrap();
+
+        assert_eq!(parent.path, Path::new("bundles/base"));
+        assert_eq!(
+            git_source_to_config_string(&parent),
+            "https://github.com/org/bundles/tree/main/bundles/base"
+        );
+    }
 
     #[test]
     fn local_bundle_relative_entries_are_config_root_relative() {
