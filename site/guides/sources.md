@@ -26,6 +26,8 @@ When a source points at a repo root or parent directory rather than a directory 
 - **`--name` given** → auto-selects the single discovered skill whose frontmatter `name` or directory name matches.
 - `.git`, `node_modules`, and `.sksync` are excluded from the search.
 
+`sksync bundle add` / `bundle inspect` apply the same exact-first, depth-5 discovery to locate a `sksync.bundle.json` manifest (also honoring `--name <bundle>`). See [Bundles → Manifest discovery](/guides/bundles#manifest-discovery).
+
 ## skills.sh mapping
 
 `skills.sh` is treated as a **URL transformer to a GitHub source**, not a registry. You can pass a `skills.sh` URL or shorthand as input, but the config stores the resolved GitHub tree URL — `https://github.com/<owner>/<repo>/tree/<ref>/<path>` — after selection.

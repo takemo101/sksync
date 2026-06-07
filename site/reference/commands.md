@@ -66,8 +66,8 @@ sksync attach <skill> --agent <agent> -f
 Inspect, add, remove, export, and synchronize curated bundle install sets. Bundles expand into normal dependencies; they are not runtime folders.
 
 ```sh
-sksync bundle inspect <source>
-sksync bundle add <source> --agent <agent> [--agent <agent> …]
+sksync bundle inspect <source> [--name <bundle>]
+sksync bundle add <source> --agent <agent> [--agent <agent> …] [--name <bundle>]
 sksync bundle add <source> --agent <agent> --dry-run
 sksync bundle add <source> --agent <agent> -f
 sksync bundle remove <name> [--source <exact-source>]
@@ -89,6 +89,7 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | Flag | Meaning |
 |---|---|
 | `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`; fallback-only for `bundle sync` when dependency agents cannot be inferred. |
+| `--name <bundle>` | For `bundle add` / `bundle inspect`, select exactly one discovered `sksync.bundle.json` by manifest `name` or manifest parent directory name. Use it when one `<source>` contains multiple manifests. |
 | `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove` or `bundle sync`. |
 | `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export`. |
 | `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. |
@@ -96,6 +97,8 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `-f`, `--force` | For `bundle add` / `bundle sync`, replace drifted or broken target symlinks during the final link apply step only. For `bundle export`, replace an existing generated output directory. |
 | `--dry-run` | Show planned add/remove/export/sync work without writing. |
 | `-g`, `--global` | Operate on the global config. Supported by `bundle add`, `bundle remove`, `bundle sync`, and `bundle export`; `bundle inspect` is manifest-only. |
+
+`bundle add <source>` and `bundle inspect <source>` resolve a single `sksync.bundle.json` from `<source>` before doing anything else. `<source>` may point directly at a manifest file, at a directory containing one, or at a repo/parent that is searched for one. When several manifests are found, use `--name <bundle>` (or a narrower `<source>`) to pick one. `bundle sync` and `bundle remove` do **not** discover manifests — they take a bundle `<name>` and reuse the exact provenance source stored in config. See [Bundles → Manifest discovery](/guides/bundles#manifest-discovery).
 
 Example `bundle add --dry-run` output:
 

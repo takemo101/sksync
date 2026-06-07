@@ -306,11 +306,22 @@ cargo run -- add owner/repo/path/to/skill --agent pi -g
 Bundles are curated install sets described by `sksync.bundle.json`. A bundle is not an installed runtime folder: `bundle add` expands entries into normal dependencies, using agents you choose at add time, and records local provenance so `bundle remove` can later detach or remove those dependencies safely.
 
 ```bash
-cargo run -- bundle inspect <source>
-cargo run -- bundle add <source> --agent pi [--agent claude-code] [--dry-run] [-f]
+cargo run -- bundle inspect <source> [--name <bundle>]
+cargo run -- bundle add <source> --agent pi [--agent claude-code] [--name <bundle>] [--dry-run] [-f]
 cargo run -- bundle remove <name> [--source <exact-source>] [--dry-run]
 cargo run -- bundle sync <name> [--source <exact-source>] [--dry-run] [-f]
 ```
+
+`bundle add` and `bundle inspect` resolve a single `sksync.bundle.json` from `<source>`. Resolution is exact-first: a direct `sksync.bundle.json` file uses its parent directory; otherwise `<source>/sksync.bundle.json` is preferred; otherwise sksync searches under `<source>` up to depth 5 (skipping `.git`, `node_modules`, and `.sksync`). So you can point at a manifest file, its directory, or a whole repo/root and let sksync find the manifest.
+
+```bash
+# Directory, direct manifest file, or repo-root discovery all work.
+cargo run -- bundle inspect ./bundles/review-workflow
+cargo run -- bundle inspect ./bundles/review-workflow/sksync.bundle.json
+cargo run -- bundle add org/team-bundles#main --name review-workflow --agent pi
+```
+
+When several manifests are found, an interactive terminal prompts for one; a non-interactive environment errors and prints the candidate rows. `--name <bundle>` selects exactly one candidate by manifest `name` or manifest parent directory name. The selected manifest's parent directory is stored as bundle provenance, so later `bundle sync` / `bundle remove` reuse that exact source and never re-run discovery. GitHub `/blob/<ref>/.../sksync.bundle.json` URLs are accepted and normalize to the parent `/tree/<ref>/...` source. See the [bundles guide](https://takemo101.github.io/sksync/guides/bundles#manifest-discovery) for details.
 
 Example manifest:
 
