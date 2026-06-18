@@ -123,6 +123,220 @@ impl CheckProblem {
     }
 }
 
+/// A set of related check problems that share a single fix hint, for grouped CLI output.
+///
+/// Grouping keeps `doctor`/`check` output readable: instead of repeating the same
+/// remediation hint on every line, related problems are collected under one header
+/// with one hint. `count` is the number of underlying problems (which may differ from
+/// `lines.len()` when lines include sub-group headers, as with target conflicts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProblemGroup {
+    pub title: String,
+    pub count: usize,
+    pub hint: String,
+    pub lines: Vec<String>,
+}
+
+/// Group check problems by problem type into display sections, each with one fix hint.
+///
+/// This is pure formatting: it never inspects the filesystem and preserves the input
+/// problem count across all returned groups. Target conflicts are summarized by agent
+/// and parent target directory, with the conflicting skills listed underneath.
+pub fn group_check_problems(problems: &[CheckProblem]) -> Vec<ProblemGroup> {
+    let mut groups = Vec::new();
+
+    let source_drift: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::SourceHashDrift {
+                skill,
+                expected,
+                actual,
+            } => Some(format!("{skill}: expected {expected}, got {actual}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Source drift",
+        "run `sksync apply` to relink, or `sksync update` to record the new source",
+        source_drift,
+    );
+
+    let include_mismatch: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::IncludeMismatch {
+                skill,
+                expected,
+                actual,
+            } => Some(format!("{skill}: config {expected}, lockfile {actual}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Include mismatch",
+        "run `sksync apply` to apply the configured include filter",
+        include_mismatch,
+    );
+
+    let target_missing: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::TargetMissing { skill, agent, path } => {
+                Some(format!("{skill} · {agent} · {path}"))
+            }
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Target missing",
+        "run `sksync apply` to create the missing link(s)",
+        target_missing,
+    );
+
+    let target_drift: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::TargetUnexpectedSymlink {
+                skill,
+                agent,
+                path,
+                actual_source,
+            } => Some(format!("{skill} · {agent} · {path} → {actual_source}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Target drift",
+        "inspect with `sksync plan`, then `sksync apply --force` if the drift is safe to overwrite",
+        target_drift,
+    );
+
+    if let Some(group) = group_target_conflicts(problems) {
+        groups.push(group);
+    }
+
+    let broken_symlinks: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::BrokenSymlink {
+                skill,
+                agent,
+                path,
+                actual_source,
+            } => Some(format!("{skill} · {agent} · {path} → {actual_source}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Broken symlinks",
+        "run `sksync apply` to recreate the link, or remove the dangling symlink",
+        broken_symlinks,
+    );
+
+    let inspect_failed: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::InspectFailed {
+                skill,
+                agent,
+                message,
+            } => Some(format!("{skill} · {agent}: {message}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Inspect failed",
+        "check filesystem permissions, then re-run `sksync doctor`",
+        inspect_failed,
+    );
+
+    let hash_failed: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| match problem {
+            CheckProblem::HashFailed { skill, message } => Some(format!("{skill}: {message}")),
+            _ => None,
+        })
+        .collect();
+    push_group(
+        &mut groups,
+        "Hash failed",
+        "verify the source path exists and is readable, then `sksync update`",
+        hash_failed,
+    );
+
+    groups
+}
+
+fn push_group(groups: &mut Vec<ProblemGroup>, title: &str, hint: &str, lines: Vec<String>) {
+    if lines.is_empty() {
+        return;
+    }
+    groups.push(ProblemGroup {
+        title: title.to_owned(),
+        count: lines.len(),
+        hint: hint.to_owned(),
+        lines,
+    });
+}
+
+/// Summarize target conflicts by agent and parent target directory.
+///
+/// Conflicting skills are listed under each `agent · parent-dir` header so the shared
+/// directory and fix hint are not repeated on every line.
+fn group_target_conflicts(problems: &[CheckProblem]) -> Option<ProblemGroup> {
+    let mut by_location: std::collections::BTreeMap<(String, String), Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut count = 0;
+
+    for problem in problems {
+        if let CheckProblem::TargetConflict {
+            skill,
+            agent,
+            path,
+            reason,
+        } = problem
+        {
+            let parent = std::path::Path::new(path)
+                .parent()
+                .map(|parent| parent.display().to_string())
+                .filter(|parent| !parent.is_empty())
+                .unwrap_or_else(|| ".".to_owned());
+            by_location
+                .entry((agent.clone(), parent))
+                .or_default()
+                .push(format!("{skill} ({reason})"));
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    for ((agent, parent), skills) in by_location {
+        lines.push(format!("{agent} · {parent}"));
+        for skill in skills {
+            lines.push(format!("  {skill}"));
+        }
+    }
+
+    Some(ProblemGroup {
+        title: "Target conflicts".to_owned(),
+        count,
+        hint: "inspect with `sksync plan`; remove or relocate the conflicting path(s), then `sksync apply`"
+            .to_owned(),
+        lines,
+    })
+}
+
 pub fn check_lockfile(
     lockfile: &Lockfile,
     source_hash_store: &impl SourceHashStore,
@@ -489,6 +703,85 @@ mod tests {
             report.problems[0],
             CheckProblem::TargetMissing { .. }
         ));
+    }
+
+    #[test]
+    fn target_conflicts_are_grouped_by_agent_and_parent_with_single_hint() {
+        use super::group_check_problems;
+
+        let problems = vec![
+            CheckProblem::TargetConflict {
+                skill: "review".to_owned(),
+                agent: "pi".to_owned(),
+                path: ".pi/agent/skills/review".to_owned(),
+                reason: "regular file exists".to_owned(),
+            },
+            CheckProblem::TargetConflict {
+                skill: "tdd".to_owned(),
+                agent: "pi".to_owned(),
+                path: ".pi/agent/skills/tdd".to_owned(),
+                reason: "directory exists".to_owned(),
+            },
+            CheckProblem::TargetConflict {
+                skill: "review".to_owned(),
+                agent: "codex".to_owned(),
+                path: ".codex/skills/review".to_owned(),
+                reason: "regular file exists".to_owned(),
+            },
+        ];
+
+        let groups = group_check_problems(&problems);
+        assert_eq!(groups.len(), 1);
+        let group = &groups[0];
+        assert_eq!(group.title, "Target conflicts");
+        // Count reflects every underlying problem, not the number of display lines.
+        assert_eq!(group.count, 3);
+        // A single shared fix hint, not one per item.
+        assert!(group.hint.contains("sksync plan"));
+
+        // Two location headers (pi and codex), with skills listed underneath.
+        let headers: Vec<&String> = group
+            .lines
+            .iter()
+            .filter(|line| !line.starts_with("  "))
+            .collect();
+        assert_eq!(headers.len(), 2);
+        assert!(group
+            .lines
+            .iter()
+            .any(|line| line == "pi · .pi/agent/skills"));
+        assert!(group
+            .lines
+            .iter()
+            .any(|line| line.trim() == "review (regular file exists)"));
+    }
+
+    #[test]
+    fn group_check_problems_preserves_total_count_across_groups() {
+        use super::group_check_problems;
+
+        let problems = vec![
+            CheckProblem::SourceHashDrift {
+                skill: "review".to_owned(),
+                expected: "sha256-a".to_owned(),
+                actual: "sha256-b".to_owned(),
+            },
+            CheckProblem::TargetMissing {
+                skill: "tdd".to_owned(),
+                agent: "pi".to_owned(),
+                path: ".pi/agent/skills/tdd".to_owned(),
+            },
+            CheckProblem::TargetConflict {
+                skill: "review".to_owned(),
+                agent: "pi".to_owned(),
+                path: ".pi/agent/skills/review".to_owned(),
+                reason: "regular file exists".to_owned(),
+            },
+        ];
+
+        let groups = group_check_problems(&problems);
+        let total: usize = groups.iter().map(|group| group.count).sum();
+        assert_eq!(total, problems.len());
     }
 
     #[test]
