@@ -457,7 +457,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 - `bundle`: inspect/add/remove/export curated install sets; `bundle add --force` and `bundle sync --force` pass through to their final link apply step; `bundle export --force` replaces an existing generated output directory.
 - `apply`: resolve targets, detect conflicts, create/update symlinks, and write lockfile; `--force` only allows symlink repair/replacement, never regular-file or directory replacement.
 - `check`: compare config, lockfile, hashes, sources, and symlink health.
-- `doctor`: read-only comprehensive diagnosis with suggested next commands, never automatic repair.
+- `doctor`: read-only comprehensive diagnosis with suggested next commands, never automatic repair. By default it is local-only and performs no remote git operations. `doctor --remote` additionally probes each dependency's current config source and reports remote Git source paths that no longer exist at the configured ref; `doctor --remote --global` checks the global config instead of the project config. Remote checks never mutate config, lockfile, installed bodies, or symlinks.
 - `agents`: list effective mappings, diagnose target directories, and refresh bundled mappings.
 - `import`: copy-only migration from existing skill directories; no original files are mutated.
 - `wizard`: prompt-based wrapper around CLI/application use cases.
