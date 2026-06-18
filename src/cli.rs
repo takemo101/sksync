@@ -18,7 +18,9 @@ use crate::application::bundle::{
     BundleRemovePlanItem, BundleRemoveStatus, BundleSyncPlan, BundleSyncSourceResolution,
     BundleSyncStatus,
 };
-use crate::application::check::{check_lockfile_with_config_and_plan, CheckProblem};
+use crate::application::check::{
+    check_lockfile_with_config_and_plan, group_check_problems, CheckProblem, ProblemGroup,
+};
 use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, ResolvedConfig};
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
@@ -488,10 +490,31 @@ fn run_agents_doctor() -> Result<()> {
     Ok(())
 }
 
+/// Plan-level problems detected while building the desired link plan.
+///
+/// These come from comparing the desired plan against the current filesystem and are
+/// reported separately from lockfile/link (`CheckProblem`) findings.
+#[derive(Debug, Default)]
+struct PlanProblems {
+    /// `(skill, agent)` pairs whose source could not be found.
+    source_missing: Vec<(String, String)>,
+    /// `(skill, agent, reason)` for targets blocked by an existing path.
+    conflicts: Vec<(String, String, String)>,
+    /// `(skill, agent, actual_source)` for symlinks pointing somewhere unexpected.
+    drift: Vec<(String, String, String)>,
+}
+
+impl PlanProblems {
+    fn len(&self) -> usize {
+        self.source_missing.len() + self.conflicts.len() + self.drift.len()
+    }
+}
+
 fn run_doctor(args: DoctorArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let mut problems = Vec::new();
-    let mut warnings = Vec::new();
+    let mut load_errors: Vec<String> = Vec::new();
+    let mut plan_problems = PlanProblems::default();
+    let mut check_problems: Vec<CheckProblem> = Vec::new();
 
     let config_result = load_config_for_scope(args.global, &current_dir);
     match &config_result {
@@ -508,22 +531,21 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                     for item in &plan.items {
                         match &item.action {
                             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
-                            PlanAction::SourceMissing => problems.push(format!(
-                                "{} -> {}: source missing; try `sksync update` or `sksync install`",
-                                item.skill,
-                                item.agent.as_str()
+                            PlanAction::SourceMissing => plan_problems
+                                .source_missing
+                                .push((item.skill.to_string(), item.agent.as_str().to_owned())),
+                            PlanAction::Conflict { reason } => plan_problems.conflicts.push((
+                                item.skill.to_string(),
+                                item.agent.as_str().to_owned(),
+                                reason.to_string(),
                             )),
-                            PlanAction::Conflict { reason } => problems.push(format!(
-                                "{} -> {}: target conflict ({reason}); inspect with `sksync plan`",
-                                item.skill,
-                                item.agent.as_str()
-                            )),
-                            PlanAction::DriftedSymlink { actual_source } => problems.push(format!(
-                                "{} -> {}: symlink drifted to {}; inspect with `sksync plan` or re-run `sksync apply --force` if safe",
-                                item.skill,
-                                item.agent.as_str(),
-                                actual_source.display()
-                            )),
+                            PlanAction::DriftedSymlink { actual_source } => {
+                                plan_problems.drift.push((
+                                    item.skill.to_string(),
+                                    item.agent.as_str().to_owned(),
+                                    actual_source.display().to_string(),
+                                ))
+                            }
                         }
                     }
 
@@ -536,41 +558,38 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                                 &Sha256SourceHashStore,
                                 &FileSystemLinkStore,
                             );
-                            for problem in report.problems {
-                                problems.push(format!(
-                                    "lockfile/link health: {}; try `sksync install`, `sksync update`, or `sksync apply`",
-                                    problem.display_line()
-                                ));
-                            }
+                            check_problems.extend(report.problems);
                         }
-                        Err(error) => problems.push(format!(
+                        Err(error) => load_errors.push(format!(
                             "lockfile: failed to load ({error}); try `sksync install`"
                         )),
                     }
                 }
-                Err(error) => problems.push(format!(
+                Err(error) => load_errors.push(format!(
                     "plan: failed to build desired link plan ({error}); try `sksync plan`"
                 )),
             }
         }
-        Err(error) => problems.push(format!(
+        Err(error) => load_errors.push(format!(
             "config: failed to load ({error}); try `sksync init{}`",
             if args.global { " --global" } else { "" }
         )),
     }
 
+    let mut agent_problem_lines: Vec<String> = Vec::new();
+    let mut agent_warning_lines: Vec<String> = Vec::new();
     for diagnostic in collect_agent_diagnostics()? {
-        let message = format!(
-            "agent mapping: {} {} -> {}: {}; try `sksync agents doctor`",
+        let line = format!(
+            "{} · {} · {}: {}",
             diagnostic.scope,
             diagnostic.name,
             diagnostic.target.display(),
             diagnostic.status
         );
         if diagnostic.is_error() {
-            problems.push(message);
+            agent_problem_lines.push(line);
         } else if diagnostic.is_warning() {
-            warnings.push(message);
+            agent_warning_lines.push(line);
         }
     }
 
@@ -584,27 +603,30 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         &GitRemoteSourceChecker,
     );
 
-    if !warnings.is_empty() {
-        print_section_with_count("Doctor warnings", warnings.len());
-        for warning in &warnings {
-            println!("! {warning}");
+    let local_groups = build_local_problem_groups(&load_errors, &plan_problems, &check_problems);
+    let agent_problem_group = agent_mapping_group("Agent mapping problems", &agent_problem_lines);
+    let agent_warning_group = agent_mapping_group("Agent mapping warnings", &agent_warning_lines);
+
+    let sections = build_doctor_sections(
+        &remote_problems,
+        local_groups,
+        agent_problem_group,
+        agent_warning_group,
+    );
+    for section in &sections {
+        match section {
+            DoctorSection::Remote(problems) => print_remote_source_problems(problems),
+            DoctorSection::Group(group) => print_problem_group(group),
         }
     }
 
-    if !problems.is_empty() {
-        print_section_with_count("Doctor problems", problems.len());
-        for problem in &problems {
-            println!("✗ {problem}");
-        }
-    }
-
-    if !remote_problems.is_empty() {
-        print_remote_source_problems(&remote_problems);
-    }
-
-    let total = problems.len() + remote_problems.len();
+    let total = remote_problems.len()
+        + check_problems.len()
+        + plan_problems.len()
+        + load_errors.len()
+        + agent_problem_lines.len();
     if total == 0 {
-        if warnings.is_empty() {
+        if agent_warning_lines.is_empty() {
             print_success(
                 "Doctor passed. Config, lockfile, links, sources, and agent mappings look healthy.",
             );
@@ -615,6 +637,132 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     }
 
     bail!("doctor found {total} problem(s)")
+}
+
+/// A renderable section of `doctor` output, in print order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DoctorSection {
+    /// Detailed remote dependency-source problems.
+    Remote(Vec<RemoteSourceProblem>),
+    /// A grouped local/link or agent-mapping section sharing one fix hint.
+    Group(ProblemGroup),
+}
+
+#[cfg(test)]
+impl DoctorSection {
+    fn title(&self) -> &str {
+        match self {
+            DoctorSection::Remote(_) => "Remote source problems",
+            DoctorSection::Group(group) => &group.title,
+        }
+    }
+}
+
+/// Order doctor sections for printing.
+///
+/// Remote source problems are printed first so the purpose of `--remote` is not buried
+/// under local/link problems. Agent-mapping problems and warnings are kept as their own
+/// sections, separate from local/link groups.
+fn build_doctor_sections(
+    remote: &[RemoteSourceProblem],
+    local_groups: Vec<ProblemGroup>,
+    agent_problem_group: Option<ProblemGroup>,
+    agent_warning_group: Option<ProblemGroup>,
+) -> Vec<DoctorSection> {
+    let mut sections = Vec::new();
+    if !remote.is_empty() {
+        sections.push(DoctorSection::Remote(remote.to_vec()));
+    }
+    sections.extend(local_groups.into_iter().map(DoctorSection::Group));
+    sections.extend(agent_problem_group.map(DoctorSection::Group));
+    sections.extend(agent_warning_group.map(DoctorSection::Group));
+    sections
+}
+
+/// Build grouped local/link sections: setup errors, lockfile/link checks, then plan-level findings.
+fn build_local_problem_groups(
+    load_errors: &[String],
+    plan: &PlanProblems,
+    check_problems: &[CheckProblem],
+) -> Vec<ProblemGroup> {
+    let mut groups = Vec::new();
+
+    if !load_errors.is_empty() {
+        groups.push(ProblemGroup {
+            title: "Setup".to_owned(),
+            count: load_errors.len(),
+            hint: String::new(),
+            lines: load_errors.to_vec(),
+        });
+    }
+
+    groups.extend(group_check_problems(check_problems));
+
+    if !plan.source_missing.is_empty() {
+        groups.push(ProblemGroup {
+            title: "Missing sources".to_owned(),
+            count: plan.source_missing.len(),
+            hint: "run `sksync update` or `sksync install` to restore the source".to_owned(),
+            lines: plan
+                .source_missing
+                .iter()
+                .map(|(skill, agent)| format!("{skill} · {agent}"))
+                .collect(),
+        });
+    }
+
+    if !plan.conflicts.is_empty() {
+        groups.push(ProblemGroup {
+            title: "Plan conflicts".to_owned(),
+            count: plan.conflicts.len(),
+            hint: "inspect with `sksync plan`; remove or relocate the conflicting path(s)"
+                .to_owned(),
+            lines: plan
+                .conflicts
+                .iter()
+                .map(|(skill, agent, reason)| format!("{skill} · {agent} ({reason})"))
+                .collect(),
+        });
+    }
+
+    if !plan.drift.is_empty() {
+        groups.push(ProblemGroup {
+            title: "Plan drift".to_owned(),
+            count: plan.drift.len(),
+            hint: "inspect with `sksync plan`, then `sksync apply --force` if the drift is safe to overwrite"
+                .to_owned(),
+            lines: plan
+                .drift
+                .iter()
+                .map(|(skill, agent, actual)| format!("{skill} · {agent} → {actual}"))
+                .collect(),
+        });
+    }
+
+    groups
+}
+
+/// Build an agent-mapping section, keeping `sksync agents doctor` as fix guidance.
+fn agent_mapping_group(title: &str, lines: &[String]) -> Option<ProblemGroup> {
+    if lines.is_empty() {
+        return None;
+    }
+    Some(ProblemGroup {
+        title: title.to_owned(),
+        count: lines.len(),
+        hint: "run `sksync agents doctor`".to_owned(),
+        lines: lines.to_vec(),
+    })
+}
+
+fn print_problem_group(group: &ProblemGroup) {
+    print_section_with_count(&group.title, group.count);
+    if !group.hint.is_empty() {
+        print_detail(format!("fix: {}", group.hint));
+    }
+    for line in &group.lines {
+        print_detail(line);
+    }
 }
 
 /// Collect remote dependency-source problems for `doctor`, honoring the `--remote` gate.
@@ -638,10 +786,9 @@ fn doctor_remote_problems(
 }
 
 fn print_remote_source_problems(problems: &[RemoteSourceProblem]) {
-    print_section_with_count("Doctor remote problems", problems.len());
+    print_section_with_count("Remote source problems", problems.len());
     for problem in problems {
-        println!("{}", problem.headline());
-        print_detail(format!("skill: {}", problem.skill));
+        println!("{}: {}", problem.headline(), problem.skill);
         print_detail(format!("scope: {}", problem.scope_label()));
         print_detail(format!("source: {}", problem.url));
         print_detail(format!("ref: {}", problem.reference));
@@ -2955,9 +3102,8 @@ fn list_state_detail(state: &ListedTargetState) -> Option<String> {
 }
 
 fn print_check_problems(problems: &[CheckProblem]) {
-    print_section_with_count("Check problems", problems.len());
-    for problem in problems {
-        println!("✗ {}", problem.display_line());
+    for group in group_check_problems(problems) {
+        print_problem_group(&group);
     }
 }
 
@@ -3182,19 +3328,22 @@ fn run_wizard() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_target_mappings_from_config, apply_locked_install_sources, compact_revision,
-        compact_source, copy_dir_all, doctor_remote_problems, format_progress_message,
+        agent_mapping_group, agent_target_mappings_from_config, apply_locked_install_sources,
+        build_doctor_sections, build_local_problem_groups, compact_revision, compact_source,
+        copy_dir_all, doctor_remote_problems, format_progress_message,
         format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
         list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
         scan_import_candidates, score_skill_choice, select_bundle_manifest_candidates,
-        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup,
-        GitRemoteSourceChecker,
+        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup, DoctorSection,
+        GitRemoteSourceChecker, PlanProblems,
     };
     use crate::application::bundle::BundleManifestCandidate;
+    use crate::application::check::CheckProblem;
     use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
     };
+    use crate::application::remote::RemoteSourceProblem;
     use crate::application::remote::{
         collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblemKind,
         RemoteSourceStatus,
@@ -3211,6 +3360,107 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    fn remote_problem(skill: &str) -> RemoteSourceProblem {
+        RemoteSourceProblem {
+            skill: skill.to_owned(),
+            global: false,
+            url: "https://example.com/repo.git".to_owned(),
+            reference: "HEAD".to_owned(),
+            path: "skills/x".to_owned(),
+            kind: RemoteSourceProblemKind::PathMissing,
+        }
+    }
+
+    fn target_conflict(skill: &str, agent: &str, path: &str) -> CheckProblem {
+        CheckProblem::TargetConflict {
+            skill: skill.to_owned(),
+            agent: agent.to_owned(),
+            path: path.to_owned(),
+            reason: "regular file exists".to_owned(),
+        }
+    }
+
+    #[test]
+    fn doctor_sections_print_remote_before_local_groups() {
+        let remote = vec![remote_problem("caveman")];
+        let local = build_local_problem_groups(
+            &[],
+            &PlanProblems::default(),
+            &[target_conflict("review", "pi", ".pi/agent/skills/review")],
+        );
+
+        let sections = build_doctor_sections(&remote, local, None, None);
+
+        let titles: Vec<&str> = sections.iter().map(DoctorSection::title).collect();
+        assert_eq!(titles.first().copied(), Some("Remote source problems"));
+        let remote_index = titles
+            .iter()
+            .position(|title| *title == "Remote source problems")
+            .unwrap();
+        let conflict_index = titles
+            .iter()
+            .position(|title| *title == "Target conflicts")
+            .unwrap();
+        assert!(
+            remote_index < conflict_index,
+            "remote problems must print before local groups: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_sections_keep_agent_warnings_in_separate_section() {
+        let local = build_local_problem_groups(
+            &[],
+            &PlanProblems::default(),
+            &[target_conflict("review", "pi", ".pi/agent/skills/review")],
+        );
+        let warnings = agent_mapping_group(
+            "Agent mapping warnings",
+            &["project · codex · /tmp/x: missing".to_owned()],
+        );
+
+        let sections = build_doctor_sections(&[], local, None, warnings);
+
+        let titles: Vec<&str> = sections.iter().map(DoctorSection::title).collect();
+        assert!(titles.contains(&"Target conflicts"));
+        assert!(titles.contains(&"Agent mapping warnings"));
+        // The agent-mapping section is distinct from any local/link group.
+        let warning_section = sections
+            .iter()
+            .find(|section| section.title() == "Agent mapping warnings")
+            .unwrap();
+        if let DoctorSection::Group(group) = warning_section {
+            assert!(group.hint.contains("sksync agents doctor"));
+        } else {
+            panic!("agent warnings should be a grouped section");
+        }
+    }
+
+    #[test]
+    fn local_problem_groups_separate_check_from_plan_findings() {
+        let plan = PlanProblems {
+            source_missing: Vec::new(),
+            conflicts: vec![("legacy".to_owned(), "pi".to_owned(), "blocked".to_owned())],
+            drift: Vec::new(),
+        };
+        let check = vec![target_conflict("review", "pi", ".pi/agent/skills/review")];
+
+        let groups = build_local_problem_groups(&[], &plan, &check);
+
+        let titles: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
+        // Lockfile/link conflicts and plan-level conflicts stay in distinct sections.
+        assert!(titles.contains(&"Target conflicts"));
+        assert!(titles.contains(&"Plan conflicts"));
+        // Counting across all groups matches the underlying problem count.
+        let total: usize = groups.iter().map(|group| group.count).sum();
+        assert_eq!(total, check.len() + plan.len());
+    }
+
+    #[test]
+    fn agent_mapping_group_is_empty_when_no_lines() {
+        assert!(agent_mapping_group("Agent mapping problems", &[]).is_none());
+    }
 
     #[test]
     fn locked_install_sources_apply_include_filters() {
