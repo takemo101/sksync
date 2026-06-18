@@ -803,6 +803,20 @@ impl FileDependencyConfigStore {
         }
     }
 
+    /// Skill names of dependencies already present in config.
+    ///
+    /// `add` treats a discovered candidate whose skill name matches an existing
+    /// dependency as already installed. Detection is by skill name, not source.
+    pub fn existing_dependency_names(
+        &self,
+    ) -> Result<BTreeSet<String>, DependencyConfigStoreError> {
+        let value = self.load_or_default()?;
+        let Some(dependencies) = value.get("dependencies").and_then(|deps| deps.as_object()) else {
+            return Ok(BTreeSet::new());
+        };
+        Ok(dependencies.keys().cloned().collect())
+    }
+
     pub fn load_bundle_export_dependencies(
         &self,
     ) -> Result<Vec<BundleExportDependencyConfig>, DependencyConfigStoreError> {
@@ -2187,9 +2201,9 @@ impl RawLockfile {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agent_mapping_config, parse_bundle_manifest, read_lockfile, write_bundle_manifest,
-        write_lockfile, BundleManifestJsonError, FileConfigStore, FileDependencyConfigStore,
-        LockfileJsonError, RawConfig,
+        default_agent_mapping_config, parse_agent_mapping_config, parse_bundle_manifest,
+        read_lockfile, write_bundle_manifest, write_lockfile, BundleManifestJsonError,
+        FileConfigStore, FileDependencyConfigStore, LockfileJsonError, RawConfig,
     };
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::{AddDependencyOptions, ConfigStore, DependencyConfigStore};
@@ -3671,6 +3685,22 @@ mod tests {
             config.skills[0].source.as_path(),
             Path::new("./.sksync/skills/vercel-labs/skills/find-skills")
         );
+    }
+
+    #[test]
+    fn bundled_agent_mappings_include_kimi_code() {
+        let mappings = default_agent_mapping_config().expect("bundled mappings parse");
+
+        assert_eq!(
+            mappings.global["kimi-code"],
+            Path::new("~/.kimi-code/skills")
+        );
+        assert_eq!(
+            mappings.project["kimi-code"],
+            Path::new(".kimi-code/skills")
+        );
+        assert!(!mappings.global.contains_key("kimi-code-cli"));
+        assert!(!mappings.global.contains_key("kimi"));
     }
 
     #[test]

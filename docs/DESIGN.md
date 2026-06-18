@@ -295,6 +295,7 @@ Defaults are overrideable through config.
 | jcode | `~/.jcode/skills` | `.jcode/skills` | jcode skill directory. |
 | opencode | `~/.config/opencode/skills` | `.opencode/skills` | Watch for OS-specific differences. |
 | antigravity | `~/.gemini/antigravity/skills` | `.agents/skills` | Workspace default is `.agents/skills`. |
+| kimi-code | `~/.kimi-code/skills` | `.kimi-code/skills` | Kimi Code CLI specific skill directory. |
 | universal | `~/.agents/skills` | `.agents/skills` | Canonical Agent Skills directory. |
 
 ## 6. Lockfile
@@ -446,7 +447,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 ### Command behavior summary
 
 - `init`: create project/global config and skill directories without overwriting existing config; `--agents` refreshes only `~/.sksync/agents.json`.
-- `add`: accept GitHub / `skills.sh` / local sources, add a dependency, support multiple `--agent`, and run install/apply behavior; `--force` passes through to the final link apply step.
+- `add`: accept GitHub / `skills.sh` / local sources, add new dependencies, support multiple `--agent`, and install/apply only the newly added dependencies; it must not update, refetch, or rewrite existing dependencies. `--force` passes through to the final link apply step.
 - `install`: prefer lockfile `installSource`; otherwise fetch from config and create a lockfile; then apply managed symlinks; `--force` repairs drifted or broken target symlinks during the apply step.
 - `update`: fetch dependencies, resolve Git sources to exact commits, and refresh the lockfile. It does not apply links and therefore has no `--force`.
 - `attach`: add agents to an existing dependency-managed skill while preserving source representation; `--force` passes through to the final link apply step.
@@ -460,6 +461,15 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 - `agents`: list effective mappings, diagnose target directories, and refresh bundled mappings.
 - `import`: copy-only migration from existing skill directories; no original files are mutated.
 - `wizard`: prompt-based wrapper around CLI/application use cases.
+
+### Existing dependencies during `add`
+
+`add` is a dependency-creation command, not an update or attach shortcut. When source discovery returns multiple skill candidates, a candidate whose skill name already exists in config is an existing dependency:
+
+- interactive flows show existing dependencies as `already installed` but do not allow selecting them;
+- non-interactive `add` fails clearly when the requested skill name is already installed, with guidance to use `attach`, `update`, or `remove` as appropriate;
+- if every discovered candidate is already installed, the flow explains that there are no new skills to add and exits without changes;
+- existing dependencies are not reinstalled, refetched, updated, or rewritten as part of `add`, even when their source is stale or their upstream `HEAD` moved.
 
 ### `--force` link replacement semantics
 
@@ -533,6 +543,7 @@ Planned changes:
 - TUI state is temporary prompt state only.
 - Persistent state lives only in config, lockfile, or local state.
 - `Add skill` and `Add bundle` use config `defaultAgents` as initial selection, but the user can change it each time.
+- `Add skill` shows already installed skill candidates as disabled `already installed` rows when adding from a multi-skill source.
 - `Add bundle` loads the manifest after source entry, shows the bundle name, description, and entries, and asks the user to continue before agent selection.
 - `Remove bundle` lists exact bundle provenance choices as `name — source` so same-name bundles from different sources are never ambiguous in the wizard.
 - Bundle wizard flows stop at add/remove for the first bundle UX iteration; `bundle sync` starts as a CLI flow with dry-run preview.
