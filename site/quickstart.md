@@ -109,6 +109,7 @@ sksync check
 | Reconstruct skills from the lockfile (e.g. fresh clone) | `sksync install` |
 | Re-run only the symlink creation | `sksync apply` |
 | Diagnose config / targets / mappings (read-only) | `sksync doctor` |
+| Check whether configured remote source paths still exist | `sksync doctor --remote` |
 
 ## Next steps
 

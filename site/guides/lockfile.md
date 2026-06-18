@@ -8,7 +8,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.10",
+  "generatedBy": "sksync@0.0.11",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
@@ -51,6 +51,7 @@ Because the Git `installSource.ref` is a resolved commit (not a moving branch), 
 | [`update`](#update) | config (`dependencies`) | bodies, lockfile | Fetch latest from sources and re-lock. |
 | [`outdated`](#outdated) | lockfile + upstream | — | Report skills with newer upstream commits. |
 | [`check`](#check) | lockfile + targets | — | Verify hashes, targets, and links; non-zero on problems. |
+| [`doctor --remote`](#doctor-remote) | config + upstream | — | Check whether configured remote source paths still exist. |
 
 ### plan {#plan}
 
@@ -106,6 +107,15 @@ Compares `sksync-lock.json` against current state to detect source hash drift, i
 ```sh
 sksync check
 sksync check --global
+```
+
+### doctor --remote {#doctor-remote}
+
+`doctor --remote` is a read-only, explicit remote availability check. It uses the current config dependency source, not only the lockfile's pinned commit, so it can catch a stale source path before a future update or reinstall from config fails.
+
+```sh
+sksync doctor --remote
+sksync doctor --remote --global
 ```
 
 ::: info

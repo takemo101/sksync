@@ -148,7 +148,13 @@ Read-only, comprehensive diagnosis of config / lockfile / sources / targets / ag
 ```sh
 sksync doctor
 sksync doctor -g
+sksync doctor --remote
+sksync doctor --remote -g
 ```
+
+By default, `doctor` is local-only and performs no remote Git operations. Add `--remote` to intentionally probe each dependency's current config source and report Git source paths that no longer exist at the configured ref. Use `--remote -g` to check only the global config.
+
+Doctor output is grouped by problem type with one fix hint per group. In remote mode, remote source problems print first so stale upstream paths are not buried under local link or agent-mapping findings.
 
 ## `sksync import`
 

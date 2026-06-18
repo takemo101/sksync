@@ -113,6 +113,17 @@ sksync add ogulcancelik/herdr --name herdr --agent pi --manifest-only
 sksync add org/repo/skills/review --agent pi --include SKILL.md --include references
 ```
 
+## Checking remote source paths
+
+`sksync doctor --remote` is an explicit network check for configured Git sources. It probes the current source stored in `sksync.config.json` (or `~/.sksync/config.json` with `--global`) and reports when the repository path no longer exists at the configured ref.
+
+This differs from the lockfile: the lockfile pins the commit that was installed successfully, while `doctor --remote` asks whether the config source would still resolve today. Use it when an upstream branch moved, renamed, or deleted a skill path.
+
+```sh
+sksync doctor --remote
+sksync doctor --remote --global
+```
+
 ## Related
 
 - [Project Config](/guides/project-config) — where sources are stored.

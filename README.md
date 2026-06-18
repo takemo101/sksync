@@ -92,6 +92,7 @@ cargo run -- agents list
 cargo run -- agents doctor
 cargo run -- agents refresh
 cargo run -- doctor
+cargo run -- doctor --remote
 cargo run -- import ~/.claude/skills --agent claude-code --dry-run
 cargo run -- import ~/.agents/skills --agent universal --agent pi
 cargo run -- bundle inspect ./bundle-dir
@@ -155,12 +156,15 @@ The bundled mappings include entries for major Agent Skills-compatible agents. E
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
+| `kimi-code` | `~/.kimi-code/skills` | `.kimi-code/skills` |
 | `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
 | `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
 | `antigravity` | `~/.gemini/antigravity/skills` | `.agents/skills` |
 | `universal` | `~/.agents/skills` | `.agents/skills` |
 
 Antigravity uses the official workspace default `.agents/skills`. Antigravity treats `.agent/skills` as a backward-compatible directory, but sksync's bundled default is `.agents/skills`.
+
+`kimi-code` maps to Kimi Code CLI's official Kimi-specific skill directories. Kimi can also read the shared Agent Skills directories, which remain available through `universal`.
 
 `universal` is the canonical Agent Skills ecosystem directory. It maps to `~/.agents/skills` globally and `.agents/skills` in projects.
 
@@ -188,6 +192,8 @@ cargo run -- add <source> --agent pi -f
 ```
 
 `--include <pattern>` copies only matched files/directories from the resolved skill package root, and `--manifest-only` is a shortcut for `--include SKILL.md`. Missing include filters keep the existing full-package copy behavior. `-f` / `--force` applies only during the final link step: it repairs drifted or broken target symlinks, but never replaces regular files or directories.
+
+If discovery finds a skill name that is already installed, `add` treats it as an existing dependency: interactive selection marks it as already installed, non-interactive duplicate adds fail with guidance to use `attach`, `update`, or `remove`, and existing dependencies are not refetched or rewritten while adding new skills from the same source.
 
 Common examples:
 
@@ -417,7 +423,13 @@ Run a read-only diagnosis across config, lockfile, sources, targets, and agent m
 ```bash
 cargo run -- doctor
 cargo run -- doctor -g
+cargo run -- doctor --remote
+cargo run -- doctor --remote -g
 ```
+
+By default, `doctor` is local-only and does not perform remote Git operations. Add `--remote` to also probe each dependency's current config source and report Git source paths that no longer exist at the configured remote ref. This is useful when an upstream branch moved or removed a skill path even though your lockfile may still pin an older commit where it existed.
+
+Doctor output is grouped by problem type with one fix hint per group. With `--remote`, remote source problems are printed first so stale upstream paths are not buried under local target/link findings.
 
 ### `sksync import`
 
