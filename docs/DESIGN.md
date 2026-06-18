@@ -325,7 +325,7 @@ Lockfile v5 avoids machine-local absolute paths and records effective include fi
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.10",
+  "generatedBy": "sksync@0.0.11",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
