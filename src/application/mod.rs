@@ -15,5 +15,6 @@ pub mod list;
 pub mod outdated;
 pub mod plan;
 pub mod ports;
+pub mod remote;
 pub mod source;
 pub mod update;

@@ -5,6 +5,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command as GitCommand;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::add::{run_add_workflow, AddSelection, AddWorkflow};
@@ -29,6 +30,9 @@ use crate::application::outdated::{
 };
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{AddDependencyOptions, DependencyConfigStore, LockfileStore};
+use crate::application::remote::{
+    collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblem, RemoteSourceStatus,
+};
 use crate::application::update::{apply_update_report_sources, update_dependencies};
 use crate::domain::agent::AgentKind;
 use crate::domain::bundle::BundleName;
@@ -39,8 +43,10 @@ use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
 use crate::domain::skill::SkillName;
 use crate::domain::skill_manifest::parse_skill_manifest;
+use crate::domain::source::GitInstallSource;
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
+use crate::infrastructure::git::GitClient;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
@@ -174,6 +180,9 @@ struct DoctorArgs {
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(short = 'g', long)]
     global: bool,
+    /// Additionally check remote dependency source availability (network/git). Off by default.
+    #[arg(long)]
+    remote: bool,
 }
 
 #[derive(Debug, Args)]
@@ -484,7 +493,8 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     let mut problems = Vec::new();
     let mut warnings = Vec::new();
 
-    match load_config_for_scope(args.global, &current_dir) {
+    let config_result = load_config_for_scope(args.global, &current_dir);
+    match &config_result {
         Ok(config) => {
             let root_dir = if args.global {
                 config_root_for_global()?
@@ -493,7 +503,7 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
             };
             let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
             let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
-            match build_desired_link_plan(&config, &target_resolver) {
+            match build_desired_link_plan(config, &target_resolver) {
                 Ok(plan) => {
                     for item in &plan.items {
                         match &item.action {
@@ -520,7 +530,7 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                     match read_lockfile(lockfile_path_for(args.global, &current_dir)?) {
                         Ok(lockfile) => {
                             let report = check_lockfile_with_config_and_plan(
-                                &config,
+                                config,
                                 &lockfile,
                                 &plan,
                                 &Sha256SourceHashStore,
@@ -564,6 +574,16 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         }
     }
 
+    if args.remote && config_result.is_ok() {
+        print_progress("Checking remote dependency sources...");
+    }
+    let remote_problems = doctor_remote_problems(
+        &config_result,
+        args.remote,
+        args.global,
+        &GitRemoteSourceChecker,
+    );
+
     if !warnings.is_empty() {
         print_section_with_count("Doctor warnings", warnings.len());
         for warning in &warnings {
@@ -571,7 +591,19 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         }
     }
 
-    if problems.is_empty() {
+    if !problems.is_empty() {
+        print_section_with_count("Doctor problems", problems.len());
+        for problem in &problems {
+            println!("✗ {problem}");
+        }
+    }
+
+    if !remote_problems.is_empty() {
+        print_remote_source_problems(&remote_problems);
+    }
+
+    let total = problems.len() + remote_problems.len();
+    if total == 0 {
         if warnings.is_empty() {
             print_success(
                 "Doctor passed. Config, lockfile, links, sources, and agent mappings look healthy.",
@@ -582,11 +614,74 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         return Ok(());
     }
 
-    print_section_with_count("Doctor problems", problems.len());
-    for problem in &problems {
-        println!("✗ {problem}");
+    bail!("doctor found {total} problem(s)")
+}
+
+/// Collect remote dependency-source problems for `doctor`, honoring the `--remote` gate.
+///
+/// Returns an empty list and never invokes `checker` unless `remote` is set and the
+/// config loaded successfully. This is the seam that keeps the default `doctor` run
+/// local-only with no remote git operations.
+fn doctor_remote_problems(
+    config_result: &Result<ResolvedConfig>,
+    remote: bool,
+    global: bool,
+    checker: &impl RemoteSourceChecker,
+) -> Vec<RemoteSourceProblem> {
+    if !remote {
+        return Vec::new();
     }
-    bail!("doctor found {} problem(s)", problems.len())
+    match config_result {
+        Ok(config) => collect_remote_source_problems(config, global, checker).problems,
+        Err(_) => Vec::new(),
+    }
+}
+
+fn print_remote_source_problems(problems: &[RemoteSourceProblem]) {
+    print_section_with_count("Doctor remote problems", problems.len());
+    for problem in problems {
+        println!("{}", problem.headline());
+        print_detail(format!("skill: {}", problem.skill));
+        print_detail(format!("scope: {}", problem.scope_label()));
+        print_detail(format!("source: {}", problem.url));
+        print_detail(format!("ref: {}", problem.reference));
+        print_detail(format!("path: {}", problem.path));
+        print_detail(format!("reason: {}", problem.reason()));
+        print_detail(format!("suggestion: {}", problem.suggestion()));
+    }
+}
+
+/// Read-only remote source probe used by `doctor --remote`.
+///
+/// Clones the repository into a temporary directory, checks out the configured ref,
+/// and reports whether the configured path exists. The temporary clone is always
+/// removed; no sksync state is mutated.
+#[derive(Debug, Default)]
+struct GitRemoteSourceChecker;
+
+impl RemoteSourceChecker for GitRemoteSourceChecker {
+    fn check_git_source(&self, source: &GitInstallSource) -> RemoteSourceStatus {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let clone_dir = std::env::temp_dir().join(format!(
+            "sksync-doctor-remote-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&clone_dir);
+
+        let status = match GitClient.clone_checkout(source, &clone_dir) {
+            Ok(()) => {
+                if clone_dir.join(&source.path).exists() {
+                    RemoteSourceStatus::Available
+                } else {
+                    RemoteSourceStatus::PathMissing
+                }
+            }
+            Err(error) => RemoteSourceStatus::RepoUnreachable(error.message),
+        };
+        let _ = fs::remove_dir_all(&clone_dir);
+        status
+    }
 }
 
 fn run_import(args: ImportArgs) -> Result<()> {
@@ -3088,22 +3183,28 @@ fn run_wizard() -> Result<()> {
 mod tests {
     use super::{
         agent_target_mappings_from_config, apply_locked_install_sources, compact_revision,
-        compact_source, copy_dir_all, format_progress_message, format_selected_skill_choices,
-        global_config_root_from_home, is_managed_skill_dir, list_state_label,
-        reject_legacy_registry_source, remove_installed_skill_dir, scan_import_candidates,
-        score_skill_choice, select_bundle_manifest_candidates, select_skill_candidates,
-        truncate_middle, Cli, Command, ConfigFileBackup,
+        compact_source, copy_dir_all, doctor_remote_problems, format_progress_message,
+        format_selected_skill_choices, global_config_root_from_home, is_managed_skill_dir,
+        list_state_label, reject_legacy_registry_source, remove_installed_skill_dir,
+        scan_import_candidates, score_skill_choice, select_bundle_manifest_candidates,
+        select_skill_candidates, truncate_middle, Cli, Command, ConfigFileBackup,
+        GitRemoteSourceChecker,
     };
     use crate::application::bundle::BundleManifestCandidate;
     use crate::application::config::{ResolvedConfig, ResolvedSkill};
     use crate::application::discovery::{
         discover_skill_candidates, source_with_selected_subpath, SourceRewriteMode,
     };
+    use crate::application::remote::{
+        collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblemKind,
+        RemoteSourceStatus,
+    };
     use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
+    use crate::domain::source::GitInstallSource;
     use crate::domain::source::InstallSource;
     use crate::infrastructure::json::AgentMappingConfig;
     use clap::{CommandFactory, Parser};
@@ -3222,6 +3323,9 @@ mod tests {
     fn doctor_command_is_registered() {
         Cli::try_parse_from(["sksync", "doctor"]).expect("doctor parses");
         Cli::try_parse_from(["sksync", "doctor", "--global"]).expect("doctor --global parses");
+        Cli::try_parse_from(["sksync", "doctor", "--remote"]).expect("doctor --remote parses");
+        Cli::try_parse_from(["sksync", "doctor", "--remote", "--global"])
+            .expect("doctor --remote --global parses");
     }
 
     #[test]
@@ -4178,5 +4282,232 @@ mod tests {
         Cli::try_parse_from(["sksync", "wizard"]).expect("wizard should parse");
         Cli::try_parse_from(["sksync", "ask"]).expect("ask alias should parse");
         Cli::try_parse_from(["sksync", "tui"]).expect("tui alias should parse");
+    }
+
+    fn run_git_in(path: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("git command runs");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_remote_repo_with_review_skill(path: &Path) {
+        fs::create_dir_all(path.join("skills/review")).unwrap();
+        run_git_in(path, &["init"]);
+        run_git_in(path, &["config", "user.email", "test@example.com"]);
+        run_git_in(path, &["config", "user.name", "Test User"]);
+        fs::write(
+            path.join("skills/review/SKILL.md"),
+            "---\nname: review\ndescription: Review helper\n---\n# review\n",
+        )
+        .unwrap();
+        run_git_in(path, &["add", "."]);
+        run_git_in(path, &["commit", "-m", "add review"]);
+    }
+
+    #[test]
+    fn remote_checker_reports_path_missing_for_absent_subpath() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = temp.path().join("remote");
+        init_remote_repo_with_review_skill(&remote);
+
+        let status = GitRemoteSourceChecker.check_git_source(&GitInstallSource {
+            url: remote.display().to_string(),
+            reference: None,
+            path: "skills/productivity/caveman".into(),
+        });
+
+        assert_eq!(status, RemoteSourceStatus::PathMissing);
+    }
+
+    #[test]
+    fn remote_checker_reports_available_for_existing_subpath() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = temp.path().join("remote");
+        init_remote_repo_with_review_skill(&remote);
+
+        let status = GitRemoteSourceChecker.check_git_source(&GitInstallSource {
+            url: remote.display().to_string(),
+            reference: None,
+            path: "skills/review".into(),
+        });
+
+        assert_eq!(status, RemoteSourceStatus::Available);
+    }
+
+    #[test]
+    fn remote_checker_reports_unreachable_for_missing_repo() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let missing = temp.path().join("does-not-exist");
+
+        let status = GitRemoteSourceChecker.check_git_source(&GitInstallSource {
+            url: missing.display().to_string(),
+            reference: None,
+            path: "skills/review".into(),
+        });
+
+        assert!(matches!(status, RemoteSourceStatus::RepoUnreachable(_)));
+    }
+
+    /// A fake checker that records how many times it was asked to probe a source.
+    /// Used to prove the no-remote default path never performs remote git operations.
+    struct CountingChecker {
+        status: RemoteSourceStatus,
+        calls: std::cell::RefCell<usize>,
+    }
+
+    impl CountingChecker {
+        fn new(status: RemoteSourceStatus) -> Self {
+            Self {
+                status,
+                calls: std::cell::RefCell::new(0),
+            }
+        }
+    }
+
+    impl RemoteSourceChecker for CountingChecker {
+        fn check_git_source(&self, _source: &GitInstallSource) -> RemoteSourceStatus {
+            *self.calls.borrow_mut() += 1;
+            self.status.clone()
+        }
+    }
+
+    fn git_dep_config(skill_name: &str, repo: &Path, subpath: &str) -> ResolvedConfig {
+        ResolvedConfig {
+            skill_dir: SourcePath::new(".sksync/skills").unwrap(),
+            agents: BTreeMap::new(),
+            skills: vec![ResolvedSkill {
+                name: SkillName::new(skill_name).unwrap(),
+                source: SourcePath::new(format!(".sksync/skills/{skill_name}")).unwrap(),
+                install_source: Some(InstallSource::Git(GitInstallSource {
+                    url: repo.display().to_string(),
+                    reference: None,
+                    path: subpath.into(),
+                })),
+                include: None,
+                agents: Vec::new(),
+            }],
+            default_agents: Vec::new(),
+        }
+    }
+
+    // Regression 1: project remote missing path is reported without a --global suggestion.
+    #[test]
+    fn doctor_remote_project_missing_path_reports_without_global() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = temp.path().join("remote");
+        init_remote_repo_with_review_skill(&remote);
+        let config = git_dep_config("caveman", &remote, "skills/productivity/caveman");
+
+        let report = collect_remote_source_problems(&config, false, &GitRemoteSourceChecker);
+
+        assert_eq!(report.checked, 1);
+        assert_eq!(report.problems.len(), 1);
+        let problem = &report.problems[0];
+        assert_eq!(problem.skill, "caveman");
+        assert_eq!(problem.scope_label(), "project");
+        assert_eq!(problem.kind, RemoteSourceProblemKind::PathMissing);
+        assert_eq!(problem.suggestion(), "sksync remove caveman");
+        assert!(!problem.suggestion().contains("--global"));
+    }
+
+    // Regression 2: global remote missing path is reported with a --global suggestion.
+    #[test]
+    fn doctor_remote_global_missing_path_includes_global() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = temp.path().join("remote");
+        init_remote_repo_with_review_skill(&remote);
+        let config = git_dep_config("caveman", &remote, "skills/productivity/caveman");
+
+        let report = collect_remote_source_problems(&config, true, &GitRemoteSourceChecker);
+
+        assert_eq!(report.problems.len(), 1);
+        let problem = &report.problems[0];
+        assert_eq!(problem.scope_label(), "global");
+        assert_eq!(problem.suggestion(), "sksync remove caveman --global");
+    }
+
+    // Regression 3: an existing remote path passes the remote check.
+    #[test]
+    fn doctor_remote_existing_path_passes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = temp.path().join("remote");
+        init_remote_repo_with_review_skill(&remote);
+        let config = git_dep_config("review", &remote, "skills/review");
+
+        let report = collect_remote_source_problems(&config, false, &GitRemoteSourceChecker);
+
+        assert_eq!(report.checked, 1);
+        assert!(report.problems.is_empty());
+    }
+
+    // Regression 4: without --remote, doctor performs no remote git operations (no clone).
+    #[test]
+    fn doctor_default_run_is_local_only_and_never_probes() {
+        let config = git_dep_config("caveman", Path::new("/unused"), "skills/missing");
+        let config_result: anyhow::Result<ResolvedConfig> = Ok(config);
+        let checker = CountingChecker::new(RemoteSourceStatus::PathMissing);
+
+        let problems = doctor_remote_problems(&config_result, false, false, &checker);
+
+        assert!(problems.is_empty());
+        assert_eq!(*checker.calls.borrow(), 0);
+    }
+
+    // Regression 4 (counterpart): with --remote the gate invokes the checker.
+    #[test]
+    fn doctor_remote_flag_invokes_checker() {
+        let config = git_dep_config("caveman", Path::new("/unused"), "skills/missing");
+        let config_result: anyhow::Result<ResolvedConfig> = Ok(config);
+        let checker = CountingChecker::new(RemoteSourceStatus::PathMissing);
+
+        let problems = doctor_remote_problems(&config_result, true, false, &checker);
+
+        assert_eq!(problems.len(), 1);
+        assert_eq!(*checker.calls.borrow(), 1);
+    }
+
+    // A failed config load short-circuits the remote gate without probing.
+    #[test]
+    fn doctor_remote_skips_when_config_failed_to_load() {
+        let config_result: anyhow::Result<ResolvedConfig> = Err(anyhow::anyhow!("no config"));
+        let checker = CountingChecker::new(RemoteSourceStatus::PathMissing);
+
+        let problems = doctor_remote_problems(&config_result, true, false, &checker);
+
+        assert!(problems.is_empty());
+        assert_eq!(*checker.calls.borrow(), 0);
+    }
+
+    // Regression 5: a local dependency source is skipped, never treated as a remote error.
+    #[test]
+    fn doctor_remote_local_source_is_skipped() {
+        let config = ResolvedConfig {
+            skill_dir: SourcePath::new(".sksync/skills").unwrap(),
+            agents: BTreeMap::new(),
+            skills: vec![ResolvedSkill {
+                name: SkillName::new("local-helper").unwrap(),
+                source: SourcePath::new(".sksync/skills/local-helper").unwrap(),
+                install_source: Some(InstallSource::Local(PathBuf::from("./vendor/local-helper"))),
+                include: None,
+                agents: Vec::new(),
+            }],
+            default_agents: Vec::new(),
+        };
+
+        // Real checker is wired, but a local source must never trigger a clone.
+        let report = collect_remote_source_problems(&config, false, &GitRemoteSourceChecker);
+
+        assert!(report.problems.is_empty());
+        assert_eq!(report.checked, 0);
+        assert_eq!(report.skipped_local, 1);
     }
 }
