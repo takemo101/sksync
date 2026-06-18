@@ -8,3 +8,8 @@
 node_modules/
 site/.vitepress/cache
 site/.vitepress/dist
+
+# asem runtime state (token-bearing files; never commit)
+.asem/sessions/
+.asem/current-session*.json
+.asem/tokens/
