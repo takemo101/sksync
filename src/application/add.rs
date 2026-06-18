@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 
 use crate::application::apply::{apply_link_plan, ApplyOptions};
@@ -7,7 +9,9 @@ use crate::application::ports::{
     AddDependencyOptions, DependencyConfigStore, LinkApplier, LinkStore, LockfileStore,
     SkillInstaller, SourceStore, TargetResolver,
 };
-use crate::application::update::{apply_update_report_sources, update_dependencies, UpdateReport};
+use crate::application::update::{
+    apply_update_report_sources, update_selected_dependencies, UpdateReport,
+};
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::Lockfile;
 use crate::domain::package_filter::PackageFilter;
@@ -72,7 +76,15 @@ where
     }
 
     let mut config = load_config()?;
-    let update_report = update_dependencies(&config, workflow.installer)?;
+    // `add` only fetches/installs the newly added dependencies. Existing
+    // dependencies must not be refetched, updated, or rewritten, even when their
+    // upstream source has drifted or its `HEAD` no longer resolves.
+    let added_names = added
+        .iter()
+        .map(|dependency| dependency.skill_name.clone())
+        .collect::<BTreeSet<String>>();
+    let update_report =
+        update_selected_dependencies(&config, workflow.installer, Some(&added_names))?;
     apply_update_report_sources(&mut config, &update_report);
     let plan = build_link_plan(
         &config,
@@ -170,6 +182,33 @@ mod tests {
             _destination: &Path,
             _skill_name: &str,
         ) -> Result<InstalledSkillSource, SkillInstallError> {
+            Ok(InstalledSkillSource {
+                label: "installed".to_owned(),
+                resolved_source: request.source.clone(),
+            })
+        }
+    }
+
+    /// Records which skills were installed and fails for the stale dependency so a
+    /// regression that refetches existing dependencies surfaces as an error.
+    #[derive(Default)]
+    struct RecordingInstaller {
+        installed: RefCell<Vec<String>>,
+    }
+
+    impl SkillInstaller for RecordingInstaller {
+        fn install_skill(
+            &self,
+            request: &SkillInstallRequest,
+            _destination: &Path,
+            skill_name: &str,
+        ) -> Result<InstalledSkillSource, SkillInstallError> {
+            self.installed.borrow_mut().push(skill_name.to_owned());
+            if skill_name == "caveman" {
+                return Err(SkillInstallError::MissingSourcePath {
+                    path: "remote/caveman".to_owned(),
+                });
+            }
             Ok(InstalledSkillSource {
                 label: "installed".to_owned(),
                 resolved_source: request.source.clone(),
@@ -312,5 +351,82 @@ mod tests {
         assert_eq!(fs_store.created.get(), 0);
         assert!(lockfile_store.written.get());
         assert_eq!(dependency_store.added.borrow().len(), 1);
+    }
+
+    #[test]
+    fn add_workflow_installs_only_newly_added_dependencies() {
+        let dependency_store = FakeDependencyStore::default();
+        let installer = RecordingInstaller::default();
+        let fs_store = FakeFs {
+            created: Cell::new(0),
+        };
+        let lockfile_store = FakeLockfileStore::default();
+        let target_resolver = FakeTargetResolver;
+
+        // Config already contains a `caveman` dependency whose install source would
+        // fail if fetched; adding `grilling` must not touch it.
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "pi".to_owned(),
+            ResolvedAgent {
+                kind: AgentKind::Pi,
+                enabled: true,
+                scope: Scope::Project,
+                target_dir: None,
+            },
+        );
+        let existing_config = ResolvedConfig {
+            skill_dir: SourcePath::new("skills").unwrap(),
+            agents,
+            skills: vec![
+                ResolvedSkill {
+                    name: SkillName::new("caveman").unwrap(),
+                    source: SourcePath::new("skills/caveman").unwrap(),
+                    install_source: Some(InstallSource::Local(PathBuf::from("remote/caveman"))),
+                    include: None,
+                    agents: vec![AgentKind::Pi],
+                },
+                ResolvedSkill {
+                    name: SkillName::new("grilling").unwrap(),
+                    source: SourcePath::new("skills/grilling").unwrap(),
+                    install_source: Some(InstallSource::Local(PathBuf::from("remote/grilling"))),
+                    include: None,
+                    agents: vec![AgentKind::Pi],
+                },
+            ],
+            default_agents: Vec::new(),
+        };
+
+        let report = run_add_workflow(
+            vec![AddSelection {
+                skill_name: "grilling".to_owned(),
+                source: "owner/repo/skills/grilling".to_owned(),
+                include: None,
+            }],
+            &["pi".to_owned()],
+            false,
+            || Ok(existing_config),
+            |_config, _plan| {
+                Ok(Lockfile {
+                    generated_by: "test".to_owned(),
+                    generated_at: "test".to_owned(),
+                    root: PathBuf::from("."),
+                    skills: BTreeMap::new(),
+                })
+            },
+            AddWorkflow {
+                dependency_store: &dependency_store,
+                installer: &installer,
+                fs_store: &fs_store,
+                lockfile_store: &lockfile_store,
+                target_resolver: &target_resolver,
+            },
+        )
+        .expect("add succeeds without refetching the stale existing dependency");
+
+        assert_eq!(report.added.len(), 1);
+        assert_eq!(report.added[0].skill_name, "grilling");
+        // Only the newly added dependency was installed; `caveman` was never fetched.
+        assert_eq!(*installer.installed.borrow(), vec!["grilling".to_owned()]);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -30,12 +31,30 @@ pub fn update_dependencies(
     config: &ResolvedConfig,
     installer: &impl SkillInstaller,
 ) -> Result<UpdateReport, UpdateError> {
+    update_selected_dependencies(config, installer, None)
+}
+
+/// Install/fetch dependencies, optionally restricted to a subset of skill names.
+///
+/// `add` uses the `only` filter so that adding a new dependency never refetches,
+/// updates, or rewrites unrelated existing dependencies. Passing `None` installs
+/// every dependency, which is the behavior `update` relies on.
+pub fn update_selected_dependencies(
+    config: &ResolvedConfig,
+    installer: &impl SkillInstaller,
+    only: Option<&BTreeSet<String>>,
+) -> Result<UpdateReport, UpdateError> {
     let mut report = UpdateReport {
         updated: Vec::new(),
         skipped: Vec::new(),
     };
 
     for skill in &config.skills {
+        if let Some(only) = only {
+            if !only.contains(skill.name.as_str()) {
+                continue;
+            }
+        }
         let Some(install_source) = &skill.install_source else {
             report.skipped.push(skill.name.as_str().to_owned());
             continue;

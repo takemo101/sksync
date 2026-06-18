@@ -82,6 +82,9 @@
     "kiro-cli": {
       "targetDir": "~/.kiro/skills"
     },
+    "kimi-code": {
+      "targetDir": "~/.kimi-code/skills"
+    },
     "lovable": {
       "targetDir": "~/.lovable/skills"
     },
@@ -227,6 +230,9 @@
     },
     "kiro-cli": {
       "targetDir": ".kiro/skills"
+    },
+    "kimi-code": {
+      "targetDir": ".kimi-code/skills"
     },
     "lovable": {
       "targetDir": ".lovable/skills"

@@ -757,7 +757,7 @@ fn bundle_add_adopts_manual_same_source_without_bundle_managing_it() {
 }
 
 #[test]
-fn add_preserves_bundle_provenance_for_existing_same_source_dependency() {
+fn add_of_existing_dependency_fails_without_rewriting_it() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
     write_bundle_e2e_config(root);
@@ -767,11 +767,20 @@ fn add_preserves_bundle_provenance_for_existing_same_source_dependency() {
         root,
         &["bundle", "add", "./bundle", "--agent", "universal"],
     ));
-    assert_success(sksync(
+    let before = fs::read_to_string(root.join("sksync.config.json")).unwrap();
+
+    // `add` is not an attach shortcut: adding an already-installed skill fails
+    // clearly and leaves the existing dependency (agents, provenance) untouched.
+    let error = assert_failure(sksync(
         root,
         &["add", "./bundle/skills/review", "--agent", "pi"],
     ));
+    assert!(error.contains("already installed"), "{error}");
 
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.config.json")).unwrap(),
+        before
+    );
     let config = read_project_config(root);
     let review = &config["dependencies"]["review"];
     assert_eq!(review["source"], "./bundle/skills/review");
@@ -780,7 +789,7 @@ fn add_preserves_bundle_provenance_for_existing_same_source_dependency() {
         review["bundles"],
         serde_json::json!([{ "name": "review-workflow", "source": "./bundle" }])
     );
-    assert_eq!(review["agents"], serde_json::json!(["universal", "pi"]));
+    assert_eq!(review["agents"], serde_json::json!(["universal"]));
 }
 
 #[test]

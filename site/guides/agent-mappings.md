@@ -24,16 +24,19 @@ Project scope uses the `project` map (e.g. `.claude/skills`); global scope uses 
 | `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
 | `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
 | `antigravity` | `~/.gemini/antigravity/skills` | `.agents/skills` |
+| `kimi-code` | `~/.kimi-code/skills` | `.kimi-code/skills` |
 | `cursor` | `~/.cursor/skills` | `.cursor/skills` |
 | `windsurf` | `~/.codeium/windsurf/skills` | `.windsurf/skills` |
 | `universal` | `~/.agents/skills` | `.agents/skills` |
 
-The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `bolt`, `clawdbot`, `cline`, `codebuddy`, `codegpt`, `commandcode`, `continue`, `crush`, `devin`, `droid`/`factory`, `github-copilot`, `goose`, `hermes`, `kilo`, `kiro-cli`, `lovable`, `mcpjam`, `mux`, `neovate`, `openclaw`, `openhands`, `playcode-agent`, `qoder`, `qwen`, `replit-agent`, `roo`, `sourcegraph-cody`, `tabby`, `tabnine`, `trae`, `vercel`, and `zencoder`. See the complete file in [`sksync.agents.example.json`](https://github.com/takemo101/sksync/blob/main/sksync.agents.example.json).
+The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `bolt`, `clawdbot`, `cline`, `codebuddy`, `codegpt`, `commandcode`, `continue`, `crush`, `devin`, `droid`/`factory`, `github-copilot`, `goose`, `hermes`, `kilo`, `kiro-cli`, `lovable`, `mcpjam`, `mux`, `neovate`, `openclaw`, `openhands`, `playcode-agent`, `qoder`, `qwen`, `replit-agent`, `roo`, `sourcegraph-cody`, `tabby`, `tabnine`, `trae`, `vercel`, and `zencoder`. Kimi Code CLI is available as `kimi-code`. See the complete file in [`sksync.agents.example.json`](https://github.com/takemo101/sksync/blob/main/sksync.agents.example.json).
 
 ::: info
 **`universal`** is the canonical directory of the Agent Skills ecosystem: `~/.agents/skills` (global) and `.agents/skills` (project). Linking a skill into `universal` makes it visible to any tool that reads the shared directory.
 
 **Antigravity** follows its official spec and uses the workspace default `.agents/skills` for project scope. The legacy `.agent/skills` is still honored by Antigravity for backward compatibility, but the sksync bundled default is `.agents/skills`.
+
+**Kimi Code CLI** uses its Kimi-specific official scan directories: `~/.kimi-code/skills` globally and `.kimi-code/skills` per project. Kimi also scans the shared Agent Skills directories, which remain available through the separate `universal` mapping.
 :::
 
 ## Shape

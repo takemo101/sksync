@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::IsTerminal;
@@ -1612,8 +1612,24 @@ fn run_add(args: AddArgs) -> Result<()> {
     reject_legacy_registry_source(&args.source)?;
     print_progress("Resolving skill source...");
     let include = package_filter_from_add_args(&args)?;
-    let selections =
-        resolve_add_selections(&args.source, args.name.as_deref(), &config_path, include)?;
+    let existing_names =
+        FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?)
+            .existing_dependency_names()?;
+    let selections = match resolve_add_selections(
+        &args.source,
+        args.name.as_deref(),
+        &config_path,
+        include,
+        &existing_names,
+    )? {
+        AddSelectionOutcome::AllInstalled => {
+            print_success(
+                "All discovered skills are already installed; nothing to add. Use `sksync attach`, `sksync update`, or `sksync remove` to manage existing dependencies.",
+            );
+            return Ok(());
+        }
+        AddSelectionOutcome::Selections(selections) => selections,
+    };
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
         let store =
@@ -2425,17 +2441,40 @@ fn select_bundle_manifest_candidates(
 }
 
 #[derive(Debug, Clone)]
-struct SkillChoice(SkillCandidate);
+struct SkillChoice {
+    candidate: SkillCandidate,
+    already_installed: bool,
+}
 
 impl std::fmt::Display for SkillChoice {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
             "{}  {}",
-            self.0.name,
-            self.0.relative_path.display()
-        )
+            self.candidate.name,
+            self.candidate.relative_path.display()
+        )?;
+        if self.already_installed {
+            formatter.write_str("  (already installed)")?;
+        }
+        Ok(())
     }
+}
+
+/// Build the interactive multi-select model, marking candidates whose skill name
+/// already exists in config as `already installed`. The selection prompt keeps
+/// these rows visible but rejects selecting them.
+fn build_skill_choices(
+    candidates: Vec<SkillCandidate>,
+    existing_names: &BTreeSet<String>,
+) -> Vec<SkillChoice> {
+    candidates
+        .into_iter()
+        .map(|candidate| SkillChoice {
+            already_installed: existing_names.contains(&candidate.name),
+            candidate,
+        })
+        .collect()
 }
 
 fn format_selected_skill_choices(
@@ -2443,7 +2482,7 @@ fn format_selected_skill_choices(
 ) -> String {
     let names = selected
         .iter()
-        .map(|option| option.value.0.name.as_str())
+        .map(|option| option.value.candidate.name.as_str())
         .collect::<Vec<_>>();
 
     match names.as_slice() {
@@ -2465,9 +2504,13 @@ fn score_skill_choice(
         return Some(0);
     }
 
-    let name = choice.0.name.to_lowercase();
-    let path = choice.0.relative_path.to_string_lossy().to_lowercase();
-    let description = choice.0.description.to_lowercase();
+    let name = choice.candidate.name.to_lowercase();
+    let path = choice
+        .candidate
+        .relative_path
+        .to_string_lossy()
+        .to_lowercase();
+    let description = choice.candidate.description.to_lowercase();
 
     if name.contains(&filter) {
         Some(100)
@@ -2490,12 +2533,28 @@ fn package_filter_from_add_args(args: &AddArgs) -> Result<Option<PackageFilter>>
     Ok(Some(PackageFilter::new(args.include.clone())?))
 }
 
+/// Outcome of resolving which skills `add` should create.
+///
+/// `AllInstalled` means every discovered candidate is already a configured
+/// dependency, so `add` exits without mutating config, files, or the lockfile.
+enum AddSelectionOutcome {
+    Selections(Vec<AddSelection>),
+    AllInstalled,
+}
+
+#[derive(Debug)]
+enum CandidateSelection {
+    Selected(Vec<SkillCandidate>),
+    AllInstalled,
+}
+
 fn resolve_add_selections(
     source: &str,
     requested_name: Option<&str>,
     config_path: &Path,
     include: Option<PackageFilter>,
-) -> Result<Vec<AddSelection>> {
+    existing_names: &BTreeSet<String>,
+) -> Result<AddSelectionOutcome> {
     let config_root = config_path.parent().unwrap_or_else(|| Path::new("."));
     let fallback_name = infer_skill_name(source);
     let parse_skill_name = requested_name.unwrap_or(&fallback_name);
@@ -2504,34 +2563,49 @@ fn resolve_add_selections(
 
     let discovered = discover_source_skills(&install_source, source)?;
     let selection_name = requested_name.or(discovered.default_selection_name.as_deref());
-    let selections = select_skill_candidates(source, selection_name, discovered.candidates)?;
+    let selections = match select_skill_candidates(
+        source,
+        selection_name,
+        discovered.candidates,
+        existing_names,
+    )? {
+        CandidateSelection::AllInstalled => return Ok(AddSelectionOutcome::AllInstalled),
+        CandidateSelection::Selected(selections) => selections,
+    };
 
-    Ok(selections
-        .into_iter()
-        .map(|selection| AddSelection {
-            skill_name: requested_name
-                .map(str::to_owned)
-                .unwrap_or_else(|| selection.name.clone()),
-            source: source_with_selected_subpath(
-                source,
-                &selection.relative_path,
-                discovered.rewrite_mode,
-            ),
-            include: include.clone(),
-        })
-        .collect())
+    Ok(AddSelectionOutcome::Selections(
+        selections
+            .into_iter()
+            .map(|selection| AddSelection {
+                skill_name: requested_name
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| selection.name.clone()),
+                source: source_with_selected_subpath(
+                    source,
+                    &selection.relative_path,
+                    discovered.rewrite_mode,
+                ),
+                include: include.clone(),
+            })
+            .collect(),
+    ))
 }
 
 fn select_skill_candidates(
     source: &str,
     requested_name: Option<&str>,
     candidates: Vec<SkillCandidate>,
-) -> Result<Vec<SkillCandidate>> {
+    existing_names: &BTreeSet<String>,
+) -> Result<CandidateSelection> {
     if candidates.is_empty() {
         bail!("no SKILL.md files found under source '{source}'");
     }
 
     if let Some(name) = requested_name {
+        if existing_names.contains(name) {
+            bail!(already_installed_message(name));
+        }
+
         let matches = candidates
             .iter()
             .filter(|candidate| {
@@ -2545,14 +2619,36 @@ fn select_skill_candidates(
             .cloned()
             .collect::<Vec<_>>();
         return match matches.as_slice() {
-            [candidate] => Ok(vec![candidate.clone()]),
+            [candidate] => {
+                if existing_names.contains(&candidate.name) {
+                    bail!(already_installed_message(&candidate.name));
+                }
+                Ok(CandidateSelection::Selected(vec![candidate.clone()]))
+            }
             [] => bail!("no discovered skill named '{name}' under source '{source}'"),
             _ => bail!("multiple discovered skills matched '{name}' under source '{source}'"),
         };
     }
 
+    // A single discovered skill is the targeted dependency. If it already exists,
+    // adding it again is a duplicate add and fails clearly with guidance.
     if candidates.len() == 1 {
-        return Ok(vec![candidates.into_iter().next().expect("one candidate")]);
+        let candidate = candidates.into_iter().next().expect("one candidate");
+        if existing_names.contains(&candidate.name) {
+            bail!(already_installed_message(&candidate.name));
+        }
+        return Ok(CandidateSelection::Selected(vec![candidate]));
+    }
+
+    // Multiple discovered skills: candidates already in config are existing
+    // dependencies. If every candidate is already installed there is nothing new
+    // to add, so the flow exits without changes.
+    let installable = candidates
+        .iter()
+        .filter(|candidate| !existing_names.contains(&candidate.name))
+        .count();
+    if installable == 0 {
+        return Ok(CandidateSelection::AllInstalled);
     }
 
     if !std::io::stdin().is_terminal() {
@@ -2561,16 +2657,44 @@ fn select_skill_candidates(
         );
     }
 
-    let choices = candidates.into_iter().map(SkillChoice).collect::<Vec<_>>();
+    let choices = build_skill_choices(candidates, existing_names);
     let selected = inquire::MultiSelect::new("Select skills to add", choices)
         .with_formatter(&format_selected_skill_choices)
         .with_scorer(&score_skill_choice)
+        .with_validator(
+            |selected: &[inquire::list_option::ListOption<&SkillChoice>]| {
+                let installed = selected
+                    .iter()
+                    .filter(|option| option.value.already_installed)
+                    .map(|option| option.value.candidate.name.clone())
+                    .collect::<Vec<_>>();
+                if installed.is_empty() {
+                    Ok(inquire::validator::Validation::Valid)
+                } else {
+                    Ok(inquire::validator::Validation::Invalid(
+                        format!("already installed, cannot select: {}", installed.join(", "))
+                            .into(),
+                    ))
+                }
+            },
+        )
         .with_help_message("space: select · type: filter name/path/description · enter: confirm")
         .prompt()?;
     if selected.is_empty() {
         bail!("no skills selected");
     }
-    Ok(selected.into_iter().map(|choice| choice.0).collect())
+    Ok(CandidateSelection::Selected(
+        selected
+            .into_iter()
+            .map(|choice| choice.candidate)
+            .collect(),
+    ))
+}
+
+fn already_installed_message(skill_name: &str) -> String {
+    format!(
+        "skill '{skill_name}' is already installed; use `sksync attach {skill_name} --agent <agent>` to add agents, `sksync update` to refresh it, or `sksync remove {skill_name}` to replace it"
+    )
 }
 
 fn reject_legacy_registry_source(source: &str) -> Result<()> {
@@ -3501,46 +3625,54 @@ mod tests {
         assert!(!managed.exists());
     }
 
+    fn skill_choice(name: &str, description: &str, relative_path: &str) -> super::SkillChoice {
+        super::SkillChoice {
+            candidate: super::SkillCandidate {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                relative_path: PathBuf::from(relative_path),
+            },
+            already_installed: false,
+        }
+    }
+
     #[test]
     fn skill_choice_display_is_compact() {
-        let choice = super::SkillChoice(super::SkillCandidate {
-            name: "review".to_owned(),
-            description: "Review helper with a long explanation".to_owned(),
-            relative_path: PathBuf::from("skills/review"),
-        });
+        let choice = skill_choice(
+            "review",
+            "Review helper with a long explanation",
+            "skills/review",
+        );
 
         assert_eq!(choice.to_string(), "review  skills/review");
         assert!(!choice.to_string().contains("long explanation"));
     }
 
     #[test]
+    fn installed_skill_choice_display_marks_already_installed() {
+        let choice = super::SkillChoice {
+            candidate: super::SkillCandidate {
+                name: "review".to_owned(),
+                description: "Review helper".to_owned(),
+                relative_path: PathBuf::from("skills/review"),
+            },
+            already_installed: true,
+        };
+
+        assert_eq!(
+            choice.to_string(),
+            "review  skills/review  (already installed)"
+        );
+    }
+
+    #[test]
     fn selected_skill_formatter_summarizes_many_choices() {
         let choices = [
-            super::SkillChoice(super::SkillCandidate {
-                name: "one".to_owned(),
-                description: "First".to_owned(),
-                relative_path: PathBuf::from("skills/one"),
-            }),
-            super::SkillChoice(super::SkillCandidate {
-                name: "two".to_owned(),
-                description: "Second".to_owned(),
-                relative_path: PathBuf::from("skills/two"),
-            }),
-            super::SkillChoice(super::SkillCandidate {
-                name: "three".to_owned(),
-                description: "Third".to_owned(),
-                relative_path: PathBuf::from("skills/three"),
-            }),
-            super::SkillChoice(super::SkillCandidate {
-                name: "four".to_owned(),
-                description: "Fourth".to_owned(),
-                relative_path: PathBuf::from("skills/four"),
-            }),
-            super::SkillChoice(super::SkillCandidate {
-                name: "five".to_owned(),
-                description: "Fifth".to_owned(),
-                relative_path: PathBuf::from("skills/five"),
-            }),
+            skill_choice("one", "First", "skills/one"),
+            skill_choice("two", "Second", "skills/two"),
+            skill_choice("three", "Third", "skills/three"),
+            skill_choice("four", "Fourth", "skills/four"),
+            skill_choice("five", "Fifth", "skills/five"),
         ];
         let selected = choices
             .iter()
@@ -3556,11 +3688,11 @@ mod tests {
 
     #[test]
     fn skill_choice_scorer_searches_description_without_displaying_it() {
-        let choice = super::SkillChoice(super::SkillCandidate {
-            name: "diagnose".to_owned(),
-            description: "Hard bugs and performance regressions".to_owned(),
-            relative_path: PathBuf::from("skills/engineering/diagnose"),
-        });
+        let choice = skill_choice(
+            "diagnose",
+            "Hard bugs and performance regressions",
+            "skills/engineering/diagnose",
+        );
 
         assert_eq!(score_skill_choice("performance", &choice, "", 0), Some(10));
         assert_eq!(score_skill_choice("engineering", &choice, "", 0), Some(50));
@@ -3605,28 +3737,119 @@ mod tests {
         );
     }
 
+    fn candidate(name: &str, description: &str, relative_path: &str) -> super::SkillCandidate {
+        super::SkillCandidate {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            relative_path: PathBuf::from(relative_path),
+        }
+    }
+
+    fn assert_selected(selection: super::CandidateSelection) -> Vec<super::SkillCandidate> {
+        match selection {
+            super::CandidateSelection::Selected(candidates) => candidates,
+            super::CandidateSelection::AllInstalled => panic!("expected a selection"),
+        }
+    }
+
     #[test]
     fn name_option_selects_matching_discovered_skill() {
-        let selected = select_skill_candidates(
-            "owner/repo",
-            Some("review"),
-            vec![
-                super::SkillCandidate {
-                    name: "find-skills".to_owned(),
-                    description: "Find skills".to_owned(),
-                    relative_path: PathBuf::from("skills/find-skills"),
-                },
-                super::SkillCandidate {
-                    name: "review".to_owned(),
-                    description: "Review helper".to_owned(),
-                    relative_path: PathBuf::from("skills/review"),
-                },
-            ],
-        )
-        .unwrap();
+        let selected = assert_selected(
+            select_skill_candidates(
+                "owner/repo",
+                Some("review"),
+                vec![
+                    candidate("find-skills", "Find skills", "skills/find-skills"),
+                    candidate("review", "Review helper", "skills/review"),
+                ],
+                &BTreeSet::new(),
+            )
+            .unwrap(),
+        );
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].relative_path, Path::new("skills/review"));
+    }
+
+    #[test]
+    fn build_skill_choices_marks_existing_dependencies_as_installed() {
+        let existing = BTreeSet::from(["tdd".to_owned()]);
+        let choices = super::build_skill_choices(
+            vec![
+                candidate("tdd", "Test driven", "skills/tdd"),
+                candidate("grilling", "Grill plans", "skills/grilling"),
+                candidate("teach", "Teach concepts", "skills/teach"),
+            ],
+            &existing,
+        );
+
+        let installed = choices
+            .iter()
+            .filter(|choice| choice.already_installed)
+            .map(|choice| choice.candidate.name.clone())
+            .collect::<Vec<_>>();
+        let selectable = choices
+            .iter()
+            .filter(|choice| !choice.already_installed)
+            .map(|choice| choice.candidate.name.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(installed, vec!["tdd".to_owned()]);
+        assert_eq!(selectable, vec!["grilling".to_owned(), "teach".to_owned()]);
+    }
+
+    #[test]
+    fn name_option_for_installed_skill_fails_with_guidance() {
+        let existing = BTreeSet::from(["grilling".to_owned()]);
+        let error = select_skill_candidates(
+            "owner/repo",
+            Some("grilling"),
+            vec![
+                candidate("grilling", "Grill plans", "skills/grilling"),
+                candidate("teach", "Teach concepts", "skills/teach"),
+            ],
+            &existing,
+        )
+        .expect_err("installed skill add must fail");
+
+        let message = error.to_string();
+        assert!(message.contains("already installed"), "{message}");
+        assert!(message.contains("sksync attach"), "{message}");
+        assert!(message.contains("sksync update"), "{message}");
+        assert!(message.contains("sksync remove"), "{message}");
+    }
+
+    #[test]
+    fn name_override_for_installed_skill_fails_with_guidance() {
+        let existing = BTreeSet::from(["review".to_owned()]);
+        let error = select_skill_candidates(
+            "owner/repo",
+            Some("review"),
+            vec![candidate("grilling", "Grill plans", "skills/review")],
+            &existing,
+        )
+        .expect_err("installed name override add must fail");
+
+        let message = error.to_string();
+        assert!(message.contains("already installed"), "{message}");
+        assert!(message.contains("sksync attach"), "{message}");
+    }
+
+    #[test]
+    fn all_candidates_installed_reports_nothing_to_add() {
+        let existing = BTreeSet::from(["grilling".to_owned(), "teach".to_owned()]);
+        let selection = select_skill_candidates(
+            "owner/repo",
+            None,
+            vec![
+                candidate("grilling", "Grill plans", "skills/grilling"),
+                candidate("teach", "Teach concepts", "skills/teach"),
+            ],
+            &existing,
+        )
+        .expect("all-installed is not an error");
+
+        assert!(matches!(selection, super::CandidateSelection::AllInstalled));
     }
 
     #[test]
