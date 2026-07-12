@@ -17,7 +17,9 @@ Project scope uses the `project` map (e.g. `.claude/skills`); global scope uses 
 
 | Agent | Global `targetDir` | Project `targetDir` |
 |---|---|---|
-| `pi` | `~/.pi/agent/skills` | `.pi/agent/skills` |
+| `pi` | `~/.pi/agent/skills` | `.pi/skills` |
+| `grok` | `~/.grok/skills` | `.grok/skills` |
+| `zero` | `~/.local/share/zero/skills` | — |
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
@@ -37,6 +39,8 @@ The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `
 **Antigravity** follows its official spec and uses the workspace default `.agents/skills` for project scope. The legacy `.agent/skills` is still honored by Antigravity for backward compatibility, but the sksync bundled default is `.agents/skills`.
 
 **Kimi Code CLI** uses its Kimi-specific official scan directories: `~/.kimi-code/skills` globally and `.kimi-code/skills` per project. Kimi also scans the shared Agent Skills directories, which remain available through the separate `universal` mapping.
+
+**Zero** discovers user-level skills at `$XDG_DATA_HOME/zero/skills` (defaulting to `~/.local/share/zero/skills`). It does not have a project-local skill directory unless `ZERO_SKILLS_DIR` is explicitly overridden.
 :::
 
 ## Shape
@@ -46,11 +50,14 @@ The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync.agents.schema.json",
   "global": {
     "claude-code": { "targetDir": "~/.claude/skills" },
-    "pi": { "targetDir": "~/.pi/agent/skills" }
+    "grok": { "targetDir": "~/.grok/skills" },
+    "pi": { "targetDir": "~/.pi/agent/skills" },
+    "zero": { "targetDir": "~/.local/share/zero/skills" }
   },
   "project": {
     "claude-code": { "targetDir": ".claude/skills" },
-    "pi": { "targetDir": ".pi/agent/skills" }
+    "grok": { "targetDir": ".grok/skills" },
+    "pi": { "targetDir": ".pi/skills" }
   }
 }
 ```

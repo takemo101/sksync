@@ -12,7 +12,7 @@ Examples:
 - Codex instructions / skills
 - Gemini CLI context / extensions
 - OpenCode command / agent config
-- Pi `.pi/agent/skills` or user-configured paths
+- Pi `~/.pi/agent/skills` globally or `.pi/skills` per project
 
 Managing those locations manually causes problems:
 
@@ -288,7 +288,9 @@ Defaults are overrideable through config.
 
 | agent | user scope default | project scope default | notes |
 | --- | --- | --- | --- |
-| pi | `~/.pi/agent/skills` | `.pi/agent/skills` | Matches existing Pi skill format. |
+| pi | `~/.pi/agent/skills` | `.pi/skills` | Matches Pi's documented global and project skill formats. |
+| grok | `~/.grok/skills` | `.grok/skills` | Grok CLI skill directories. |
+| zero | `~/.local/share/zero/skills` | — | Zero supports a user-level data directory only; `ZERO_SKILLS_DIR` can override it. |
 | claude-code | `~/.claude/skills` | `.claude/skills` | Claude Code skill directory. |
 | codex | `~/.codex/skills` | `.codex/skills` | May need instruction conversion later. |
 | gemini | `~/.gemini/skills` | `.gemini/skills` | Aligned with Gemini CLI. |
@@ -512,7 +514,7 @@ Example flow:
 Planned changes:
   add dependency: cuekit-dogfood
   install source -> .sksync/skills/cuekit-dogfood
-  create symlink: .pi/agent/skills/cuekit-dogfood
+  create symlink: .pi/skills/cuekit-dogfood
   create symlink: .claude/skills/cuekit-dogfood
 
 ? Apply these changes? (y/N)

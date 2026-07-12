@@ -152,7 +152,7 @@ Resolve a target directory from agent + scope.
 
 - Implement `src/infrastructure/builtin_agents.rs`.
 - Add default mappings for:
-  - `pi`: user `~/.pi/agent/skills`, project `.pi/agent/skills`
+  - `pi`: user `~/.pi/agent/skills`, project `.pi/skills`
   - `claude-code`: user `~/.claude/skills`, project `.claude/skills`
   - `codex`: user `~/.codex/skills`, project `.codex/skills`
   - `gemini`: user `~/.gemini/skills`, project `.gemini/skills`

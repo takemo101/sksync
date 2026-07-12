@@ -3704,6 +3704,33 @@ mod tests {
     }
 
     #[test]
+    fn bundled_agent_mappings_include_corrected_pi_grok_and_zero_paths() {
+        let mappings = default_agent_mapping_config().expect("bundled mappings parse");
+
+        assert_eq!(
+            mappings.global.get("pi"),
+            Some(&PathBuf::from("~/.pi/agent/skills"))
+        );
+        assert_eq!(
+            mappings.project.get("pi"),
+            Some(&PathBuf::from(".pi/skills"))
+        );
+        assert_eq!(
+            mappings.global.get("grok"),
+            Some(&PathBuf::from("~/.grok/skills"))
+        );
+        assert_eq!(
+            mappings.project.get("grok"),
+            Some(&PathBuf::from(".grok/skills"))
+        );
+        assert_eq!(
+            mappings.global.get("zero"),
+            Some(&PathBuf::from("~/.local/share/zero/skills"))
+        );
+        assert!(!mappings.project.contains_key("zero"));
+    }
+
+    #[test]
     fn legacy_agent_mapping_fields_are_supported() {
         let mappings = parse_agent_mapping_config(
             r#"{
