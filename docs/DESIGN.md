@@ -514,7 +514,7 @@ Example flow:
 Planned changes:
   add dependency: cuekit-dogfood
   install source -> .sksync/skills/cuekit-dogfood
-  create symlink: .pi/agent/skills/cuekit-dogfood
+  create symlink: .pi/skills/cuekit-dogfood
   create symlink: .claude/skills/cuekit-dogfood
 
 ? Apply these changes? (y/N)
