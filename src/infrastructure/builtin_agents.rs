@@ -104,7 +104,7 @@ pub fn default_target_dir(
 ) -> Result<PathBuf, BuiltinAgentMappingError> {
     let path = match (agent, scope) {
         (AgentKind::Pi, Scope::User) => "~/.pi/agent/skills",
-        (AgentKind::Pi, Scope::Project) => ".pi/agent/skills",
+        (AgentKind::Pi, Scope::Project) => ".pi/skills",
         (AgentKind::ClaudeCode, Scope::User) => "~/.claude/skills",
         (AgentKind::ClaudeCode, Scope::Project) => ".claude/skills",
         (AgentKind::Codex, Scope::User) => "~/.codex/skills",
@@ -138,7 +138,7 @@ mod tests {
     fn default_mapping_covers_each_builtin_agent_and_scope() {
         let cases = [
             (AgentKind::Pi, Scope::User, "~/.pi/agent/skills"),
-            (AgentKind::Pi, Scope::Project, ".pi/agent/skills"),
+            (AgentKind::Pi, Scope::Project, ".pi/skills"),
             (AgentKind::ClaudeCode, Scope::User, "~/.claude/skills"),
             (AgentKind::ClaudeCode, Scope::Project, ".claude/skills"),
             (AgentKind::Codex, Scope::User, "~/.codex/skills"),

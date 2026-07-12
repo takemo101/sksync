@@ -4326,7 +4326,7 @@ mod tests {
     fn project_agent_mappings_override_global_mappings() {
         let mappings = agent_target_mappings_from_config(
             AgentMappingConfig {
-                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/skills"))]),
+                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/agent/skills"))]),
                 project: BTreeMap::from([("pi".to_owned(), PathBuf::from(".pi/skills"))]),
             },
             Scope::Project,
@@ -4340,14 +4340,14 @@ mod tests {
     fn global_agent_mappings_ignore_project_mappings() {
         let mappings = agent_target_mappings_from_config(
             AgentMappingConfig {
-                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/skills"))]),
+                global: BTreeMap::from([("pi".to_owned(), PathBuf::from("~/.pi/agent/skills"))]),
                 project: BTreeMap::from([("pi".to_owned(), PathBuf::from(".pi/skills"))]),
             },
             Scope::User,
         );
 
         assert_eq!(mappings["pi"].scope, Scope::User);
-        assert_eq!(mappings["pi"].target_dir, Path::new("~/.pi/skills"));
+        assert_eq!(mappings["pi"].target_dir, Path::new("~/.pi/agent/skills"));
     }
 
     #[test]

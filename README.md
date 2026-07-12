@@ -152,7 +152,9 @@ The bundled mappings include entries for major Agent Skills-compatible agents. E
 
 | Agent | Global targetDir | Project targetDir |
 | --- | --- | --- |
-| `pi` | `~/.pi/agent/skills` | `.pi/agent/skills` |
+| `pi` | `~/.pi/agent/skills` | `.pi/skills` |
+| `grok` | `~/.grok/skills` | `.grok/skills` |
+| `zero` | `~/.local/share/zero/skills` | — |
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
@@ -165,6 +167,8 @@ The bundled mappings include entries for major Agent Skills-compatible agents. E
 Antigravity uses the official workspace default `.agents/skills`. Antigravity treats `.agent/skills` as a backward-compatible directory, but sksync's bundled default is `.agents/skills`.
 
 `kimi-code` maps to Kimi Code CLI's official Kimi-specific skill directories. Kimi can also read the shared Agent Skills directories, which remain available through `universal`.
+
+`zero` discovers user-level skills at `$XDG_DATA_HOME/zero/skills` (defaulting to `~/.local/share/zero/skills`). It has no project-local skill directory unless the user explicitly overrides `ZERO_SKILLS_DIR`.
 
 `universal` is the canonical Agent Skills ecosystem directory. It maps to `~/.agents/skills` globally and `.agents/skills` in projects.
 
