@@ -1081,6 +1081,25 @@ fn bundle_export_root_requires_force_to_replace_manifest() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn bundle_export_root_refuses_dangling_manifest_symlink_without_force() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+    symlink("missing-manifest", root.join("sksync.bundle.json")).expect("create symlink");
+
+    let error = assert_failure(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root"],
+    ));
+
+    assert!(error.contains("already exists"));
+    assert!(root.join("sksync.bundle.json").is_symlink());
+}
+
 #[test]
 fn bundle_export_root_dry_run_does_not_write_manifest() {
     let temp = tempfile::tempdir().expect("temp dir");

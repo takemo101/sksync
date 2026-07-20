@@ -304,6 +304,12 @@ pub enum BundleExportError {
     InvalidSnapshotSkill { skill: String, message: String },
     #[error("bundle export output already exists: {0}")]
     OutputExists(String),
+    #[error("failed to inspect bundle export output {path}: {source}")]
+    InspectOutput {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to create export directory {path}: {source}")]
     CreateDir {
         path: String,
@@ -507,7 +513,7 @@ fn apply_directory_bundle_export(
     output: &Path,
     options: BundleExportApplyOptions,
 ) -> std::result::Result<(), BundleExportError> {
-    if output.exists() && !options.force {
+    if bundle_export_output_exists(output)? && !options.force {
         return Err(BundleExportError::OutputExists(
             output.display().to_string(),
         ));
@@ -562,7 +568,7 @@ fn apply_manifest_file_bundle_export(
     output: &Path,
     options: BundleExportApplyOptions,
 ) -> std::result::Result<(), BundleExportError> {
-    if output.exists() && !options.force {
+    if bundle_export_output_exists(output)? && !options.force {
         return Err(BundleExportError::OutputExists(
             output.display().to_string(),
         ));
@@ -586,6 +592,17 @@ fn apply_manifest_file_bundle_export(
         });
     }
     Ok(())
+}
+
+fn bundle_export_output_exists(output: &Path) -> std::result::Result<bool, BundleExportError> {
+    match std::fs::symlink_metadata(output) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(BundleExportError::InspectOutput {
+            path: output.display().to_string(),
+            source,
+        }),
+    }
 }
 
 fn replace_bundle_export_output(
