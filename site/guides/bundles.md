@@ -288,7 +288,16 @@ If the skill name exists with a different source, `bundle add` reports `conflict
 `bundle export` generates a bundle from the current project or global dependencies:
 
 ```sh
-# Manifest-only export: preserve existing dependency sources.
+# Root manifest-only export: write only ./sksync.bundle.json.
+sksync bundle export team-baseline --root
+
+# Replace an existing root manifest without touching config, lockfile, or skills/.
+sksync bundle export team-baseline --root --force
+
+# Write the global root manifest at ~/.sksync/sksync.bundle.json.
+sksync bundle export team-baseline --global --root
+
+# Manifest-only export to a dedicated directory: preserve existing dependency sources.
 sksync bundle export team-baseline --output ./bundles/team-baseline --dry-run
 sksync bundle export team-baseline --output ./bundles/team-baseline
 
@@ -299,14 +308,26 @@ sksync bundle export team-baseline --output ./bundles/team-baseline --snapshot
 sksync bundle export team-baseline --output ./bundles/team-baseline --skill review --skill qa
 ```
 
-Manifest-only export creates only `sksync.bundle.json`, keeps each dependency's source reference, and preserves dependency `include` filters on exported entries. Snapshot export copies installed skill bodies to `./skills/<name>` under the output directory and writes manifest-relative entries.
+Manifest-only export creates only `sksync.bundle.json`, keeps each dependency's source reference, and preserves dependency `include` filters on exported entries. `--root` is manifest-only; snapshot export requires `--output <directory>`. Snapshot export copies installed skill bodies to `./skills/<name>` under the output directory and writes manifest-relative entries.
+
+For a self-contained local bundle, commit local skills alongside the root manifest:
+
+```text
+repo/
+├─ sksync.config.json
+├─ sksync.bundle.json
+└─ skills/
+   └─ review/SKILL.md
+```
+
+A manifest entry such as `"source": "./skills/review"` resolves from the manifest's parent directory. When another project adds this repository as a bundle, sksync reads the bundle repository's `skills/review` (or its normalized remote tree source), not `./skills/review` in the consuming project. Root export never creates, copies, deletes, or ignores `skills/`; commit those local sources yourself.
 
 Safety rules:
 
-- `--dry-run` prints entries and copy operations without creating the output directory.
+- `--dry-run` prints entries and copy operations without creating the output directory or root manifest.
 - `--skill <name>` can be repeated to export only selected dependencies.
-- `--global` exports from `~/.sksync/config.json`.
-- existing output is an error unless `--force` is passed.
+- `--global` exports from `~/.sksync/config.json`; with `--root`, it writes `~/.sksync/sksync.bundle.json`.
+- an existing output directory or root manifest is an error unless `--force` is passed; root `--force` replaces only `sksync.bundle.json`.
 - agents, existing bundle provenance, and `managedByBundles` are not written into the bundle manifest.
 
 ## Authoring best practices
