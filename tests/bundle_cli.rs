@@ -10,6 +10,16 @@ fn sksync(root: &Path, args: &[&str]) -> Output {
         .expect("run sksync")
 }
 
+fn sksync_with_home(root: &Path, home: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sksync"))
+        .current_dir(root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .args(args)
+        .output()
+        .expect("run sksync")
+}
+
 fn assert_success(output: Output) {
     assert!(
         output.status.success(),
@@ -985,6 +995,159 @@ fn bundle_export_snapshot_dry_run_validates_installed_skill_bodies() {
 
     assert!(error.contains("invalid SKILL.md"));
     assert!(!root.join("bundle-out").exists());
+}
+
+#[test]
+fn bundle_export_root_writes_manifest_without_touching_project_state() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    fs::write(
+        root.join("sksync.config.json"),
+        r#"{
+          "skillDir": "./.sksync/skills",
+          "dependencies": {
+            "local": { "source": "./skills/local", "agents": ["pi"] }
+          }
+        }"#,
+    )
+    .expect("write config");
+    write_bundle_skill(root, "skills/local", "local");
+    fs::write(root.join("sksync-lock.json"), "lock sentinel").expect("write lockfile");
+    write_bundle_skill(root, ".sksync/skills/installed", "installed");
+    let local_skill = fs::read_to_string(root.join("skills/local/SKILL.md")).unwrap();
+
+    assert_success(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root"],
+    ));
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("sksync.bundle.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "team-baseline");
+    assert_eq!(manifest["entries"]["local"]["source"], "./skills/local");
+    assert_eq!(
+        fs::read_to_string(root.join("sksync-lock.json")).unwrap(),
+        "lock sentinel"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("skills/local/SKILL.md")).unwrap(),
+        local_skill
+    );
+    assert!(root.join(".sksync/skills/installed/SKILL.md").is_file());
+}
+
+#[test]
+fn bundle_export_root_requires_force_to_replace_manifest() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+    fs::write(root.join("sksync-lock.json"), "lock sentinel").expect("write lockfile");
+    fs::write(root.join("sksync.bundle.json"), "old manifest").expect("write manifest");
+    let config_before = fs::read_to_string(root.join("sksync.config.json")).unwrap();
+    let lock_before = fs::read_to_string(root.join("sksync-lock.json")).unwrap();
+    let installed_before = fs::read_to_string(root.join(".sksync/skills/review/SKILL.md")).unwrap();
+
+    let error = assert_failure(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root"],
+    ));
+    assert!(error.contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.bundle.json")).unwrap(),
+        "old manifest"
+    );
+
+    assert_success(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root", "--force"],
+    ));
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("sksync.bundle.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "team-baseline");
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.config.json")).unwrap(),
+        config_before
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("sksync-lock.json")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".sksync/skills/review/SKILL.md")).unwrap(),
+        installed_before
+    );
+}
+
+#[test]
+fn bundle_export_root_dry_run_does_not_write_manifest() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_success(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root", "--dry-run"],
+    ));
+
+    assert!(!root.join("sksync.bundle.json").exists());
+}
+
+#[test]
+fn bundle_export_root_rejects_snapshot_and_output() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path();
+    write_export_project(root);
+
+    assert_failure(sksync(
+        root,
+        &["bundle", "export", "team-baseline", "--root", "--snapshot"],
+    ));
+    assert_failure(sksync(
+        root,
+        &[
+            "bundle",
+            "export",
+            "team-baseline",
+            "--root",
+            "--output",
+            "./bundle-out",
+        ],
+    ));
+
+    assert!(!root.join("sksync.bundle.json").exists());
+    assert!(!root.join("bundle-out").exists());
+}
+
+#[test]
+fn bundle_export_global_root_writes_manifest_under_isolated_home() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("home");
+    let workdir = temp.path().join("workdir");
+    fs::create_dir_all(home.join(".sksync")).expect("create global config directory");
+    fs::create_dir_all(&workdir).expect("create workdir");
+    fs::write(
+        home.join(".sksync/config.json"),
+        r#"{
+          "dependencies": {
+            "review": { "source": "github:org/repo/skills/review#main", "agents": ["pi"] }
+          }
+        }"#,
+    )
+    .expect("write global config");
+
+    assert_success(sksync_with_home(
+        &workdir,
+        &home,
+        &["bundle", "export", "team-baseline", "--global", "--root"],
+    ));
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".sksync/sksync.bundle.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "team-baseline");
 }
 
 #[test]

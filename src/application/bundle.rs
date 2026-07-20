@@ -508,7 +508,9 @@ fn apply_directory_bundle_export(
     options: BundleExportApplyOptions,
 ) -> std::result::Result<(), BundleExportError> {
     if output.exists() && !options.force {
-        return Err(BundleExportError::OutputExists(output.display().to_string()));
+        return Err(BundleExportError::OutputExists(
+            output.display().to_string(),
+        ));
     }
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|source| BundleExportError::CreateDir {
@@ -561,7 +563,9 @@ fn apply_manifest_file_bundle_export(
     options: BundleExportApplyOptions,
 ) -> std::result::Result<(), BundleExportError> {
     if output.exists() && !options.force {
-        return Err(BundleExportError::OutputExists(output.display().to_string()));
+        return Err(BundleExportError::OutputExists(
+            output.display().to_string(),
+        ));
     }
     let staging = temporary_bundle_export_staging_file(output);
     if staging.exists() {
