@@ -220,11 +220,25 @@ impl BundleExportMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleExportDestination {
+    Directory(PathBuf),
+    ManifestFile(PathBuf),
+}
+
+impl BundleExportDestination {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Directory(path) | Self::ManifestFile(path) => path,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BundleExportPlanInput {
     pub name: String,
     pub description: Option<String>,
-    pub output: PathBuf,
+    pub destination: BundleExportDestination,
     pub mode: BundleExportMode,
     pub selected_skills: Vec<String>,
     pub dependencies: Vec<BundleExportDependencyConfig>,
@@ -248,7 +262,7 @@ pub struct BundleExportPlanItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleExportPlan {
     pub manifest: BundleManifest,
-    pub output: PathBuf,
+    pub destination: BundleExportDestination,
     pub mode: BundleExportMode,
     pub items: Vec<BundleExportPlanItem>,
 }
@@ -278,6 +292,8 @@ pub enum BundleExportError {
     EmptySelection,
     #[error("invalid dependency source for '{skill}': {message}")]
     InvalidDependencySource { skill: String, message: String },
+    #[error("snapshot export requires a directory destination")]
+    SnapshotRequiresDirectoryDestination,
     #[error("snapshot source for '{skill}' is missing from resolved config")]
     MissingResolvedSkill { skill: String },
     #[error("snapshot source for '{skill}' does not exist: {path}")]
@@ -314,6 +330,12 @@ pub enum BundleExportError {
 pub fn build_bundle_export_plan(
     input: BundleExportPlanInput,
 ) -> std::result::Result<BundleExportPlan, BundleExportError> {
+    if input.mode == BundleExportMode::Snapshot
+        && matches!(input.destination, BundleExportDestination::ManifestFile(_))
+    {
+        return Err(BundleExportError::SnapshotRequiresDirectoryDestination);
+    }
+
     let bundle_name = BundleName::new(input.name.clone()).map_err(|source| {
         BundleExportError::InvalidBundleName {
             name: input.name.clone(),
@@ -376,9 +398,12 @@ pub fn build_bundle_export_plan(
                 }
             })?),
         };
-        let snapshot_destination = source_path
-            .as_ref()
-            .map(|_| input.output.join("skills").join(&name));
+        let snapshot_destination = match (&input.destination, input.mode) {
+            (BundleExportDestination::Directory(output), BundleExportMode::Snapshot) => {
+                Some(output.join("skills").join(&name))
+            }
+            _ => None,
+        };
         let include = match input.mode {
             BundleExportMode::ManifestOnly => dependency.include.clone(),
             BundleExportMode::Snapshot => None,
@@ -408,7 +433,7 @@ pub fn build_bundle_export_plan(
                 .unwrap_or_else(|| "Exported from sksync config.".to_owned()),
             entries,
         },
-        output: input.output,
+        destination: input.destination,
         mode: input.mode,
         items,
     })
@@ -466,17 +491,31 @@ pub fn apply_bundle_export_plan(
     plan: &BundleExportPlan,
     options: BundleExportApplyOptions,
 ) -> std::result::Result<(), BundleExportError> {
-    if plan.output.exists() && !options.force {
-        return Err(BundleExportError::OutputExists(
-            plan.output.display().to_string(),
-        ));
+    validate_bundle_export_plan(plan)?;
+    match &plan.destination {
+        BundleExportDestination::Directory(output) => {
+            apply_directory_bundle_export(plan, output, options)
+        }
+        BundleExportDestination::ManifestFile(output) => {
+            apply_manifest_file_bundle_export(&plan.manifest, output, options)
+        }
     }
-    let parent = plan.output.parent().unwrap_or_else(|| Path::new("."));
+}
+
+fn apply_directory_bundle_export(
+    plan: &BundleExportPlan,
+    output: &Path,
+    options: BundleExportApplyOptions,
+) -> std::result::Result<(), BundleExportError> {
+    if output.exists() && !options.force {
+        return Err(BundleExportError::OutputExists(output.display().to_string()));
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|source| BundleExportError::CreateDir {
         path: parent.display().to_string(),
         source,
     })?;
-    let staging = temporary_bundle_export_staging_dir(&plan.output);
+    let staging = temporary_bundle_export_staging_dir(output);
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(|source| BundleExportError::ReplaceOutput {
             path: staging.display().to_string(),
@@ -489,7 +528,6 @@ pub fn apply_bundle_export_plan(
     })?;
 
     let result = (|| -> std::result::Result<(), BundleExportError> {
-        validate_bundle_export_plan(plan)?;
         if plan.mode == BundleExportMode::Snapshot {
             for item in &plan.items {
                 let source = item.source_path.as_ref().ok_or_else(|| {
@@ -510,9 +548,38 @@ pub fn apply_bundle_export_plan(
         return Err(error);
     }
 
-    if let Err(error) = replace_bundle_export_output(&staging, &plan.output) {
+    if let Err(error) = replace_bundle_export_output(&staging, output) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
+    }
+    Ok(())
+}
+
+fn apply_manifest_file_bundle_export(
+    manifest: &BundleManifest,
+    output: &Path,
+    options: BundleExportApplyOptions,
+) -> std::result::Result<(), BundleExportError> {
+    if output.exists() && !options.force {
+        return Err(BundleExportError::OutputExists(output.display().to_string()));
+    }
+    let staging = temporary_bundle_export_staging_file(output);
+    if staging.exists() {
+        std::fs::remove_file(&staging).map_err(|source| BundleExportError::ReplaceOutput {
+            path: staging.display().to_string(),
+            source,
+        })?;
+    }
+    if let Err(error) = write_bundle_manifest(&staging, manifest) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(BundleExportError::WriteManifest(error));
+    }
+    if let Err(source) = std::fs::rename(&staging, output) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(BundleExportError::ReplaceOutput {
+            path: output.display().to_string(),
+            source,
+        });
     }
     Ok(())
 }
@@ -597,6 +664,24 @@ fn temporary_bundle_export_staging_dir(output: &Path) -> PathBuf {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("bundle-export");
+    output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            ".{file_name}.sksync-export-staging-{}-{nonce}",
+            std::process::id()
+        ))
+}
+
+fn temporary_bundle_export_staging_file(output: &Path) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let file_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("sksync.bundle.json");
     output
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -1151,8 +1236,8 @@ mod tests {
         apply_bundle_export_plan, build_bundle_export_plan, bundle_manifest_parent_git_source,
         discover_bundle_manifest_candidates, git_source_to_config_string, load_bundle_from_source,
         normalize_bundle_entry_source, validate_snapshot_export_source, BundleExportApplyOptions,
-        BundleExportMode, BundleExportPlan, BundleExportPlanInput, BundleExportPlanItem,
-        BundleExportResolvedSkill,
+        BundleExportDestination, BundleExportMode, BundleExportPlan, BundleExportPlanInput,
+        BundleExportPlanItem, BundleExportResolvedSkill,
     };
     use crate::domain::bundle::{BundleEntry, BundleManifest, BundleName};
     use crate::domain::skill::SkillName;
@@ -1307,7 +1392,9 @@ mod tests {
         let plan = build_bundle_export_plan(BundleExportPlanInput {
             name: "team-baseline".to_owned(),
             description: None,
-            output: PathBuf::from("./bundles/team-baseline"),
+            destination: BundleExportDestination::Directory(PathBuf::from(
+                "./bundles/team-baseline",
+            )),
             mode: BundleExportMode::ManifestOnly,
             selected_skills: Vec::new(),
             dependencies,
@@ -1330,11 +1417,63 @@ mod tests {
     }
 
     #[test]
+    fn manifest_file_export_plan_preserves_manifest_only_sources() {
+        let manifest_path = PathBuf::from("./sksync.bundle.json");
+        let plan = build_bundle_export_plan(BundleExportPlanInput {
+            name: "team-baseline".to_owned(),
+            description: None,
+            destination: BundleExportDestination::ManifestFile(manifest_path.clone()),
+            mode: BundleExportMode::ManifestOnly,
+            selected_skills: Vec::new(),
+            dependencies: vec![BundleExportDependencyConfig {
+                name: "review".to_owned(),
+                source: "./skills/review".to_owned(),
+                include: None,
+            }],
+            resolved_skills: Vec::new(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            plan.destination,
+            BundleExportDestination::ManifestFile(manifest_path)
+        );
+        assert_eq!(plan.items[0].manifest_source, "./skills/review");
+        assert_eq!(plan.items[0].snapshot_destination, None);
+    }
+
+    #[test]
+    fn manifest_file_destination_rejects_snapshot_export() {
+        let error = build_bundle_export_plan(BundleExportPlanInput {
+            name: "team-baseline".to_owned(),
+            description: None,
+            destination: BundleExportDestination::ManifestFile(PathBuf::from(
+                "./sksync.bundle.json",
+            )),
+            mode: BundleExportMode::Snapshot,
+            selected_skills: Vec::new(),
+            dependencies: vec![BundleExportDependencyConfig {
+                name: "review".to_owned(),
+                source: "github:org/repo/skills/review#main".to_owned(),
+                include: None,
+            }],
+            resolved_skills: Vec::new(),
+        })
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("snapshot export requires a directory"));
+    }
+
+    #[test]
     fn export_plan_rejects_selected_skill_not_in_dependencies() {
         let error = build_bundle_export_plan(BundleExportPlanInput {
             name: "team-baseline".to_owned(),
             description: None,
-            output: PathBuf::from("./bundles/team-baseline"),
+            destination: BundleExportDestination::Directory(PathBuf::from(
+                "./bundles/team-baseline",
+            )),
             mode: BundleExportMode::ManifestOnly,
             selected_skills: vec!["missing".to_owned()],
             dependencies: Vec::new(),
@@ -1362,7 +1501,9 @@ mod tests {
         let plan = build_bundle_export_plan(BundleExportPlanInput {
             name: "team-baseline".to_owned(),
             description: None,
-            output: PathBuf::from("./bundles/team-baseline"),
+            destination: BundleExportDestination::Directory(PathBuf::from(
+                "./bundles/team-baseline",
+            )),
             mode: BundleExportMode::Snapshot,
             selected_skills: Vec::new(),
             dependencies,
@@ -1469,7 +1610,7 @@ mod tests {
                     include: None,
                 }],
             },
-            output: output.clone(),
+            destination: BundleExportDestination::Directory(output.clone()),
             mode,
             items: vec![BundleExportPlanItem {
                 skill_name: "review".to_owned(),
