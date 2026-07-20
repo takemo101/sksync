@@ -13,10 +13,10 @@ use crate::application::apply::{apply_link_plan, ApplyOptions};
 use crate::application::bundle::{
     apply_bundle_export_plan, build_bundle_export_plan, discover_bundle_manifest_candidates,
     load_bundle_from_source, validate_bundle_export_plan, BundleAddPlan, BundleAddPlanItem,
-    BundleAddStatus, BundleExportApplyOptions, BundleExportMode, BundleExportPlan,
-    BundleExportPlanInput, BundleExportResolvedSkill, BundleManifestCandidate, BundleRemovePlan,
-    BundleRemovePlanItem, BundleRemoveStatus, BundleSyncPlan, BundleSyncSourceResolution,
-    BundleSyncStatus,
+    BundleAddStatus, BundleExportApplyOptions, BundleExportDestination, BundleExportMode,
+    BundleExportPlan, BundleExportPlanInput, BundleExportResolvedSkill, BundleManifestCandidate,
+    BundleRemovePlan, BundleRemovePlanItem, BundleRemoveStatus, BundleSyncPlan,
+    BundleSyncSourceResolution, BundleSyncStatus, BUNDLE_MANIFEST_FILE,
 };
 use crate::application::check::{
     check_lockfile_with_config_and_plan, group_check_problems, CheckProblem, ProblemGroup,
@@ -293,8 +293,11 @@ struct BundleExportArgs {
     /// Bundle name to write into sksync.bundle.json.
     name: String,
     /// Output directory that will contain sksync.bundle.json.
-    #[arg(long)]
-    output: PathBuf,
+    #[arg(long, required_unless_present = "root", conflicts_with = "root")]
+    output: Option<PathBuf>,
+    /// Write only sksync.bundle.json into the active configuration root.
+    #[arg(long, conflicts_with_all = ["output", "snapshot"])]
+    root: bool,
     /// Export from ~/.sksync/config.json instead of project config.
     #[arg(short = 'g', long)]
     global: bool,
@@ -307,7 +310,7 @@ struct BundleExportArgs {
     /// Show the export plan without writing files.
     #[arg(long)]
     dry_run: bool,
-    /// Replace an existing generated output directory.
+    /// Replace an existing generated output directory or root manifest.
     #[arg(short = 'f', long)]
     force: bool,
 }
@@ -949,10 +952,20 @@ fn run_bundle_export(args: BundleExportArgs) -> Result<()> {
             source_path: skill.source.as_path().to_path_buf(),
         })
         .collect::<Vec<_>>();
+    let destination = if args.root {
+        BundleExportDestination::ManifestFile(root_dir.join(BUNDLE_MANIFEST_FILE))
+    } else {
+        BundleExportDestination::Directory(resolve_export_output_path(
+            args.output
+                .as_deref()
+                .expect("clap requires --output without --root"),
+            &root_dir,
+        ))
+    };
     let plan = build_bundle_export_plan(BundleExportPlanInput {
         name: args.name,
         description: None,
-        output: resolve_export_output_path(&args.output, &root_dir),
+        destination,
         mode: if args.snapshot {
             BundleExportMode::Snapshot
         } else {
@@ -962,13 +975,15 @@ fn run_bundle_export(args: BundleExportArgs) -> Result<()> {
         dependencies,
         resolved_skills,
     })?;
-    validate_bundle_export_output_safety(
-        &plan.output,
-        &root_dir,
-        &config_path,
-        &lockfile_path,
-        resolved_config.skill_dir.as_path(),
-    )?;
+    if let BundleExportDestination::Directory(output) = &plan.destination {
+        validate_bundle_export_output_safety(
+            output,
+            &root_dir,
+            &config_path,
+            &lockfile_path,
+            resolved_config.skill_dir.as_path(),
+        )?;
+    }
     validate_bundle_export_plan(&plan)?;
     print_bundle_export_plan(&plan);
     if args.dry_run {
@@ -978,7 +993,7 @@ fn run_bundle_export(args: BundleExportArgs) -> Result<()> {
     print_success(format!(
         "Exported bundle: {} -> {}",
         plan.manifest.name,
-        plan.output.display()
+        plan.destination.path().display()
     ));
     Ok(())
 }
@@ -1049,7 +1064,7 @@ fn print_bundle_export_plan(plan: &BundleExportPlan) {
     print_section("Bundle export plan");
     println!("Name: {}", plan.manifest.name);
     println!("Mode: {}", plan.mode.as_str());
-    println!("Output: {}", plan.output.display());
+    println!("Output: {}", plan.destination.path().display());
     print_section_with_count("Entries", plan.items.len());
     for item in &plan.items {
         match (&item.source_path, &item.snapshot_destination) {

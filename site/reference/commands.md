@@ -74,6 +74,8 @@ sksync bundle remove <name> [--source <exact-source>]
 sksync bundle remove <name> --dry-run
 sksync bundle sync <name> [--source <exact-source>] [--agent <agent> …] [--dry-run]
 sksync bundle sync <name> -f
+sksync bundle export <name> --root
+sksync bundle export <name> --global --root
 sksync bundle export <name> --output <dir> [--snapshot]
 sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 ```
@@ -91,10 +93,11 @@ sksync bundle export <name> --output <dir> --skill <skill> --dry-run
 | `--agent <agent>` | Agent to link bundle entries into. Repeatable. Required for `bundle add`; fallback-only for `bundle sync` when dependency agents cannot be inferred. |
 | `--name <bundle>` | For `bundle add` / `bundle inspect`, select exactly one discovered `sksync.bundle.json` by manifest `name` or manifest parent directory name. Use it when one `<source>` contains multiple manifests. |
 | `--source <exact-source>` | Disambiguate duplicate bundle names during `bundle remove` or `bundle sync`. |
-| `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export`. |
-| `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. |
+| `--output <dir>` | Directory that will contain the exported `sksync.bundle.json`. Required for `bundle export` unless `--root` is used. |
+| `--root` | Write only `sksync.bundle.json` into the active project root, or `~/.sksync/` with `--global`. Manifest-only; conflicts with `--output` and `--snapshot`. |
+| `--snapshot` | Copy installed skill bodies into the bundle directory and write `./skills/<name>` sources. Conflicts with `--root`. |
 | `--skill <name>` | Export only this dependency. Repeatable. |
-| `-f`, `--force` | For `bundle add` / `bundle sync`, replace drifted or broken target symlinks during the final link apply step only. For `bundle export`, replace an existing generated output directory. |
+| `-f`, `--force` | For `bundle add` / `bundle sync`, replace drifted or broken target symlinks during the final link apply step only. For `bundle export`, replace an existing generated output directory or root `sksync.bundle.json`, never sibling configuration state. |
 | `--dry-run` | Show planned add/remove/export/sync work without writing. |
 | `-g`, `--global` | Operate on the global config. Supported by `bundle add`, `bundle remove`, `bundle sync`, and `bundle export`; `bundle inspect` is manifest-only. |
 

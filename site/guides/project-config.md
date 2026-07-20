@@ -133,9 +133,10 @@ Project-local generated artifacts should be git-ignored:
 
 ```sh
 .sksync/           # downloaded/copied skill bodies (.sksync/skills/<skill>)
-skills/            # legacy generated skill store from older defaults
 sksync-lock.json   # portable lockfile v5 (local state until sharing policy is final)
 ```
+
+Do not ignore `skills/` when it contains local skill sources that a root bundle publishes. Commit those sources with `sksync.bundle.json`; only ignore `skills/` in an older project where it remains a generated skill store. The current generated skill directory is `./.sksync/skills` by default.
 
 The file you share is `sksync.config.json`. The lockfile is portable and *can* be shared to reproduce installs across machines, but is currently treated as local state — see [Lockfile & Sync](/guides/lockfile).
 
