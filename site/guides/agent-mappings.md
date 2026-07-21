@@ -21,6 +21,7 @@ Project scope uses the `project` map (e.g. `.claude/skills`); global scope uses 
 | `grok` | `~/.grok/skills` | `.grok/skills` |
 | `zero` | `~/.local/share/zero/skills` | — |
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
+| `codewhale` | `~/.codewhale/skills` | `.codewhale/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
 | `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
@@ -39,6 +40,10 @@ The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `
 **Antigravity** follows its official spec and uses the workspace default `.agents/skills` for project scope. The legacy `.agent/skills` is still honored by Antigravity for backward compatibility, but the sksync bundled default is `.agents/skills`.
 
 **Kimi Code CLI** uses its Kimi-specific official scan directories: `~/.kimi-code/skills` globally and `.kimi-code/skills` per project. Kimi also scans the shared Agent Skills directories, which remain available through the separate `universal` mapping.
+
+**CodeWhale** uses `~/.codewhale/skills` globally and `.codewhale/skills` per project. These native paths remain available when CodeWhale is configured to scan only CodeWhale-owned roots.
+
+**Open Interpreter** reads the shared Agent Skills directories, `~/.agents/skills` and `.agents/skills`. Use `universal` for Open Interpreter; sksync does not add a separate `interpreter` alias.
 
 **Zero** discovers user-level skills at `$XDG_DATA_HOME/zero/skills` (defaulting to `~/.local/share/zero/skills`). It does not have a project-local skill directory unless `ZERO_SKILLS_DIR` is explicitly overridden.
 :::
