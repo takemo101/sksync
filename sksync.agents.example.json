@@ -31,6 +31,9 @@
     "codebuddy": {
       "targetDir": "~/.codebuddy/skills"
     },
+    "codewhale": {
+      "targetDir": "~/.codewhale/skills"
+    },
     "codegpt": {
       "targetDir": "~/.codegpt/skills"
     },
@@ -185,6 +188,9 @@
     },
     "codebuddy": {
       "targetDir": ".codebuddy/skills"
+    },
+    "codewhale": {
+      "targetDir": ".codewhale/skills"
     },
     "codegpt": {
       "targetDir": ".codegpt/skills"

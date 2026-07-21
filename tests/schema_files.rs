@@ -166,6 +166,14 @@ fn agents_example_uses_documented_skill_directories() {
     assert_eq!(agents["global"]["jcode"]["targetDir"], "~/.jcode/skills");
     assert_eq!(agents["project"]["jcode"]["targetDir"], ".jcode/skills");
     assert_eq!(
+        agents["global"]["codewhale"]["targetDir"],
+        "~/.codewhale/skills"
+    );
+    assert_eq!(
+        agents["project"]["codewhale"]["targetDir"],
+        ".codewhale/skills"
+    );
+    assert_eq!(
         agents["global"]["universal"]["targetDir"],
         "~/.agents/skills"
     );
@@ -183,6 +191,7 @@ fn agents_example_includes_skillkit_compatible_mappings() {
 
     for agent in [
         "claude-code",
+        "codewhale",
         "cursor",
         "codex",
         "gemini-cli",

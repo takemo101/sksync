@@ -3704,6 +3704,20 @@ mod tests {
     }
 
     #[test]
+    fn bundled_agent_mappings_include_codewhale() {
+        let mappings = default_agent_mapping_config().expect("bundled mappings parse");
+
+        assert_eq!(
+            mappings.global["codewhale"],
+            Path::new("~/.codewhale/skills")
+        );
+        assert_eq!(
+            mappings.project["codewhale"],
+            Path::new(".codewhale/skills")
+        );
+    }
+
+    #[test]
     fn bundled_agent_mappings_include_corrected_pi_grok_and_zero_paths() {
         let mappings = default_agent_mapping_config().expect("bundled mappings parse");
 
