@@ -77,10 +77,7 @@ fn validate_plan_is_safe_to_apply(
         match &item.action {
             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
             PlanAction::SourceMissing => {
-                return Err(ApplyError::SourceMissing {
-                    skill,
-                    agent,
-                });
+                return Err(ApplyError::SourceMissing { skill, agent });
             }
             PlanAction::Conflict { reason } => {
                 if options.force && *reason == ConflictReason::BrokenSymlink {
@@ -119,9 +116,7 @@ mod tests {
         LinkApplier, LinkApplyError, LockfileStore, LockfileStoreError,
     };
     use crate::domain::agent::AgentKind;
-    use crate::domain::link_plan::{
-        ConflictReason, LinkOwner, LinkPlan, LinkPlanItem, PlanAction,
-    };
+    use crate::domain::link_plan::{ConflictReason, LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::Lockfile;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;

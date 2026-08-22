@@ -2233,11 +2233,7 @@ fn should_remove_target_for_skill(item: &LinkPlanItem, skill: &str) -> bool {
             .all(|owner| owner.skill.as_str() == skill)
 }
 
-fn should_remove_target_for_agents(
-    item: &LinkPlanItem,
-    skill: &str,
-    agents: &[AgentKind],
-) -> bool {
+fn should_remove_target_for_agents(item: &LinkPlanItem, skill: &str, agents: &[AgentKind]) -> bool {
     let removes_owner = |owner: &crate::domain::link_plan::LinkOwner| {
         owner.skill.as_str() == skill && agent_kinds_contain(agents, &owner.agent)
     };
@@ -2999,11 +2995,7 @@ fn print_plan(plan: &LinkPlan) {
 
 fn print_plan_item(item: &LinkPlanItem) {
     let (badge, title) = plan_action_badge(&item.action);
-    println!(
-        "{badge:<8} {} → {}",
-        item.skill_label(),
-        item.agent_label()
-    );
+    println!("{badge:<8} {} → {}", item.skill_label(), item.agent_label());
     print_detail(format!("action: {title}"));
     match &item.action {
         PlanAction::CreateSymlink | PlanAction::AlreadySynced => {
@@ -4064,10 +4056,7 @@ mod tests {
         assert!(super::should_remove_target_for_agents(
             &shared_plan_item(),
             "review",
-            &[
-                AgentKind::Pi,
-                AgentKind::custom("universal").unwrap(),
-            ],
+            &[AgentKind::Pi, AgentKind::custom("universal").unwrap(),],
         ));
     }
 
