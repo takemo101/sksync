@@ -2223,13 +2223,30 @@ fn agent_kinds_contain(agents: &[AgentKind], agent: &AgentKind) -> bool {
     agents.iter().any(|candidate| candidate == agent)
 }
 
-fn remove_managed_symlinks(plan: &LinkPlan, skill: &str) -> Result<()> {
-    for item in &plan.items {
-        if item
+fn should_remove_target_for_skill(item: &LinkPlanItem, skill: &str) -> bool {
+    item.owners
+        .iter()
+        .any(|owner| owner.skill.as_str() == skill)
+        && item
             .owners
             .iter()
-            .any(|owner| owner.skill.as_str() == skill)
-        {
+            .all(|owner| owner.skill.as_str() == skill)
+}
+
+fn should_remove_target_for_agents(
+    item: &LinkPlanItem,
+    skill: &str,
+    agents: &[AgentKind],
+) -> bool {
+    let removes_owner = |owner: &crate::domain::link_plan::LinkOwner| {
+        owner.skill.as_str() == skill && agent_kinds_contain(agents, &owner.agent)
+    };
+    item.owners.iter().any(removes_owner) && item.owners.iter().all(removes_owner)
+}
+
+fn remove_managed_symlinks(plan: &LinkPlan, skill: &str) -> Result<()> {
+    for item in &plan.items {
+        if should_remove_target_for_skill(item, skill) {
             remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
         }
     }
@@ -2242,9 +2259,7 @@ fn remove_managed_symlinks_for_agents(
     agents: &[AgentKind],
 ) -> Result<()> {
     for item in &plan.items {
-        if item.owners.iter().any(|owner| {
-            owner.skill.as_str() == skill && agent_kinds_contain(agents, &owner.agent)
-        }) {
+        if should_remove_target_for_agents(item, skill, agents) {
             remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
         }
     }
@@ -3373,7 +3388,9 @@ mod tests {
         collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblemKind,
         RemoteSourceStatus,
     };
+    use crate::domain::agent::AgentKind;
     use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
+    use crate::domain::link_plan::{LinkOwner, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
@@ -4013,6 +4030,53 @@ mod tests {
             },
             already_installed: false,
         }
+    }
+
+    fn shared_plan_item() -> LinkPlanItem {
+        LinkPlanItem {
+            owners: vec![
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::Pi,
+                },
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::custom("universal").unwrap(),
+                },
+            ],
+            source: SourcePath::new("skills/review").unwrap(),
+            target: crate::domain::target::TargetPath::new("targets/review").unwrap(),
+            action: PlanAction::AlreadySynced,
+        }
+    }
+
+    #[test]
+    fn removing_one_shared_owner_keeps_target() {
+        assert!(!super::should_remove_target_for_agents(
+            &shared_plan_item(),
+            "review",
+            &[AgentKind::Pi],
+        ));
+    }
+
+    #[test]
+    fn removing_all_shared_owners_removes_target_once() {
+        assert!(super::should_remove_target_for_agents(
+            &shared_plan_item(),
+            "review",
+            &[
+                AgentKind::Pi,
+                AgentKind::custom("universal").unwrap(),
+            ],
+        ));
+    }
+
+    #[test]
+    fn removing_skill_keeps_target_owned_by_another_skill() {
+        let mut item = shared_plan_item();
+        item.owners[1].skill = SkillName::new("other").unwrap();
+
+        assert!(!super::should_remove_target_for_skill(&item, "review"));
     }
 
     #[test]

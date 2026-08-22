@@ -2,6 +2,8 @@ use crate::application::config::ResolvedConfig;
 use crate::application::ports::{LinkStore, TargetResolver, TargetState};
 use crate::domain::lockfile::Lockfile;
 use crate::domain::target::TargetPath;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListReport {
@@ -89,6 +91,7 @@ pub fn list_skills(
             .and_then(|lockfile| lockfile.skills.get(&skill.name))
             .map(|locked| locked.hash.as_str().to_owned());
         let source_exists = skill.source.as_path().exists();
+        let mut inspected = BTreeMap::<(PathBuf, PathBuf), ListedTargetState>::new();
         let mut targets = Vec::new();
 
         for agent in &skill.agents {
@@ -127,16 +130,25 @@ pub fn list_skills(
             };
 
             let state = if source_exists {
-                match link_store.inspect_target(&target, &skill.source) {
-                    Ok(TargetState::Missing) => ListedTargetState::Missing,
-                    Ok(TargetState::SymlinkToExpectedSource) => ListedTargetState::Synced,
-                    Ok(TargetState::SymlinkToUnexpectedSource { .. }) => ListedTargetState::Drifted,
-                    Ok(TargetState::RegularFileConflict | TargetState::DirectoryConflict) => {
-                        ListedTargetState::Conflict
-                    }
-                    Ok(TargetState::BrokenSymlink { .. }) => ListedTargetState::BrokenSymlink,
-                    Err(error) => ListedTargetState::InspectFailed(error.to_string()),
-                }
+                let key = (
+                    target.as_path().to_path_buf(),
+                    skill.source.as_path().to_path_buf(),
+                );
+                inspected
+                    .entry(key)
+                    .or_insert_with(|| match link_store.inspect_target(&target, &skill.source) {
+                        Ok(TargetState::Missing) => ListedTargetState::Missing,
+                        Ok(TargetState::SymlinkToExpectedSource) => ListedTargetState::Synced,
+                        Ok(TargetState::SymlinkToUnexpectedSource { .. }) => {
+                            ListedTargetState::Drifted
+                        }
+                        Ok(TargetState::RegularFileConflict | TargetState::DirectoryConflict) => {
+                            ListedTargetState::Conflict
+                        }
+                        Ok(TargetState::BrokenSymlink { .. }) => ListedTargetState::BrokenSymlink,
+                        Err(error) => ListedTargetState::InspectFailed(error.to_string()),
+                    })
+                    .clone()
             } else {
                 ListedTargetState::SourceMissing
             };
@@ -170,6 +182,7 @@ mod tests {
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
@@ -183,6 +196,31 @@ mod tests {
             _target: &TargetPath,
             _expected_source: &SourcePath,
         ) -> Result<TargetState, LinkStoreError> {
+            Ok(self.state.clone())
+        }
+    }
+
+    struct CountingLinkStore {
+        state: TargetState,
+        inspections: Cell<usize>,
+    }
+
+    impl CountingLinkStore {
+        fn new(state: TargetState) -> Self {
+            Self {
+                state,
+                inspections: Cell::new(0),
+            }
+        }
+    }
+
+    impl LinkStore for CountingLinkStore {
+        fn inspect_target(
+            &self,
+            _target: &TargetPath,
+            _expected_source: &SourcePath,
+        ) -> Result<TargetState, LinkStoreError> {
+            self.inspections.set(self.inspections.get() + 1);
             Ok(self.state.clone())
         }
     }
@@ -227,6 +265,44 @@ mod tests {
             }],
             default_agents: Vec::new(),
         }
+    }
+
+    fn shared_config(source: SourcePath) -> ResolvedConfig {
+        let universal = AgentKind::custom("universal").unwrap();
+        let mut config = config(source);
+        config.agents.insert(
+            universal.as_str().to_owned(),
+            ResolvedAgent {
+                kind: universal.clone(),
+                enabled: true,
+                scope: Scope::Project,
+                target_dir: None,
+            },
+        );
+        config.skills[0].agents.push(universal);
+        config
+    }
+
+    #[test]
+    fn shared_agent_rows_reuse_one_target_inspection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("review");
+        std::fs::create_dir(&source).unwrap();
+        let store = CountingLinkStore::new(TargetState::SymlinkToExpectedSource);
+
+        let report = list_skills(
+            &shared_config(SourcePath::new(source).unwrap()),
+            None,
+            &store,
+            &FakeTargetResolver,
+        );
+
+        assert_eq!(report.skills[0].targets.len(), 2);
+        assert_eq!(store.inspections.get(), 1);
+        assert!(report.skills[0]
+            .targets
+            .iter()
+            .all(|target| target.state == ListedTargetState::Synced));
     }
 
     #[test]
