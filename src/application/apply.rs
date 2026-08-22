@@ -230,6 +230,48 @@ mod tests {
     }
 
     #[test]
+    fn shared_create_runs_once() {
+        let plan = LinkPlan::new(vec![shared_item(PlanAction::CreateSymlink)]);
+        let applier = FakeApplier::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &FakeLockfileStore::default(),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("shared create succeeds");
+
+        assert_eq!(applier.created.borrow().len(), 1);
+    }
+
+    #[test]
+    fn shared_force_replace_runs_once() {
+        let plan = LinkPlan::new(vec![shared_item(PlanAction::DriftedSymlink {
+            actual_source: PathBuf::from("other"),
+        })]);
+        let applier = FakeApplier::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &FakeLockfileStore::default(),
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("shared replacement succeeds");
+
+        assert_eq!(applier.replaced.borrow().len(), 1);
+    }
+
+    #[test]
     fn shared_source_missing_error_lists_all_owners() {
         let plan = LinkPlan::new(vec![shared_item(PlanAction::SourceMissing)]);
         let error = apply_link_plan(

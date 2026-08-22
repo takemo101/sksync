@@ -33,6 +33,16 @@ struct DesiredGroup {
     owners: Vec<LinkOwner>,
 }
 
+struct PendingTargetGroup {
+    target: TargetPath,
+    sources: Vec<PendingSourceGroup>,
+}
+
+struct PendingSourceGroup {
+    source: SourcePath,
+    owners: Vec<LinkOwner>,
+}
+
 pub fn build_link_plan(
     config: &ResolvedConfig,
     source_store: &impl SourceStore,
@@ -81,7 +91,7 @@ fn build_desired_groups(
     config: &ResolvedConfig,
     target_resolver: &impl TargetResolver,
 ) -> Result<Vec<DesiredGroup>, PlanError> {
-    let mut groups = BTreeMap::<PathBuf, DesiredGroup>::new();
+    let mut groups = BTreeMap::<PathBuf, PendingTargetGroup>::new();
 
     for skill in &config.skills {
         for agent in &skill.agents {
@@ -109,46 +119,68 @@ fn build_desired_groups(
                 agent: agent.clone(),
             };
 
-            if let Some(group) = groups.get_mut(&key) {
-                if group.source != skill.source {
-                    let current_agents = group
-                        .owners
-                        .iter()
-                        .map(|owner| owner.agent.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(PlanError::TargetSourceConflict {
-                        target: target.as_path().display().to_string(),
-                        details: format!(
-                            "{} ({current_agents}) vs {} ({})",
-                            group.source.as_path().display(),
-                            skill.source.as_path().display(),
-                            agent.as_str(),
-                        ),
-                    });
-                }
-                group.owners.push(owner);
+            let target_group = groups.entry(key).or_insert_with(|| PendingTargetGroup {
+                target,
+                sources: Vec::new(),
+            });
+            if let Some(source_group) = target_group
+                .sources
+                .iter_mut()
+                .find(|group| group.source == skill.source)
+            {
+                source_group.owners.push(owner);
             } else {
-                groups.insert(
-                    key,
-                    DesiredGroup {
-                        source: skill.source.clone(),
-                        target,
-                        owners: vec![owner],
-                    },
-                );
+                target_group.sources.push(PendingSourceGroup {
+                    source: skill.source.clone(),
+                    owners: vec![owner],
+                });
             }
         }
     }
 
-    let mut groups = groups.into_values().collect::<Vec<_>>();
-    for group in &mut groups {
-        group.owners.sort_by(|left, right| {
-            (left.skill.as_str(), left.agent.as_str())
-                .cmp(&(right.skill.as_str(), right.agent.as_str()))
+    let mut desired = Vec::with_capacity(groups.len());
+    for mut target_group in groups.into_values() {
+        for source_group in &mut target_group.sources {
+            source_group.owners.sort_by(|left, right| {
+                (left.skill.as_str(), left.agent.as_str())
+                    .cmp(&(right.skill.as_str(), right.agent.as_str()))
+            });
+        }
+        target_group
+            .sources
+            .sort_by(|left, right| left.source.as_path().cmp(right.source.as_path()));
+
+        if target_group.sources.len() > 1 {
+            let details = target_group
+                .sources
+                .iter()
+                .map(|group| {
+                    let owners = group
+                        .owners
+                        .iter()
+                        .map(|owner| format!("{} -> {}", owner.skill, owner.agent.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{} [{owners}]", group.source.as_path().display())
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PlanError::TargetSourceConflict {
+                target: target_group.target.as_path().display().to_string(),
+                details,
+            });
+        }
+
+        let Some(source_group) = target_group.sources.pop() else {
+            continue;
+        };
+        desired.push(DesiredGroup {
+            source: source_group.source,
+            target: target_group.target,
+            owners: source_group.owners,
         });
     }
-    Ok(groups)
+    Ok(desired)
 }
 
 fn inspect_action(
@@ -176,7 +208,7 @@ fn inspect_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_desired_link_plan, build_link_plan, PlanError};
+    use super::{build_desired_link_plan, build_link_plan};
     use crate::application::config::{ResolvedAgent, ResolvedConfig, ResolvedSkill};
     use crate::application::ports::{
         LinkStore, LinkStoreError, SourceStore, SourceStoreError, TargetResolver,
@@ -420,6 +452,87 @@ mod tests {
     }
 
     #[test]
+    fn shared_target_states_are_inspected_once() {
+        let cases = vec![
+            (
+                TargetState::SymlinkToExpectedSource,
+                PlanAction::AlreadySynced,
+            ),
+            (
+                TargetState::SymlinkToUnexpectedSource {
+                    actual_source: PathBuf::from("other"),
+                },
+                PlanAction::DriftedSymlink {
+                    actual_source: PathBuf::from("other"),
+                },
+            ),
+            (
+                TargetState::RegularFileConflict,
+                PlanAction::Conflict {
+                    reason: ConflictReason::RegularFile,
+                },
+            ),
+            (
+                TargetState::DirectoryConflict,
+                PlanAction::Conflict {
+                    reason: ConflictReason::Directory,
+                },
+            ),
+            (
+                TargetState::BrokenSymlink {
+                    actual_source: PathBuf::from("missing"),
+                },
+                PlanAction::Conflict {
+                    reason: ConflictReason::BrokenSymlink,
+                },
+            ),
+        ];
+
+        for (state, expected) in cases {
+            let universal = AgentKind::custom("universal").unwrap();
+            let config = shared_config(
+                SourcePath::new("skills/review").unwrap(),
+                &[AgentKind::Pi, universal],
+            );
+            let links = CountingLinkStore::new(state);
+
+            let plan = build_link_plan(
+                &config,
+                &FakeSourceStore { exists: true },
+                &links,
+                &SharedTargetResolver,
+            )
+            .expect("plan builds");
+
+            assert_eq!(plan.items.len(), 1);
+            assert_eq!(plan.items[0].action, expected);
+            assert_eq!(links.inspections.get(), 1);
+        }
+    }
+
+    #[test]
+    fn disabled_agent_does_not_own_shared_target() {
+        let universal = AgentKind::custom("universal").unwrap();
+        let mut config = shared_config(
+            SourcePath::new("skills/review").unwrap(),
+            &[AgentKind::Pi, universal.clone()],
+        );
+        config.agents.get_mut(universal.as_str()).unwrap().enabled = false;
+        let links = CountingLinkStore::new(TargetState::Missing);
+
+        let plan = build_link_plan(
+            &config,
+            &FakeSourceStore { exists: true },
+            &links,
+            &SharedTargetResolver,
+        )
+        .expect("plan builds");
+
+        assert_eq!(plan.items[0].owners.len(), 1);
+        assert_eq!(plan.items[0].owners[0].agent, AgentKind::Pi);
+    }
+
+    #[test]
     fn desired_plan_groups_shared_agents() {
         let universal = AgentKind::custom("universal").unwrap();
         let config = shared_config(
@@ -437,8 +550,8 @@ mod tests {
     fn same_target_with_different_sources_is_rejected_before_inspection() {
         let universal = AgentKind::custom("universal").unwrap();
         let mut config = shared_config(
-            SourcePath::new("skills/review-a").unwrap(),
-            &[AgentKind::Pi, universal.clone()],
+            SourcePath::new("skills/review-c").unwrap(),
+            &[AgentKind::Pi, universal.clone(), AgentKind::ClaudeCode],
         );
         config.skills[0].agents = vec![AgentKind::Pi];
         config.skills.push(ResolvedSkill {
@@ -447,6 +560,13 @@ mod tests {
             install_source: None,
             include: None,
             agents: vec![universal],
+        });
+        config.skills.push(ResolvedSkill {
+            name: SkillName::new("review").unwrap(),
+            source: SourcePath::new("skills/review-a").unwrap(),
+            install_source: None,
+            include: None,
+            agents: vec![AgentKind::ClaudeCode],
         });
         let links = CountingLinkStore::new(TargetState::Missing);
 
@@ -458,7 +578,10 @@ mod tests {
         )
         .expect_err("desired source conflict blocks planning");
 
-        assert!(matches!(error, PlanError::TargetSourceConflict { .. }));
+        assert_eq!(
+            error.to_string(),
+            "target '/targets/shared/review' resolves to multiple desired sources: skills/review-a [review -> claude-code]; skills/review-b [review -> universal]; skills/review-c [review -> pi]"
+        );
         assert_eq!(links.inspections.get(), 0);
     }
 

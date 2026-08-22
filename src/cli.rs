@@ -3382,7 +3382,7 @@ mod tests {
     };
     use crate::domain::agent::AgentKind;
     use crate::domain::bundle::{BundleManifest, BundleName, BundleProvenance};
-    use crate::domain::link_plan::{LinkOwner, LinkPlanItem, PlanAction};
+    use crate::domain::link_plan::{LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::{Digest, LockedSkill, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
@@ -4057,6 +4057,33 @@ mod tests {
             &shared_plan_item(),
             "review",
             &[AgentKind::Pi, AgentKind::custom("universal").unwrap(),],
+        ));
+    }
+
+    #[test]
+    fn shared_symlink_is_removed_only_after_final_owner() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("source");
+        let target = temp_dir.path().join("target");
+        fs::create_dir(&source).unwrap();
+        std::os::unix::fs::symlink(&source, &target).unwrap();
+        let mut item = shared_plan_item();
+        item.source = SourcePath::new(&source).unwrap();
+        item.target = crate::domain::target::TargetPath::new(&target).unwrap();
+        let plan = LinkPlan::new(vec![item]);
+
+        super::remove_managed_symlinks_for_agents(&plan, "review", &[AgentKind::Pi]).unwrap();
+        assert!(fs::symlink_metadata(&target).is_ok());
+
+        super::remove_managed_symlinks_for_agents(
+            &plan,
+            "review",
+            &[AgentKind::Pi, AgentKind::custom("universal").unwrap()],
+        )
+        .unwrap();
+        assert!(matches!(
+            fs::symlink_metadata(&target),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
         ));
     }
 

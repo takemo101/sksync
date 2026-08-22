@@ -521,6 +521,7 @@ mod tests {
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -546,6 +547,22 @@ mod tests {
             _target: &TargetPath,
             _expected_source: &SourcePath,
         ) -> Result<TargetState, LinkStoreError> {
+            Ok(self.state.clone())
+        }
+    }
+
+    struct CountingLinkStore {
+        state: TargetState,
+        inspections: Cell<usize>,
+    }
+
+    impl LinkStore for CountingLinkStore {
+        fn inspect_target(
+            &self,
+            _target: &TargetPath,
+            _expected_source: &SourcePath,
+        ) -> Result<TargetState, LinkStoreError> {
+            self.inspections.set(self.inspections.get() + 1);
             Ok(self.state.clone())
         }
     }
@@ -726,17 +743,20 @@ mod tests {
             action: PlanAction::CreateSymlink,
         }]);
 
+        let links = CountingLinkStore {
+            state: TargetState::Missing,
+            inspections: Cell::new(0),
+        };
         let report = check_lockfile_with_plan(
             &lockfile(),
             &plan,
             &FakeHashStore {
                 hash: "sha256-expected",
             },
-            &FakeLinkStore {
-                state: TargetState::Missing,
-            },
+            &links,
         );
 
+        assert_eq!(links.inspections.get(), 1);
         assert!(matches!(
             &report.problems[0],
             CheckProblem::TargetMissing { agent, .. } if agent == "pi, universal"
