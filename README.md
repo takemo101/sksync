@@ -10,7 +10,7 @@ Read the sksync manual at <https://takemo101.github.io/sksync/>.
 
 - Create symlinks from one shared skill body into each agent's expected skills directory.
 - Keep source skill bodies under `.sksync/skills/` and safely link them into agent directories.
-- Support bundled target mappings for major agents such as Claude Code, Codex, Gemini, jcode, OpenCode, Pi, and Antigravity.
+- Support bundled target mappings for major agents such as Claude Code, Codex, Gemini, jcode, OpenCode, Pi, fx, and Antigravity.
 - Add skills from GitHub, local directories, or `skills.sh` URLs and make them reproducible with a lockfile.
 
 ## CLI

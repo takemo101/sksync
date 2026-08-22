@@ -19,7 +19,7 @@ hero:
 features:
   - icon: 🔗
     title: One config, many agents
-    details: Declare a skill once with the agents that should see it. sksync symlinks the single skill body into Claude Code, Codex, Gemini, OpenCode, Pi, Antigravity, and 40+ other agent skills directories.
+    details: Declare a skill once with the agents that should see it. sksync symlinks the single skill body into Claude Code, Codex, Gemini, OpenCode, Pi, fx, Antigravity, and 40+ other agent skills directories.
   - icon: 📦
     title: npm-like dependency model
     details: "`sksync add` / `remove` / `outdated` / `update` / `install` manage Agent Skills like package dependencies, recorded in `sksync.config.json`."
