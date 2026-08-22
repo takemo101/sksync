@@ -454,9 +454,11 @@ impl RawConfig {
         }
 
         let default_agents = parse_default_agents(self.default_agents)?;
+        let mut skill_names = BTreeSet::new();
         let mut skills = Vec::with_capacity(self.skills.len() + self.dependencies.len());
         for (name, raw_skill) in self.skills {
             let skill_name = parse_skill_name(&name)?;
+            reserve_skill_name(&mut skill_names, &skill_name)?;
             let source_path = raw_skill
                 .source
                 .map(|source| rebase_config_path(source, config_root))
@@ -480,6 +482,7 @@ impl RawConfig {
 
         for (name, raw_dependency) in self.dependencies {
             let skill_name = parse_skill_name(&name)?;
+            reserve_skill_name(&mut skill_names, &skill_name)?;
             let skill_agents = resolve_or_create_dependency_agents(
                 &name,
                 raw_dependency.agents,
@@ -582,6 +585,18 @@ fn parse_skill_name(name: &str) -> Result<SkillName, ConfigResolveError> {
         name: name.to_owned(),
         source,
     })
+}
+
+fn reserve_skill_name(
+    names: &mut BTreeSet<SkillName>,
+    name: &SkillName,
+) -> Result<(), ConfigResolveError> {
+    if !names.insert(name.clone()) {
+        return Err(ConfigResolveError::DuplicateSkillName {
+            name: name.as_str().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn parse_default_agents(agents: Vec<String>) -> Result<Vec<AgentKind>, ConfigResolveError> {
@@ -2259,6 +2274,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["universal", "claude-code", "pi"]
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_skill_name_across_skills_and_dependencies() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "agents": { "pi": {} },
+              "skills": {
+                "review": { "source": "skills/review", "agents": ["pi"] }
+              },
+              "dependencies": {
+                "review": { "source": "owner/repo", "agents": ["pi"] }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw.resolve().expect_err("duplicate skill is rejected");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::DuplicateSkillName { ref name } if name == "review"
+        ));
+    }
+
+    #[test]
+    fn rejects_skill_names_that_collide_after_trimming() {
+        let raw = serde_json::from_str::<RawConfig>(
+            r#"{
+              "agents": { "pi": {} },
+              "skills": {
+                "review": { "source": "skills/review", "agents": ["pi"] },
+                " review ": { "source": "skills/other", "agents": ["pi"] }
+              }
+            }"#,
+        )
+        .expect("raw config parses");
+
+        let error = raw.resolve().expect_err("normalized duplicate is rejected");
+
+        assert!(matches!(
+            error,
+            ConfigResolveError::DuplicateSkillName { ref name } if name == "review"
+        ));
     }
 
     #[test]

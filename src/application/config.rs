@@ -32,6 +32,8 @@ pub enum ConfigResolveError {
         #[source]
         source: SkillNameError,
     },
+    #[error("duplicate normalized skill name '{name}'")]
+    DuplicateSkillName { name: String },
     #[error("invalid source for skill '{skill}': {source}")]
     InvalidSkillSource {
         skill: String,
