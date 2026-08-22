@@ -20,12 +20,47 @@ impl LinkPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkPlanItem {
+pub struct LinkOwner {
     pub skill: SkillName,
     pub agent: AgentKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPlanItem {
+    pub owners: Vec<LinkOwner>,
     pub source: SourcePath,
     pub target: TargetPath,
     pub action: PlanAction,
+}
+
+impl LinkPlanItem {
+    pub fn skill_label(&self) -> String {
+        let mut values = self
+            .owners
+            .iter()
+            .map(|owner| owner.skill.as_str())
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        values.dedup();
+        values.join(", ")
+    }
+
+    pub fn agent_label(&self) -> String {
+        let mut values = self
+            .owners
+            .iter()
+            .map(|owner| owner.agent.as_str())
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        values.dedup();
+        values.join(", ")
+    }
+
+    pub fn has_owner(&self, skill: &SkillName, agent: &AgentKind) -> bool {
+        self.owners
+            .iter()
+            .any(|owner| &owner.skill == skill && &owner.agent == agent)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

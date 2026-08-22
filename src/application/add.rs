@@ -218,6 +218,7 @@ mod tests {
 
     struct FakeFs {
         created: Cell<usize>,
+        state: TargetState,
     }
 
     impl SourceStore for FakeFs {
@@ -232,7 +233,7 @@ mod tests {
             _target: &TargetPath,
             _expected_source: &SourcePath,
         ) -> Result<TargetState, LinkStoreError> {
-            Ok(TargetState::DirectoryConflict)
+            Ok(self.state.clone())
         }
     }
 
@@ -315,6 +316,7 @@ mod tests {
         let installer = FakeInstaller;
         let fs_store = FakeFs {
             created: Cell::new(0),
+            state: TargetState::DirectoryConflict,
         };
         let lockfile_store = FakeLockfileStore::default();
         let target_resolver = FakeTargetResolver;
@@ -354,11 +356,67 @@ mod tests {
     }
 
     #[test]
+    fn add_workflow_creates_shared_target_once() {
+        let dependency_store = FakeDependencyStore::default();
+        let installer = FakeInstaller;
+        let fs_store = FakeFs {
+            created: Cell::new(0),
+            state: TargetState::Missing,
+        };
+        let lockfile_store = FakeLockfileStore::default();
+        let target_resolver = FakeTargetResolver;
+        let mut config = config();
+        let universal = AgentKind::custom("universal").unwrap();
+        config.agents.insert(
+            universal.as_str().to_owned(),
+            ResolvedAgent {
+                kind: universal.clone(),
+                enabled: true,
+                scope: Scope::Project,
+                target_dir: None,
+            },
+        );
+        config.skills[0].agents.push(universal);
+
+        let report = run_add_workflow(
+            vec![AddSelection {
+                skill_name: "review".to_owned(),
+                source: "owner/repo/skills/review".to_owned(),
+                include: None,
+            }],
+            &["pi".to_owned(), "universal".to_owned()],
+            false,
+            || Ok(config),
+            |_config, _plan| {
+                Ok(Lockfile {
+                    generated_by: "test".to_owned(),
+                    generated_at: "test".to_owned(),
+                    root: PathBuf::from("."),
+                    skills: BTreeMap::new(),
+                })
+            },
+            AddWorkflow {
+                dependency_store: &dependency_store,
+                installer: &installer,
+                fs_store: &fs_store,
+                lockfile_store: &lockfile_store,
+                target_resolver: &target_resolver,
+            },
+        )
+        .expect("shared add succeeds");
+
+        assert_eq!(report.plan.items.len(), 1);
+        assert_eq!(report.plan.items[0].owners.len(), 2);
+        assert_eq!(fs_store.created.get(), 1);
+    }
+
+    #[test]
     fn add_workflow_installs_only_newly_added_dependencies() {
         let dependency_store = FakeDependencyStore::default();
         let installer = RecordingInstaller::default();
         let fs_store = FakeFs {
             created: Cell::new(0),
+            state: TargetState::DirectoryConflict,
         };
         let lockfile_store = FakeLockfileStore::default();
         let target_resolver = FakeTargetResolver;

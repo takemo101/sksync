@@ -173,6 +173,8 @@ fn agents_example_uses_documented_skill_directories() {
         agents["project"]["codewhale"]["targetDir"],
         ".codewhale/skills"
     );
+    assert_eq!(agents["global"]["fx"]["targetDir"], "~/.fx/skills");
+    assert_eq!(agents["project"]["fx"]["targetDir"], ".agents/skills");
     assert_eq!(
         agents["global"]["universal"]["targetDir"],
         "~/.agents/skills"
@@ -195,6 +197,7 @@ fn agents_example_includes_skillkit_compatible_mappings() {
         "cursor",
         "codex",
         "gemini-cli",
+        "fx",
         "opencode",
         "github-copilot",
         "jcode",
@@ -212,11 +215,11 @@ fn agents_example_includes_skillkit_compatible_mappings() {
     }
 
     assert!(
-        mappings.len() >= 46,
+        mappings.len() >= 47,
         "expected SkillKit-compatible agent coverage"
     );
     assert!(
-        project_mappings.len() >= 46,
+        project_mappings.len() >= 47,
         "expected SkillKit-compatible project agent coverage"
     );
 }

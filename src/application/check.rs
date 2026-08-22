@@ -1,6 +1,5 @@
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::{LinkStore, SourceHashStore, TargetState};
-use crate::domain::agent::AgentKind;
 use crate::domain::link_plan::LinkPlan;
 use crate::domain::lockfile::Lockfile;
 use crate::domain::target::TargetPath;
@@ -349,7 +348,7 @@ pub fn check_lockfile(
             inspect_target(
                 &mut problems,
                 skill_name.as_str(),
-                &target.agent,
+                target.agent.as_str(),
                 &target.path,
                 &locked_skill.source,
                 link_store,
@@ -396,8 +395,8 @@ fn inspect_plan_targets(
     for item in &plan.items {
         inspect_target(
             problems,
-            item.skill.as_str(),
-            &item.agent,
+            &item.skill_label(),
+            &item.agent_label(),
             &item.target,
             &item.source,
             link_store,
@@ -457,7 +456,7 @@ fn check_source_hashes(
 fn inspect_target(
     problems: &mut Vec<CheckProblem>,
     skill: &str,
-    agent: &AgentKind,
+    agent: &str,
     target: &TargetPath,
     expected_source: &crate::domain::skill::SourcePath,
     link_store: &impl LinkStore,
@@ -467,40 +466,40 @@ fn inspect_target(
         Ok(TargetState::SymlinkToExpectedSource) => {}
         Ok(TargetState::Missing) => problems.push(CheckProblem::TargetMissing {
             skill: skill.to_owned(),
-            agent: agent.as_str().to_owned(),
+            agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
         }),
         Ok(TargetState::SymlinkToUnexpectedSource { actual_source }) => {
             problems.push(CheckProblem::TargetUnexpectedSymlink {
                 skill: skill.to_owned(),
-                agent: agent.as_str().to_owned(),
+                agent: agent.to_owned(),
                 path: target.as_path().display().to_string(),
                 actual_source: actual_source.display().to_string(),
             });
         }
         Ok(TargetState::RegularFileConflict) => problems.push(CheckProblem::TargetConflict {
             skill: skill.to_owned(),
-            agent: agent.as_str().to_owned(),
+            agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
             reason: "regular file exists".to_owned(),
         }),
         Ok(TargetState::DirectoryConflict) => problems.push(CheckProblem::TargetConflict {
             skill: skill.to_owned(),
-            agent: agent.as_str().to_owned(),
+            agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
             reason: "directory exists".to_owned(),
         }),
         Ok(TargetState::BrokenSymlink { actual_source }) => {
             problems.push(CheckProblem::BrokenSymlink {
                 skill: skill.to_owned(),
-                agent: agent.as_str().to_owned(),
+                agent: agent.to_owned(),
                 path: target.as_path().display().to_string(),
                 actual_source: actual_source.display().to_string(),
             });
         }
         Err(error) => problems.push(CheckProblem::InspectFailed {
             skill: skill.to_owned(),
-            agent: agent.as_str().to_owned(),
+            agent: agent.to_owned(),
             message: error.to_string(),
         }),
     }
@@ -516,12 +515,13 @@ mod tests {
         LinkStore, LinkStoreError, SourceHash, SourceHashStore, SourceHashStoreError, TargetState,
     };
     use crate::domain::agent::AgentKind;
-    use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
+    use crate::domain::link_plan::{LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::{Digest, LinkType, LockedSkill, LockedTarget, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -547,6 +547,22 @@ mod tests {
             _target: &TargetPath,
             _expected_source: &SourcePath,
         ) -> Result<TargetState, LinkStoreError> {
+            Ok(self.state.clone())
+        }
+    }
+
+    struct CountingLinkStore {
+        state: TargetState,
+        inspections: Cell<usize>,
+    }
+
+    impl LinkStore for CountingLinkStore {
+        fn inspect_target(
+            &self,
+            _target: &TargetPath,
+            _expected_source: &SourcePath,
+        ) -> Result<TargetState, LinkStoreError> {
+            self.inspections.set(self.inspections.get() + 1);
             Ok(self.state.clone())
         }
     }
@@ -646,8 +662,10 @@ mod tests {
     #[test]
     fn include_mismatch_is_reported() {
         let plan = LinkPlan::new(vec![LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new(".pi/agent/skills/review").unwrap(),
             action: PlanAction::AlreadySynced,
@@ -681,8 +699,10 @@ mod tests {
             .targets
             .clear();
         let plan = LinkPlan::new(vec![LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new(".pi/agent/skills/review").unwrap(),
             action: PlanAction::CreateSymlink,
@@ -702,6 +722,44 @@ mod tests {
         assert!(matches!(
             report.problems[0],
             CheckProblem::TargetMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn shared_target_problem_lists_all_owners() {
+        let plan = LinkPlan::new(vec![LinkPlanItem {
+            owners: vec![
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::Pi,
+                },
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::custom("universal").unwrap(),
+                },
+            ],
+            source: SourcePath::new("skills/review").unwrap(),
+            target: TargetPath::new(".agents/skills/review").unwrap(),
+            action: PlanAction::CreateSymlink,
+        }]);
+
+        let links = CountingLinkStore {
+            state: TargetState::Missing,
+            inspections: Cell::new(0),
+        };
+        let report = check_lockfile_with_plan(
+            &lockfile(),
+            &plan,
+            &FakeHashStore {
+                hash: "sha256-expected",
+            },
+            &links,
+        );
+
+        assert_eq!(links.inspections.get(), 1);
+        assert!(matches!(
+            &report.problems[0],
+            CheckProblem::TargetMissing { agent, .. } if agent == "pi, universal"
         ));
     }
 

@@ -61,6 +61,9 @@
     "factory": {
       "targetDir": "~/.factory/skills"
     },
+    "fx": {
+      "targetDir": "~/.fx/skills"
+    },
     "gemini": {
       "targetDir": "~/.gemini/skills"
     },
@@ -218,6 +221,9 @@
     },
     "factory": {
       "targetDir": ".factory/skills"
+    },
+    "fx": {
+      "targetDir": ".agents/skills"
     },
     "gemini": {
       "targetDir": ".gemini/skills"

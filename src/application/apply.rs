@@ -72,13 +72,12 @@ fn validate_plan_is_safe_to_apply(
     options: ApplyOptions,
 ) -> Result<(), ApplyError> {
     for item in &plan.items {
+        let skill = item.skill_label();
+        let agent = item.agent_label();
         match &item.action {
             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
             PlanAction::SourceMissing => {
-                return Err(ApplyError::SourceMissing {
-                    skill: item.skill.as_str().to_owned(),
-                    agent: item.agent.as_str().to_owned(),
-                });
+                return Err(ApplyError::SourceMissing { skill, agent });
             }
             PlanAction::Conflict { reason } => {
                 if options.force && *reason == ConflictReason::BrokenSymlink {
@@ -86,8 +85,8 @@ fn validate_plan_is_safe_to_apply(
                 }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::Conflict {
-                        skill: item.skill.as_str().to_owned(),
-                        agent: item.agent.as_str().to_owned(),
+                        skill,
+                        agent,
                         reason: *reason,
                     });
                 }
@@ -98,8 +97,8 @@ fn validate_plan_is_safe_to_apply(
                 }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::DriftedSymlink {
-                        skill: item.skill.as_str().to_owned(),
-                        agent: item.agent.as_str().to_owned(),
+                        skill,
+                        agent,
                         actual_source: actual_source.display().to_string(),
                     });
                 }
@@ -117,7 +116,7 @@ mod tests {
         LinkApplier, LinkApplyError, LockfileStore, LockfileStoreError,
     };
     use crate::domain::agent::AgentKind;
-    use crate::domain::link_plan::{ConflictReason, LinkPlan, LinkPlanItem, PlanAction};
+    use crate::domain::link_plan::{ConflictReason, LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::Lockfile;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
@@ -171,8 +170,28 @@ mod tests {
 
     fn item(action: PlanAction) -> LinkPlanItem {
         LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
+            source: SourcePath::new("skills/review").unwrap(),
+            target: TargetPath::new("targets/review").unwrap(),
+            action,
+        }
+    }
+
+    fn shared_item(action: PlanAction) -> LinkPlanItem {
+        LinkPlanItem {
+            owners: vec![
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::Pi,
+                },
+                LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: AgentKind::custom("universal").unwrap(),
+                },
+            ],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new("targets/review").unwrap(),
             action,
@@ -208,6 +227,69 @@ mod tests {
 
         assert_eq!(applier.created.borrow().len(), 1);
         assert!(lockfiles.written.get());
+    }
+
+    #[test]
+    fn shared_create_runs_once() {
+        let plan = LinkPlan::new(vec![shared_item(PlanAction::CreateSymlink)]);
+        let applier = FakeApplier::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &FakeLockfileStore::default(),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("shared create succeeds");
+
+        assert_eq!(applier.created.borrow().len(), 1);
+    }
+
+    #[test]
+    fn shared_force_replace_runs_once() {
+        let plan = LinkPlan::new(vec![shared_item(PlanAction::DriftedSymlink {
+            actual_source: PathBuf::from("other"),
+        })]);
+        let applier = FakeApplier::default();
+
+        apply_link_plan(
+            &plan,
+            &lockfile(),
+            &applier,
+            &FakeLockfileStore::default(),
+            ApplyOptions {
+                force: true,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect("shared replacement succeeds");
+
+        assert_eq!(applier.replaced.borrow().len(), 1);
+    }
+
+    #[test]
+    fn shared_source_missing_error_lists_all_owners() {
+        let plan = LinkPlan::new(vec![shared_item(PlanAction::SourceMissing)]);
+        let error = apply_link_plan(
+            &plan,
+            &lockfile(),
+            &FakeApplier::default(),
+            &FakeLockfileStore::default(),
+            ApplyOptions {
+                force: false,
+                skip_blocked_targets: false,
+            },
+        )
+        .expect_err("missing source blocks apply");
+
+        assert_eq!(
+            error.to_string(),
+            "source is missing for skill 'review' and agent 'pi, universal'"
+        );
     }
 
     #[test]
