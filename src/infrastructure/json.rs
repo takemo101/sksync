@@ -3777,6 +3777,14 @@ mod tests {
     }
 
     #[test]
+    fn bundled_agent_mappings_include_fx() {
+        let mappings = default_agent_mapping_config().expect("bundled mappings parse");
+
+        assert_eq!(mappings.global["fx"], Path::new("~/.fx/skills"));
+        assert_eq!(mappings.project["fx"], Path::new(".agents/skills"));
+    }
+
+    #[test]
     fn bundled_agent_mappings_include_corrected_pi_grok_and_zero_paths() {
         let mappings = default_agent_mapping_config().expect("bundled mappings parse");
 

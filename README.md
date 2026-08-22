@@ -157,12 +157,15 @@ The bundled mappings include entries for major Agent Skills-compatible agents. E
 | `zero` | `~/.local/share/zero/skills` | — |
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
+| `fx` | `~/.fx/skills` | `.agents/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
 | `kimi-code` | `~/.kimi-code/skills` | `.kimi-code/skills` |
 | `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
 | `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
 | `antigravity` | `~/.gemini/antigravity/skills` | `.agents/skills` |
 | `universal` | `~/.agents/skills` | `.agents/skills` |
+
+fx uses `~/.fx/skills` globally and the shared `.agents/skills` directory in projects. Shared project targets are planned and linked once even when multiple agent mappings select the same skill.
 
 Antigravity uses the official workspace default `.agents/skills`. Antigravity treats `.agent/skills` as a backward-compatible directory, but sksync's bundled default is `.agents/skills`.
 

@@ -23,6 +23,7 @@ Project scope uses the `project` map (e.g. `.claude/skills`); global scope uses 
 | `claude-code` | `~/.claude/skills` | `.claude/skills` |
 | `codewhale` | `~/.codewhale/skills` | `.codewhale/skills` |
 | `codex` | `~/.codex/skills` | `.codex/skills` |
+| `fx` | `~/.fx/skills` | `.agents/skills` |
 | `jcode` | `~/.jcode/skills` | `.jcode/skills` |
 | `gemini` / `gemini-cli` | `~/.gemini/skills` | `.gemini/skills` |
 | `opencode` | `~/.config/opencode/skills` | `.opencode/skills` |
@@ -32,10 +33,12 @@ Project scope uses the `project` map (e.g. `.claude/skills`); global scope uses 
 | `windsurf` | `~/.codeium/windsurf/skills` | `.windsurf/skills` |
 | `universal` | `~/.agents/skills` | `.agents/skills` |
 
-The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `bolt`, `clawdbot`, `cline`, `codebuddy`, `codegpt`, `commandcode`, `continue`, `crush`, `devin`, `droid`/`factory`, `github-copilot`, `goose`, `hermes`, `kilo`, `kiro-cli`, `lovable`, `mcpjam`, `mux`, `neovate`, `openclaw`, `openhands`, `playcode-agent`, `qoder`, `qwen`, `replit-agent`, `roo`, `sourcegraph-cody`, `tabby`, `tabnine`, `trae`, `vercel`, and `zencoder`. Kimi Code CLI is available as `kimi-code`. See the complete file in [`sksync.agents.example.json`](https://github.com/takemo101/sksync/blob/main/sksync.agents.example.json).
+The full bundled set also includes `aider`, `amazon-q`, `amp`, `augment-code`, `bolt`, `clawdbot`, `cline`, `codebuddy`, `codegpt`, `commandcode`, `continue`, `crush`, `devin`, `droid`/`factory`, `fx`, `github-copilot`, `goose`, `hermes`, `kilo`, `kiro-cli`, `lovable`, `mcpjam`, `mux`, `neovate`, `openclaw`, `openhands`, `playcode-agent`, `qoder`, `qwen`, `replit-agent`, `roo`, `sourcegraph-cody`, `tabby`, `tabnine`, `trae`, `vercel`, and `zencoder`. Kimi Code CLI is available as `kimi-code`. See the complete file in [`sksync.agents.example.json`](https://github.com/takemo101/sksync/blob/main/sksync.agents.example.json).
 
 ::: info
 **`universal`** is the canonical directory of the Agent Skills ecosystem: `~/.agents/skills` (global) and `.agents/skills` (project). Linking a skill into `universal` makes it visible to any tool that reads the shared directory.
+
+**fx** uses `~/.fx/skills` for managed user-level skills. In project scope it reads the shared `.agents/skills` directory, so `fx`, `universal`, and other compatible agents can intentionally share one physical sksync link.
 
 **Antigravity** follows its official spec and uses the workspace default `.agents/skills` for project scope. The legacy `.agent/skills` is still honored by Antigravity for backward compatibility, but the sksync bundled default is `.agents/skills`.
 
