@@ -536,16 +536,16 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
                             PlanAction::SourceMissing => plan_problems
                                 .source_missing
-                                .push((item.skill.to_string(), item.agent.as_str().to_owned())),
+                                .push((item.skill_label(), item.agent_label())),
                             PlanAction::Conflict { reason } => plan_problems.conflicts.push((
-                                item.skill.to_string(),
-                                item.agent.as_str().to_owned(),
+                                item.skill_label(),
+                                item.agent_label(),
                                 reason.to_string(),
                             )),
                             PlanAction::DriftedSymlink { actual_source } => {
                                 plan_problems.drift.push((
-                                    item.skill.to_string(),
-                                    item.agent.as_str().to_owned(),
+                                    item.skill_label(),
+                                    item.agent_label(),
                                     actual_source.display().to_string(),
                                 ))
                             }
@@ -2225,7 +2225,11 @@ fn agent_kinds_contain(agents: &[AgentKind], agent: &AgentKind) -> bool {
 
 fn remove_managed_symlinks(plan: &LinkPlan, skill: &str) -> Result<()> {
     for item in &plan.items {
-        if item.skill.as_str() == skill {
+        if item
+            .owners
+            .iter()
+            .any(|owner| owner.skill.as_str() == skill)
+        {
             remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
         }
     }
@@ -2238,7 +2242,9 @@ fn remove_managed_symlinks_for_agents(
     agents: &[AgentKind],
 ) -> Result<()> {
     for item in &plan.items {
-        if item.skill.as_str() == skill && agent_kinds_contain(agents, &item.agent) {
+        if item.owners.iter().any(|owner| {
+            owner.skill.as_str() == skill && agent_kinds_contain(agents, &owner.agent)
+        }) {
             remove_managed_symlink_target(item.source.as_path(), item.target.as_path())?;
         }
     }
@@ -2978,7 +2984,11 @@ fn print_plan(plan: &LinkPlan) {
 
 fn print_plan_item(item: &LinkPlanItem) {
     let (badge, title) = plan_action_badge(&item.action);
-    println!("{badge:<8} {} → {}", item.skill, item.agent.as_str());
+    println!(
+        "{badge:<8} {} → {}",
+        item.skill_label(),
+        item.agent_label()
+    );
     print_detail(format!("action: {title}"));
     match &item.action {
         PlanAction::CreateSymlink | PlanAction::AlreadySynced => {

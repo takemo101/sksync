@@ -396,8 +396,8 @@ fn inspect_plan_targets(
     for item in &plan.items {
         inspect_target(
             problems,
-            item.skill.as_str(),
-            &item.agent,
+            item.owners[0].skill.as_str(),
+            &item.owners[0].agent,
             &item.target,
             &item.source,
             link_store,
@@ -516,7 +516,7 @@ mod tests {
         LinkStore, LinkStoreError, SourceHash, SourceHashStore, SourceHashStoreError, TargetState,
     };
     use crate::domain::agent::AgentKind;
-    use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
+    use crate::domain::link_plan::{LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
     use crate::domain::lockfile::{Digest, LinkType, LockedSkill, LockedTarget, Lockfile};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::scope::Scope;
@@ -646,8 +646,10 @@ mod tests {
     #[test]
     fn include_mismatch_is_reported() {
         let plan = LinkPlan::new(vec![LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new(".pi/agent/skills/review").unwrap(),
             action: PlanAction::AlreadySynced,
@@ -681,8 +683,10 @@ mod tests {
             .targets
             .clear();
         let plan = LinkPlan::new(vec![LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new(".pi/agent/skills/review").unwrap(),
             action: PlanAction::CreateSymlink,

@@ -76,8 +76,8 @@ fn validate_plan_is_safe_to_apply(
             PlanAction::CreateSymlink | PlanAction::AlreadySynced => {}
             PlanAction::SourceMissing => {
                 return Err(ApplyError::SourceMissing {
-                    skill: item.skill.as_str().to_owned(),
-                    agent: item.agent.as_str().to_owned(),
+                    skill: item.owners[0].skill.as_str().to_owned(),
+                    agent: item.owners[0].agent.as_str().to_owned(),
                 });
             }
             PlanAction::Conflict { reason } => {
@@ -86,8 +86,8 @@ fn validate_plan_is_safe_to_apply(
                 }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::Conflict {
-                        skill: item.skill.as_str().to_owned(),
-                        agent: item.agent.as_str().to_owned(),
+                        skill: item.owners[0].skill.as_str().to_owned(),
+                        agent: item.owners[0].agent.as_str().to_owned(),
                         reason: *reason,
                     });
                 }
@@ -98,8 +98,8 @@ fn validate_plan_is_safe_to_apply(
                 }
                 if !options.skip_blocked_targets {
                     return Err(ApplyError::DriftedSymlink {
-                        skill: item.skill.as_str().to_owned(),
-                        agent: item.agent.as_str().to_owned(),
+                        skill: item.owners[0].skill.as_str().to_owned(),
+                        agent: item.owners[0].agent.as_str().to_owned(),
                         actual_source: actual_source.display().to_string(),
                     });
                 }
@@ -117,7 +117,9 @@ mod tests {
         LinkApplier, LinkApplyError, LockfileStore, LockfileStoreError,
     };
     use crate::domain::agent::AgentKind;
-    use crate::domain::link_plan::{ConflictReason, LinkPlan, LinkPlanItem, PlanAction};
+    use crate::domain::link_plan::{
+        ConflictReason, LinkOwner, LinkPlan, LinkPlanItem, PlanAction,
+    };
     use crate::domain::lockfile::Lockfile;
     use crate::domain::skill::{SkillName, SourcePath};
     use crate::domain::target::TargetPath;
@@ -171,8 +173,10 @@ mod tests {
 
     fn item(action: PlanAction) -> LinkPlanItem {
         LinkPlanItem {
-            skill: SkillName::new("review").unwrap(),
-            agent: AgentKind::Pi,
+            owners: vec![LinkOwner {
+                skill: SkillName::new("review").unwrap(),
+                agent: AgentKind::Pi,
+            }],
             source: SourcePath::new("skills/review").unwrap(),
             target: TargetPath::new("targets/review").unwrap(),
             action,
