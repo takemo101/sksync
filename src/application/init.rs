@@ -188,6 +188,38 @@ mod tests {
     }
 
     #[test]
+    fn init_and_refresh_include_additional_agent_mappings() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        init_global(temp_dir.path()).expect("init global succeeds");
+        let mapping_path = temp_dir.path().join("agents.json");
+        let content = std::fs::read_to_string(&mapping_path).expect("read agents");
+        let agents: serde_json::Value = serde_json::from_str(&content).expect("parse agents");
+
+        for (agent, global, project) in [
+            ("oh-my-pi", "~/.omp/agent/skills", Some(".omp/skills")),
+            ("empryo", "~/.empryo/skills", Some(".empryo/skills")),
+            ("phi", "~/.phi/skills", None),
+            ("pig", "~/.pig/agent/skills", Some(".pig/skills")),
+            ("vtcode", "~/.agents/skills", Some(".agents/skills")),
+            ("fx", "~/.fx/skills", Some(".agents/skills")),
+        ] {
+            assert_eq!(agents["global"][agent]["targetDir"], global, "{agent}");
+            if let Some(project) = project {
+                assert_eq!(agents["project"][agent]["targetDir"], project, "{agent}");
+            } else {
+                assert!(agents["project"].get(agent).is_none(), "{agent}");
+            }
+        }
+
+        std::fs::write(&mapping_path, "custom agents").expect("write agents");
+        super::init_agents(temp_dir.path()).expect("refresh agents succeeds");
+        assert_eq!(
+            std::fs::read_to_string(mapping_path).expect("read agents"),
+            content
+        );
+    }
+
+    #[test]
     fn init_global_does_not_overwrite_existing_agent_mapping() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let agent_mapping_path = temp_dir.path().join("agents.json");
