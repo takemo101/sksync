@@ -29,7 +29,7 @@ export default defineConfig({
 			},
 			{ text: "Commands", link: "/reference/commands" },
 			{
-				text: "v0.0.14",
+				text: "v0.0.15",
 				items: [
 					{
 						text: "Changelog",
