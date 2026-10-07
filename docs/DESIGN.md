@@ -2,6 +2,8 @@
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for architectural principles.
 
+[Section 13](#approved-next-iteration) records the approved next-iteration contract. Those changes are not implemented in v0.0.15; current command availability remains as described in section 7 until implementation.
+
 ## 1. Background
 
 Agent Skills are stored in different locations depending on the agent.
@@ -426,6 +428,8 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 
 `sksync` is a single Rust binary. CLI commands are for automation/scripting; the wizard is for prompt-driven local use. The command model follows npm-like dependency management. There is intentionally no dedicated `ci` command.
 
+The selected-update syntax and expanded JSON flags in [section 13](#approved-next-iteration) are planned, not currently available. In particular, the existing `outdated --json` array remains the v0.0.15 format until the announced migration.
+
 ### npm-like command model
 
 | command | npm analog | role |
@@ -553,7 +557,7 @@ Planned changes:
 
 ## 9. Safety rules
 
-- Do not overwrite existing regular files or directories, even with `--force`.
+- At agent target paths, do not overwrite existing regular files or directories, even with `--force`. Replacement of dependency-managed skill bodies inside `skillDir` is a separate operation governed by section 13.
 - Update/delete only targets represented by sksync config/lockfile plans.
 - Warn if an existing symlink points somewhere unexpected.
 - Without `--force`, drifted and broken target symlinks block apply.
@@ -627,3 +631,232 @@ src/
 - Exact precedence between project and user scopes.
 - Windows symlink permissions and junction support. Windows remains out of scope for now; macOS / Linux are prioritized.
 - Whether TUI belongs in the initial MVP or after CLI MVP.
+
+<a name="approved-next-iteration"></a>
+
+## 13. Approved next iteration: safe persistence, JSON output, and selected updates
+
+**Status: approved design; implementation pending.** The two product decisions are:
+
+1. A handled update failure restores **all selected skill bodies and the previous lockfile**, not just the last failing skill. Automatic recovery after process termination or power loss is out of scope.
+2. `list`, `plan`, `check`, and `outdated` use **one versioned JSON envelope**. Changing the existing `outdated --json` array is an intentional breaking change and requires migration guidance.
+
+These improvements strengthen sksync's existing declarative install/link model. They do not introduce a registry, account service, agent runner, generic transaction framework, or persistent update journal. Implementation order is persistence safety, JSON output, then selected updates.
+
+### 13.1 Safe file persistence
+
+Configuration and lockfile writes must not truncate the live file before a complete replacement is ready. Use one filesystem helper for serialized bytes, shared by config mutations, agent-map refreshes, lockfile writes, and `ConfigFileBackup::restore`; rollback writes must not retain the unsafe direct-write path.
+
+The helper contract is:
+
+1. Serialize completely before modifying the destination. Create a uniquely named temporary regular file in the **destination's actual parent directory**, exclusively, so no existing temporary path is overwritten or followed.
+2. Write all bytes, preserve an existing regular file's permission bits, and synchronize the temporary file before publication. New files respect the normal creation permissions and umask.
+3. For replacement, rename the prepared file over the existing regular file. Never remove or truncate the old file first. All returned write errors occur before publication and leave the previous bytes intact.
+4. For create-only operations such as initial config creation, publish without overwriting a concurrently created destination. On supported local filesystems, a same-directory hard-link publication followed by temporary-name removal provides this with the standard library. Unsupported publication must fail safely, not fall back to an overwriting rename.
+5. Preserve an existing config/lockfile symlink: resolve its existing regular-file referent and replace that file in its own parent directory, not the symlink. Reject dangling links and non-regular referents. Resolve the referent for I/O only; config-relative source paths and portable lockfile paths keep their existing logical scope base. This preserves the current ability to keep config in a dotfiles repository.
+6. Remove only temporary paths owned by this operation. A failure to clean up an extra temporary name **after publication** is a warning, not an error claiming the write did not happen.
+
+This guarantees complete-file publication under handled I/O failures, not power-loss durability. Filesystem-specific rename behavior must be tested on macOS and Linux; Windows remains out of scope.
+
+### 13.2 Update boundary and rollback
+
+The update unit is the effective dependency selection, its installed bodies, and the lockfile. `update` must not modify dependency config, bundle provenance, default agents, agent mappings, or target symlinks. The same guarantee applies to full and selected updates.
+
+#### Writer exclusion
+
+Before preparing an update, acquire non-blocking, OS-released advisory guards for the canonical physical state-parent directories and managed skill-store directory. Resolve config/lockfile symlink referents before choosing guard locations. Deduplicate and acquire directory guards in deterministic path order; a busy resource fails before fetching or replacement. Directory-handle locking avoids new lock-marker files and a global lock registry.
+
+Other sksync mutators of these resources must use the same guard convention. Acquire guards once at the use-case boundary, not again inside nested installers or atomic-write helpers. After acquisition, reload/validate the config and lockfile snapshot; if the resource paths changed during acquisition, stop rather than proceeding under the wrong guards. Hold guards through rollback or post-commit cleanup. Standard-library advisory locking requires Rust 1.89 or later; record that compiler floor when implementing it.
+
+These are cooperative writer guards, not locks on agent readers. Non-cooperating external edits during an update are outside the guarantee; detected unexpected destination changes must block replacement, never justify deleting the unexpected path.
+
+#### Prepare, publish, commit
+
+| phase | behavior | live-state effect |
+| --- | --- | --- |
+| Validate | Resolve scope and names, inspect the existing lockfile and managed destinations, acquire guards, and validate the guarded snapshot. Reject regular files, symlinks, or special files at managed-body destinations and parent paths escaping the canonical `skillDir`. | No body/lockfile replacement. |
+| Prepare | Fetch/copy **every selected dependency** into private sibling staging directories. Apply `include`, validate `SKILL.md`, resolve actual Git commits, and calculate existing-format directory/per-file hashes from staged content. Build and serialize the candidate lockfile. | Old bodies and lockfile remain usable. |
+| Publish bodies | For each selected destination, rename the old directory to a unique private sibling backup, then rename staging to the final destination. Record whether the destination originally existed. | Selected bodies change; backups remain available. |
+| Commit lockfile | Atomically publish the candidate lockfile after every body publication succeeds. | Successful lockfile publication is the commit point. |
+| Finalize | Remove this operation's backups and remaining staging directories. | Cleanup only; cleanup failures are warnings. |
+
+Use sibling staging/backup directories on each destination filesystem, including a configured `skillDir` outside the project. Use the existing resolved dependency body path, including source-namespaced storage and legacy flat-path compatibility; updating must not silently migrate its layout. Never replace a managed-body destination by first deleting its old directory. Hashes and lockfile `source` paths describe the final installed body, not a private staging path.
+
+On any handled failure **before the lockfile commit point**, restore published bodies in reverse order. Restore old directories from backups; if a selected body was absent originally, remove only the new directory owned by this operation. A failed atomic lockfile write leaves its original bytes, or its original absence, intact. No selected success is retained as a partial update.
+
+If rollback itself fails, report both the original failure and each recovery failure, identify the affected skills and retained backup paths, and exit nonzero. Do not delete the only surviving old copy, hide the failure behind the original error, or continue to another update. Recovery is manual in this iteration.
+
+After the commit point, backup-cleanup failure must not trigger rollback: some old backups may already have been removed. Report a warning and retained paths while treating the update as committed. Successful updates intentionally replace selected managed-body content, including local edits, as today; retained failure backups are not an undo-history feature.
+
+#### Limits of the guarantee
+
+- The guarantee is the final state after a handled failure with successful rollback, **not** instantaneous visibility of a multi-directory transaction to readers. An agent may briefly observe mixed versions or a missing logical destination during directory cutover.
+- SIGKILL, crashes, power loss, and permanent filesystem failure can leave staging/backup directories or mixed live state. Do not auto-delete unknown leftovers or advertise crash recovery; a persistent journal and recovery command require a separate design.
+- This command-wide guarantee applies to `update`. Other installer callers receive safer per-directory replacement and atomic file writes, but `add`, `install`, `apply`, and bundle operations do not thereby acquire a new all-or-nothing command guarantee.
+
+### 13.3 Common JSON output contract
+
+Planned supported forms:
+
+```sh
+sksync list --json [--global]
+sksync plan --json [--global]
+sksync check --json [--global]
+sksync outdated --json [--global]
+```
+
+JSON is an opt-in output adapter for the same application reports as human output. It must not add network access to `list`, `plan`, or `check`, perform repairs, or alter selection/scope rules. Other commands do not gain `--json` in this iteration.
+
+Every successfully written JSON response is one UTF-8 object followed by a newline, with these required fields:
+
+| field | contract |
+| --- | --- |
+| `schemaVersion` | Integer `1`; independent of the package version and lockfile version. |
+| `command` | `list`, `plan`, `check`, or `outdated`. |
+| `scope` | `project` or `global`; invocation scope, not an agent's placement scope. |
+| `ok` | Whether the command's result satisfies its success condition. |
+| `data` | Command-specific object; `null` if no usable report was produced. |
+| `error` | `null` on success, otherwise `{ "code": "...", "message": "..." }`, with optional human-readable `hint`. |
+
+`error.code` is a stable machine identifier; `message` and `hint` are explanatory text, not parsing contracts. Serialize typed reports through CLI DTOs rather than exposing Rust debug output, scraping tables, or adding presentation fields to domain types. Prepare the full serialized response before writing stdout. Disable ANSI, progress, prompts, and human summaries on stdout; any optional diagnostics go to stderr. A stdout write failure may prevent delivery of JSON and is reported as an I/O failure, not followed by a second response.
+
+Examples:
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "outdated",
+  "scope": "project",
+  "ok": true,
+  "data": { "rows": [], "problems": [] },
+  "error": null
+}
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "check",
+  "scope": "project",
+  "ok": false,
+  "data": {
+    "healthy": false,
+    "problems": [
+      {
+        "kind": "targetMissing",
+        "skill": "review",
+        "agent": "pi",
+        "path": "/work/project/.pi/skills/review"
+      }
+    ]
+  },
+  "error": {
+    "code": "CHECK_FAILED",
+    "message": "Installed state does not match the lockfile."
+  }
+}
+```
+
+Publish the version-1 contract as `schemas/sksync-output.schema.json` when implementing the feature, with command-specific data variants and shared error definitions. Keep fixtures aligned with the DTOs; a new runtime schema-validation dependency is unnecessary.
+
+#### Command data and exit behavior
+
+| command | `data` contract | success and exit behavior |
+| --- | --- | --- |
+| `list` | `skills`: rows with `name`, `source`, nullable `installSource`/`include`/`lockedHash`, and `targets`. `installSource` uses the existing tagged local/Git source shape; `include` is a string array or null. Each target has `agent`, nullable resolved `target`, tagged `status`, and a structured `error` on resolution/inspection failure. `lockfileStatus` distinguishes `available` and `missing`. | Missing lockfile is allowed and gives null locked hashes. Link drift/conflicts are valid observations, not command failures. Invalid existing lockfiles and inspection/resolution failures are surfaced, not silently discarded. Listing does not add directory hashing. |
+| `plan` | `items`: one row per physical target with structured `owners: [{ "skill": "...", "agent": "..." }]`, `source`, `target`, tagged `action`, and action-specific details. `applicable` states whether normal, non-force apply is unblocked. | A completed plan exits `0`, even when `applicable` is false. A conflict is plan data, not a failed planning operation. |
+| `check` | `healthy` and `problems`. Each problem has a stable `kind`, skill/agent/path fields relevant to that variant, and expected/actual values where available. | Healthy: `ok: true`, exit `0`. Completed unhealthy check: `ok: false`, exit `1`, `CHECK_FAILED`, with the full report in `data`. Unreadable/invalid required inputs: execution error, normally `data: null`. |
+| `outdated` | `rows`: successful outdated results retaining `skill`, `current`, `wanted`, `latest`, `source`, `status`. `problems`: failed remote queries with `skill`, `source`, `wanted`, and structured `error`. Up-to-date Git sources and non-Git dependencies are omitted as today. | All probes succeeded: exit `0`, including when updates exist. Any probe failed: `ok: false`, exit `1`, `REMOTE_QUERY_FAILED`, retaining successful rows and problems in `data`. Never put an `error: ...` string in `latest`. |
+
+List target-status tags are `synced`, `missing`, `drifted`, `conflict`, `brokenSymlink`, `sourceMissing`, `resolveFailed`, and `inspectFailed`. Plan action tags are `createSymlink`, `alreadySynced`, `conflict`, `driftedSymlink`, and `sourceMissing`; conflict reasons are `regularFile`, `directory`, and `brokenSymlink`. Check problem kinds are `sourceHashDrift`, `targetMissing`, `targetUnexpectedSymlink`, `brokenSymlink`, `targetConflict`, `inspectFailed`, `hashFailed`, and `includeMismatch`. Fields follow the corresponding existing report variant, using camelCase (`actualSource`, for example); do not encode shared target owners as comma-joined labels.
+
+Sort skills and remote-query problems by skill name, target lists by agent/target, plan rows by target with sorted owners, and check problems by kind/skill/agent/path. Preserve a stable documented order, not filesystem traversal order. Arrays are empty rather than null; absent variant-specific fields are omitted, while explicitly nullable row fields remain present.
+
+Application-level errors use typed categories such as `CONFIG_NOT_FOUND`, `INVALID_CONFIG`, `LOCKFILE_NOT_FOUND`, `INVALID_LOCKFILE`, `TARGET_RESOLUTION_FAILED`, `INSPECTION_FAILED`, `REMOTE_QUERY_FAILED`, `IO_ERROR`, and `SERIALIZATION_FAILED`. Use `INTERNAL_ERROR` only for uncategorized failures. Never derive codes by parsing an error message. Failed list inspection may retain collected rows in `data`; check findings and outdated query failures always retain their report. Exit `1` covers failed checks and execution errors; `error.code` and `data` distinguish them. Human and JSON adapters share exit semantics.
+
+Clap syntax errors remain stderr text with exit `2`, because no valid command invocation exists to render. `--help` and `--version` retain normal behavior. The envelope guarantee applies to successfully parsed JSON-enabled invocations and application-level failures, not to malformed CLI syntax. The top-level error path must not print a second JSON object or duplicate human summary after a handler has rendered its response.
+
+#### Compatibility and migration
+
+This intentionally replaces the published bare `outdated --json` array with the envelope; no legacy-array flag is planned. Clients that previously iterated the root array must use `.data.rows` and inspect `.ok`, `.error`, and `.data.problems`. Remote-query failure also becomes a nonzero exit in human and JSON modes rather than an apparently successful row containing error text. `list` likewise stops silently ignoring malformed existing lockfiles, and resolution/inspection failures become nonzero exits in both output modes; a missing optional lockfile remains valid.
+
+Before releasing the implementation, announce these changes in release notes, update the manual/examples, and add regression fixtures for all four envelopes. Do not change the advertised v0.0.15 format before implementation. Compatible additions may add optional fields; clients must ignore unknown fields. Renaming/removing fields, changing their types, or changing existing tag meanings requires a new `schemaVersion` and a documented migration. A future new version needs explicit negotiation; do not silently make `--json` emit an incompatible schema for existing clients.
+
+### 13.4 Selected updates
+
+Planned CLI syntax:
+
+```sh
+sksync update [skills...] [--global]
+# Examples:
+sksync update review
+sksync update review browser --global
+```
+
+- No names means all dependency-managed skills, preserving the existing command intent. Legacy `skills` entries without an install source are not fetched. An empty effective dependency selection is a successful no-op without body/lockfile writes.
+- Explicit names are config dependency keys, not frontmatter names, paths, bundle names, or patterns. Validate through `SkillName`, including rejecting the reserved path-component names `.` and `..` in its shared constructor, match case-sensitively, deduplicate, and process in stable name order. Unknown names or explicit legacy-only skills abort the whole command before fetching or replacing anything; never silently ignore a typo.
+- Use only the chosen project/global config; no fallback lookup in the other scope. Membership in a bundle does not expand the selection. Update local and Git install sources using the configured `include` filters, while retaining the configured source string/ref and bundle provenance.
+- Explicitly selected updates require a readable existing lockfile and entries for every unselected configured skill. Missing baseline entries or a missing/invalid lockfile fail before fetch, with guidance to establish the baseline using full `install`/`update`. Selected entries may be newly added and initially absent; rollback must restore their original body absence.
+- Construct a selected-update lockfile by **merging into the existing lockfile**, replacing only selected entries with their newly resolved source, include filter, hashes, and files. Preserve all unselected entries, including stale entries whose config dependency has disappeared; pruning belongs to removal/full reconciliation, not selective update. Preserve supported-version content semantics when normalizing an older lockfile to the current format. Version 5 still omits agent targets; legacy target metadata is dropped only under the existing migration rules, not interpreted as permission to change links.
+- Do not refetch, hash, rewrite, repair, or require healthy bodies/targets for unselected skills. In particular, a missing unselected body or locally modified unselected content must not block the selected update or get silently blessed by a regenerated hash. Keep the full config available; selection is not a smaller replacement config.
+- Do not require a link plan to construct the selected version-5 lockfile: it records content, not target placement. `update` neither inspects nor applies target symlinks; shared-target ownership remains represented by unchanged config and normal link planning. Target diagnosis/repair belongs to `plan`, `check`, and `apply`.
+- Keep the top-level lockfile version/root compatibility rules. `generatedAt` and `generatedBy` may change after a successful update; this does not authorize regenerating unselected entries. Full update retains its complete-lockfile construction behavior.
+- A later `outdated`/`check` may continue to report drift in unselected skills. That is expected, not a reason for selective update to widen its scope.
+- `outdated` is an observation, not a frozen approval plan: a moving remote ref may change before `update`. The lockfile records the exact commit actually prepared. No new `--force`, `--dry-run`, `--json`, interactive selection menu, or per-file diff UI is added to `update` in this iteration.
+
+The implementation may reuse the name-filtering logic in `update_selected_dependencies`, already used by `add`. It **must not** reuse the current immediate-replacement loop as the batch transaction: selection and preparation happen before any live publication. Existing `add` behavior remains limited to newly added dependencies; it must not inherit a whole-config fetch from the refactor.
+
+### 13.5 Module responsibilities and implementation sequence
+
+Follow the layered architecture in `ARCHITECTURE.md`; the earlier conceptual module sketch is not a reason to introduce parallel models.
+
+| location | responsibility |
+| --- | --- |
+| `src/application/update.rs` | Validate selection, coordinate prepare/publish/rollback, merge selected lock entries, and return reports only after the commit decision. Keep full config and selected names separate. |
+| `src/application/ports.rs` | Extend the existing installer/store seams with prepared-install metadata and opaque publication/rollback receipts. Preserve testability without a generic transaction or mock-filesystem framework. |
+| `src/infrastructure/install.rs` | Own private sibling staging/backup paths and per-directory prepare, publish, restore, and finalize operations. Retain the safe single-install wrapper for other callers. |
+| `src/infrastructure/atomic_file.rs` (new) | Complete-file atomic/create-only publication and owned temporary cleanup; shared by normal and restoration writes. |
+| `src/infrastructure/write_guard.rs` (new) | Non-blocking canonical directory guards and deterministic acquisition/release; no PID-based stale-lock heuristic. |
+| `src/infrastructure/json.rs` and existing config writers | Serialize domain/config values, preserve config fields, and delegate byte publication to the shared helper. |
+| `src/cli.rs` and `src/cli/output.rs` (new) | Parse flags/names, adapt existing reports to explicit JSON DTOs, classify errors, and render exactly once. No filesystem recovery rules in the renderer. |
+| `src/application/list.rs`, `check.rs`, `outdated.rs` | Expose typed observations/errors needed by both output adapters; no table parsing or string-encoded remote failures. |
+
+Sequence:
+
+1. Add failure-path tests, atomic file persistence, guarded writer entry points, and backup-preserving directory replacement. Make full `update` a prepared batch with the lockfile as commit point. Adapt all callers of the shared write/install seams without broadening their command guarantees.
+2. Add the common JSON adapter for the four read commands, typed remote-query failures, exit handling, schema fixtures, and migration documentation. Human output remains the default.
+3. Expose selected names on CLI `update`, implement lockfile merge without unselected inspection, and verify mixed selected/unselected state. No additional TUI workflow is required.
+
+### 13.6 Acceptance checks
+
+Use temporary directories and injected home/config roots only; never touch the real home directory or require live network services. Use existing port fakes plus targeted failure injection at publication boundaries, not a new general filesystem abstraction.
+
+Persistence/update checks:
+
+- Serialization, temporary write/sync, or publication failure leaves the original file byte-for-byte intact; absent originals stay absent. Create-only publication refuses an existing destination. Config symlinks remain symlinks with complete updated referents and preserved permissions.
+- Failure preparing the second skill leaves every old body and lockfile unchanged. Failure publishing any body or writing the final lockfile restores all earlier publications, including bodies that were originally absent.
+- A rollback failure retains the only old copy, reports both failures and recovery paths, and never emits a success report. Post-commit cleanup failure leaves new bodies/new lockfile committed and reports a warning.
+- Unexpected regular files/symlinks at managed-body destinations are not deleted. Existing target-file/directory and force-only-symlink-repair tests continue to pass.
+- Two writers sharing either a physical state parent or skill store cannot publish concurrently; guards release on error/process exit. Verify directory locking and complete-file replacement on macOS and Linux, including alias paths. Readers need not acquire a writer guard.
+
+JSON checks:
+
+- All four commands emit exactly one parseable envelope without human text/ANSI on stdout, for success and application errors. Validate required fields, nullable fields, tags, sorted arrays, and stable codes with fixtures.
+- A blocked plan succeeds with `applicable: false`; unhealthy check fails with report data; empty outdated results succeed; failed remote queries fail with typed problems and preserve successful rows.
+- Missing optional list lockfile differs from malformed existing lockfile. Valid JSON invocations with missing config/required lockfile produce envelopes; malformed flags retain Clap exit `2`.
+- Human and JSON modes use the same reports/exit decisions. JSON mode does not add fetching, writes, prompts, or symlink repair. Test the documented migration from a root array to `.data.rows`.
+
+Selection checks:
+
+- Updating one Git skill leaves every other body, include filter, resolved commit, and file/hash record unchanged. Keep dependency agents and actual target links unchanged; no target records are added to version-5 lockfiles. Cover both a missing and a locally edited unselected body; neither is hashed or fetched.
+- Cover multiple names, duplicates, unknown names, reserved `.`/`..` names, legacy-only names, empty effective selection, local sources, global/project isolation, missing/invalid baselines, and bundle-owned/shared-target dependencies. Keep config/bundle JSON-schema name constraints aligned with the shared validation.
+- Any selected failure restores the entire selection and old lockfile. Config/provenance and existing symlinks remain unchanged on success and failure. Existing `add` isolation and full-update/install behavior retain regression coverage.
+
+### References
+
+The adoption is limited to local persistence patterns and machine-readable contracts, reimplemented through sksync's existing seams rather than importing skilld's framework. Reference snapshot: skilld commit `3ef9256ff19a8d6403c6d55286c6131212bc7896`.
+
+- [skilld local-store staging, backups, and lock publication](https://github.com/skilld-dev/skilld/blob/3ef9256ff19a8d6403c6d55286c6131212bc7896/crates/skilld-command/src/local_store.rs)
+- [skilld versioned output envelopes](https://github.com/skilld-dev/skilld/blob/3ef9256ff19a8d6403c6d55286c6131212bc7896/crates/skilld-command/src/output.rs)
+- [skilld selective-update UI](https://github.com/skilld-dev/skilld/blob/3ef9256ff19a8d6403c6d55286c6131212bc7896/crates/skilld-native/src/update_ui.rs)
+- [Standard-library advisory locking and compiler floor](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)
