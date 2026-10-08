@@ -247,16 +247,10 @@ pub trait SkillInstaller {
 /// Content metadata prepared without changing the live managed body.
 #[derive(Debug)]
 pub struct PreparedSkill<R> {
-    // P07 consumes this metadata when building the batch lockfile. Remove these
-    // field-level allowances when that coordinator is implemented.
-    #[allow(dead_code)]
     pub name: SkillName,
-    #[allow(dead_code)]
     pub destination: PathBuf,
     pub installed: InstalledSkillSource,
-    #[allow(dead_code)]
     pub hash: Digest,
-    #[allow(dead_code)]
     pub files: Vec<LockedFile>,
     pub receipt: R,
 }

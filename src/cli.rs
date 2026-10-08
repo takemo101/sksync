@@ -35,7 +35,9 @@ use crate::application::ports::{AddDependencyOptions, DependencyConfigStore, Loc
 use crate::application::remote::{
     collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblem, RemoteSourceStatus,
 };
-use crate::application::update::{apply_update_report_sources, update_dependencies};
+use crate::application::update::{
+    apply_update_report_sources, update_dependencies, update_dependency_batch, UpdateError,
+};
 use crate::domain::agent::AgentKind;
 use crate::domain::bundle::BundleName;
 use crate::domain::link_plan::{LinkPlan, LinkPlanItem, PlanAction};
@@ -43,7 +45,7 @@ use crate::domain::lockfile::{LockedFile, LockedSkill, Lockfile};
 use crate::domain::package_filter::PackageFilter;
 use crate::domain::removal::{classify_skill_removal, SkillRemovalScope};
 use crate::domain::scope::Scope;
-use crate::domain::skill::SkillName;
+use crate::domain::skill::{SkillName, SourcePath};
 use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::domain::source::GitInstallSource;
 use crate::infrastructure::atomic_file::{write_atomic, WriteMode};
@@ -2528,17 +2530,27 @@ fn run_install(args: InstallArgs) -> Result<()> {
 fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
-    let mut config = load_config_for_scope(args.global, &current_dir)?;
-    print_progress("Installing skills...");
-    let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
-    apply_update_report_sources(&mut config, &report);
-    print_update_report(report);
-    print_progress("Planning links...");
-    let (config, plan, root_dir) = build_plan_from_config(config, args.global, &current_dir)?;
-    let lockfile = build_lockfile_from_plan(&config, &plan, &root_dir)?;
+    let config = load_config_for_scope(args.global, &current_dir)?;
+    validate_update_dependency_destinations(&config)?;
+    let root_dir = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
-    FileLockfileStore::new(&lockfile_path).write(&lockfile)?;
-    print_lockfile_written(lockfile_path);
+    print_progress("Preparing skills...");
+    let report = update_dependency_batch(
+        &config,
+        None,
+        &FileSystemSkillInstaller,
+        &FileLockfileStore::new(&lockfile_path),
+        |prepared| build_update_lockfile(&config, prepared, &root_dir),
+    )?;
+    let committed = !report.updated.is_empty();
+    print_update_report(report);
+    if committed {
+        print_lockfile_written(lockfile_path);
+    }
     Ok(())
 }
 
@@ -3460,6 +3472,287 @@ fn build_lockfile_from_plan(
     })
 }
 
+/// Independent receipts require disjoint bodies, including physical directory aliases.
+/// Run under the update guard before preparation creates namespace directories.
+fn validate_update_dependency_destinations(config: &ResolvedConfig) -> Result<()> {
+    let destinations = config
+        .skills
+        .iter()
+        .filter(|skill| skill.install_source.is_some())
+        .map(|skill| {
+            physical_content_path(skill.source.as_path())
+                .map(|path| (skill, path))
+                .with_context(|| {
+                    format!("failed to resolve update destination for '{}'", skill.name)
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (index, (left, left_path)) in destinations.iter().enumerate() {
+        for (right, right_path) in &destinations[index + 1..] {
+            if update_destinations_overlap(left_path, right_path)? {
+                bail!(
+                    "dependency destinations overlap: '{}' ({}) and '{}' ({}); use separate managed body directories",
+                    left.name, left_path.display(), right.name, right_path.display()
+                );
+            }
+        }
+    }
+    let destinations = destinations
+        .iter()
+        .map(|(skill, path)| (&skill.name, path.as_path()))
+        .collect::<Vec<_>>();
+    crate::infrastructure::install::validate_update_destination_aliases(
+        config.skill_dir.as_path(),
+        &destinations,
+    )?;
+    Ok(())
+}
+
+fn update_destinations_overlap(left: &Path, right: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    if left.starts_with(right) || right.starts_with(left) {
+        return Ok(true);
+    }
+    // Missing suffixes are compared relative to existing directory identities:
+    // canonical spellings alone need not agree across Unix volume/case aliases.
+    for left_parent in left.ancestors() {
+        let left_metadata = match fs::metadata(left_parent) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !left_metadata.is_dir() {
+            continue;
+        }
+        for right_parent in right.ancestors() {
+            let right_metadata = match fs::metadata(right_parent) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if right_metadata.is_dir()
+                && left_metadata.dev() == right_metadata.dev()
+                && left_metadata.ino() == right_metadata.ino()
+            {
+                let left_suffix = left.strip_prefix(left_parent).expect("ancestor prefix");
+                let right_suffix = right.strip_prefix(right_parent).expect("ancestor prefix");
+                if left_suffix.starts_with(right_suffix) || right_suffix.starts_with(left_suffix) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Dependency content comes from staging; legacy aliases use the same final content.
+/// Disjoint legacy entries retain live hashing, without target resolution or a link plan.
+fn build_update_lockfile<R>(
+    config: &ResolvedConfig,
+    prepared: &[crate::application::ports::PreparedSkill<R>],
+    root: &Path,
+) -> std::result::Result<Lockfile, UpdateError> {
+    let mut skills = BTreeMap::new();
+    for skill in &config.skills {
+        let locked =
+            if let Some(content) = prepared.iter().find(|content| content.name == skill.name) {
+                LockedSkill {
+                    source: SourcePath::new(content.destination.clone()).map_err(|error| {
+                        UpdateError::BuildLockfile {
+                            message: error.to_string(),
+                        }
+                    })?,
+                    install_source: Some(content.installed.resolved_source.clone()),
+                    include: skill.include.clone(),
+                    hash: content.hash.clone(),
+                    files: content.files.clone(),
+                    targets: Vec::new(),
+                }
+            } else {
+                let (hash, files) = update_legacy_content(skill.source.as_path(), prepared)?;
+                LockedSkill {
+                    source: skill.source.clone(),
+                    install_source: skill.install_source.clone(),
+                    include: skill.include.clone(),
+                    hash,
+                    files,
+                    targets: Vec::new(),
+                }
+            };
+        skills.insert(skill.name.clone(), locked);
+    }
+    Ok(Lockfile {
+        generated_by: format!("sksync@{}", env!("CARGO_PKG_VERSION")),
+        generated_at: generated_at(),
+        root: root.to_path_buf(),
+        skills,
+    })
+}
+
+/// Resolve existing aliases, or a missing body's physical parent, for comparison only.
+fn physical_content_path(path: &Path) -> std::io::Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return fs::canonicalize(".");
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => fs::canonicalize(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("missing content parent"))?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| std::io::Error::other("unresolved content path"))?;
+            Ok(physical_content_path(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Canonical spelling can still differ across Unix aliases (including macOS
+/// volume aliases). Normalize existing directory identities to prepared paths.
+fn prepared_directory_alias<R>(
+    candidate: &Path,
+    metadata: &fs::Metadata,
+    destinations: &[(&crate::application::ports::PreparedSkill<R>, PathBuf)],
+) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.is_dir() {
+        for (_, destination) in destinations {
+            for ancestor in destination.ancestors() {
+                match fs::metadata(ancestor) {
+                    Ok(existing)
+                        if existing.is_dir()
+                            && existing.dev() == metadata.dev()
+                            && existing.ino() == metadata.ino() =>
+                    {
+                        return Ok(ancestor.to_path_buf())
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    fs::canonicalize(candidate)
+}
+
+/// Follow aliases outside a replaced body, but use candidate paths inside it:
+/// inner symlinks in the old body will disappear during publication.
+fn legacy_candidate_path<R>(
+    path: &Path,
+    destinations: &[(&crate::application::ports::PreparedSkill<R>, PathBuf)],
+    links_left: usize,
+) -> std::io::Result<PathBuf> {
+    let Some(parent) = path.parent() else {
+        return fs::canonicalize(path);
+    };
+    if path.as_os_str().is_empty() {
+        return fs::canonicalize(".");
+    }
+    let parent = legacy_candidate_path(parent, destinations, links_left)?;
+    let inside_body = destinations
+        .iter()
+        .any(|(_, destination)| parent.starts_with(destination));
+    let Some(name) = path.file_name() else {
+        if inside_body {
+            return Err(std::io::Error::other(
+                "unsupported traversal inside prepared legacy content",
+            ));
+        }
+        return fs::canonicalize(path);
+    };
+    let candidate = parent.join(name);
+    if inside_body {
+        return Ok(candidate);
+    }
+    match fs::symlink_metadata(&candidate) {
+        Ok(metadata) if metadata.is_symlink() => {
+            let remaining = links_left
+                .checked_sub(1)
+                .ok_or_else(|| std::io::Error::other("too many legacy source symlinks"))?;
+            let target = fs::read_link(&candidate)?;
+            legacy_candidate_path(&parent.join(target), destinations, remaining)
+        }
+        Ok(metadata) => prepared_directory_alias(&candidate, &metadata, destinations),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+        Err(error) => Err(error),
+    }
+}
+
+fn update_legacy_content<R>(
+    source: &Path,
+    prepared: &[crate::application::ports::PreparedSkill<R>],
+) -> std::result::Result<(crate::domain::lockfile::Digest, Vec<LockedFile>), UpdateError> {
+    let failure = |message: String| UpdateError::BuildLockfile {
+        message: format!("legacy source {}: {message}", source.display()),
+    };
+    let destinations = prepared
+        .iter()
+        .map(|content| physical_content_path(&content.destination).map(|path| (content, path)))
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| failure(error.to_string()))?;
+    let physical_source = legacy_candidate_path(source, &destinations, 40)
+        .map_err(|error| failure(error.to_string()))?;
+    // An ancestor walk would include private sibling staging and describe neither
+    // the old nor final content. Stop before serialization/publication instead.
+    if let Some((content, _)) = destinations
+        .iter()
+        .find(|(_, path)| *path != physical_source && path.starts_with(&physical_source))
+    {
+        return Err(failure(format!("overlaps prepared dependency '{}' as an ancestor; use separate legacy source directories", content.name)));
+    }
+    if let Some((content, destination)) = destinations
+        .iter()
+        .find(|(_, path)| physical_source.starts_with(path))
+    {
+        let relative = physical_source
+            .strip_prefix(destination)
+            .map_err(|error| failure(error.to_string()))?;
+        if relative.as_os_str().is_empty() {
+            return Ok((content.hash.clone(), content.files.clone()));
+        }
+        let files = content
+            .files
+            .iter()
+            .filter_map(|file| {
+                file.path
+                    .strip_prefix(relative)
+                    .ok()
+                    .map(|path| LockedFile {
+                        path: path.to_path_buf(),
+                        hash: file.hash.clone(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        if files.iter().any(|file| file.path.as_os_str().is_empty()) {
+            return Err(failure(
+                "must be a directory, not a prepared regular file".into(),
+            ));
+        }
+        if files.is_empty() {
+            return Err(failure(format!("overlaps prepared dependency '{}' but its subtree has no prepared file records; cannot establish final legacy content", content.name)));
+        }
+        let hash = crate::infrastructure::hash::hash_file_entries(
+            files.iter().map(|file| (file.path.as_path(), &file.hash)),
+        )
+        .map_err(|error| failure(error.to_string()))?;
+        return Ok((hash, files));
+    }
+    let hash = hash_directory(source).map_err(|error| failure(error.to_string()))?;
+    Ok((
+        hash.hash,
+        hash.files
+            .into_iter()
+            .map(|file| LockedFile {
+                path: file.path,
+                hash: file.hash,
+            })
+            .collect(),
+    ))
+}
+
 fn generated_at() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3561,6 +3854,151 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn update_destination_preflight_preserves_alias_equality_and_containment_snapshots() {
+        for (left_name, alias_name) in [("alpha", "ALPHA"), ("café", "cafe\u{301}")] {
+            let capability = tempfile::tempdir().unwrap();
+            fs::create_dir(capability.path().join(left_name)).unwrap();
+            let aliases = capability.path().join(alias_name).exists();
+            eprintln!(
+                "update destination alias fixture {left_name}/{alias_name}: aliases={aliases}"
+            );
+            for existing in [false, true] {
+                for subtree in [false, true] {
+                    for reverse in [false, true] {
+                        let dir = tempfile::tempdir().unwrap();
+                        let store = dir.path().join("skills");
+                        fs::create_dir(&store).unwrap();
+                        let left = store.join(left_name);
+                        let right = if subtree {
+                            store.join(alias_name).join("missing/child")
+                        } else {
+                            store.join(alias_name)
+                        };
+                        if existing {
+                            fs::create_dir(&left).unwrap();
+                            fs::write(left.join("SKILL.md"), "old content").unwrap();
+                        }
+                        let snapshot = || {
+                            let mut tree = walkdir::WalkDir::new(&store)
+                                .into_iter()
+                                .map(|entry| {
+                                    let entry = entry.unwrap();
+                                    (
+                                        entry.path().strip_prefix(&store).unwrap().to_path_buf(),
+                                        entry.file_type().is_dir(),
+                                        entry
+                                            .file_type()
+                                            .is_file()
+                                            .then(|| fs::read(entry.path()).unwrap()),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            tree.sort();
+                            tree
+                        };
+                        let before = snapshot();
+                        let mut config = ResolvedConfig {
+                            skill_dir: SourcePath::new(store.clone()).unwrap(),
+                            agents: BTreeMap::new(),
+                            default_agents: Vec::new(),
+                            skills: [("first", left), ("second", right)]
+                                .into_iter()
+                                .map(|(name, path)| ResolvedSkill {
+                                    name: SkillName::new(name).unwrap(),
+                                    source: SourcePath::new(path).unwrap(),
+                                    install_source: Some(InstallSource::Local(
+                                        dir.path().join("unused-local-source"),
+                                    )),
+                                    include: None,
+                                    agents: Vec::new(),
+                                })
+                                .collect(),
+                        };
+                        if reverse {
+                            config.skills.reverse();
+                        }
+                        let result = super::validate_update_dependency_destinations(&config);
+                        assert_eq!(
+                            result.is_err(),
+                            aliases,
+                            "{existing}/{subtree}/{reverse}: {result:?}"
+                        );
+                        if let Err(error) = result {
+                            assert!(
+                                error
+                                    .to_string()
+                                    .contains("dependency destinations overlap"),
+                                "{error}"
+                            );
+                        }
+                        assert_eq!(snapshot(), before);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn update_batch_lockfile_uses_prepared_final_paths_hashes_files_and_resolved_sources() {
+        use crate::application::ports::{InstalledSkillSource, PreparedSkill};
+        use crate::domain::lockfile::{Digest, LockedFile};
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("skills/review");
+        let configured_source = GitInstallSource {
+            url: dir.path().join("local-repository").display().to_string(),
+            reference: Some("main".into()),
+            path: PathBuf::from("skills/review"),
+        };
+        let mut resolved_source = configured_source.clone();
+        resolved_source.reference = Some("prepared-commit".into());
+        let include = PackageFilter::new(vec!["SKILL.md".into()]).unwrap();
+        let name = SkillName::new("review").unwrap();
+        let config = ResolvedConfig {
+            skill_dir: SourcePath::new(dir.path().join("skills")).unwrap(),
+            agents: BTreeMap::new(),
+            default_agents: Vec::new(),
+            skills: vec![ResolvedSkill {
+                name: name.clone(),
+                source: SourcePath::new(destination.clone()).unwrap(),
+                install_source: Some(InstallSource::Git(configured_source)),
+                include: Some(include.clone()),
+                agents: Vec::new(),
+            }],
+        };
+        let prepared = PreparedSkill {
+            name: name.clone(),
+            destination: destination.clone(),
+            installed: InstalledSkillSource {
+                label: "prepared".into(),
+                resolved_source: InstallSource::Git(resolved_source.clone()),
+                warnings: Vec::new(),
+            },
+            hash: Digest::new("prepared-hash").unwrap(),
+            files: vec![LockedFile {
+                path: PathBuf::from("SKILL.md"),
+                hash: Digest::new("prepared-file-hash").unwrap(),
+            }],
+            receipt: (),
+        };
+        assert!(
+            !destination.exists(),
+            "dependency metadata must not be rehashed from a live body"
+        );
+        let lock = super::build_update_lockfile(&config, &[prepared], dir.path()).unwrap();
+        let entry = &lock.skills[&name];
+        assert_eq!(entry.source.as_path(), destination);
+        assert_eq!(
+            entry.install_source,
+            Some(InstallSource::Git(resolved_source))
+        );
+        assert_eq!(entry.include, Some(include));
+        assert_eq!(entry.hash.as_str(), "prepared-hash");
+        assert_eq!(entry.files[0].hash.as_str(), "prepared-file-hash");
+        assert_eq!(entry.files[0].path, Path::new("SKILL.md"));
+        assert!(entry.targets.is_empty());
+    }
 
     #[test]
     fn writer_guard_run_with_args_uses_the_guarded_use_case() {
