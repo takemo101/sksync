@@ -2,6 +2,7 @@
 name = "sksync"
 version = "0.0.15"
 edition = "2021"
+rust-version = "1.89"
 description = "Synchronize AI agent skill symlinks"
 license = "MIT"
 repository = "https://github.com/takemo101/sksync"

@@ -12,3 +12,5 @@ pub mod hash;
 pub mod init;
 pub mod install;
 pub mod json;
+#[cfg(unix)]
+pub mod write_guard;
