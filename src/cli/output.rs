@@ -5,17 +5,18 @@ use thiserror::Error;
 
 // P09–P12 consume these output-only APIs. Remove each narrow allowance as its
 // command adapter lands; the application/domain reports remain presentation-free.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JsonCommand {
     List,
+    #[allow(dead_code)] // P10
     Plan,
+    #[allow(dead_code)] // P11
     Check,
+    #[allow(dead_code)] // P12
     Outdated,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputScope {
@@ -23,7 +24,6 @@ pub enum OutputScope {
     Global,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct OutputError {
     pub code: String,
@@ -32,7 +32,6 @@ pub struct OutputError {
     pub hint: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonEnvelope<T> {
@@ -44,7 +43,6 @@ pub struct JsonEnvelope<T> {
     pub error: Option<OutputError>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum OutputWriteError {
     #[error("failed to serialize JSON output: {0}")]
@@ -63,7 +61,6 @@ impl OutputWriteError {
     }
 }
 
-#[allow(dead_code)]
 pub fn write_json<W: Write, T: Serialize>(
     writer: &mut W,
     envelope: &JsonEnvelope<T>,
@@ -82,23 +79,13 @@ pub(crate) struct RenderedFailure {
 
 /// Stable machine codes; adapters select these by typed causes, not message text.
 pub mod codes {
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const CONFIG_NOT_FOUND: &str = "CONFIG_NOT_FOUND";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const INVALID_CONFIG: &str = "INVALID_CONFIG";
     // Consumed by the command adapters in P09–P12.
     #[allow(dead_code)]
     pub const LOCKFILE_NOT_FOUND: &str = "LOCKFILE_NOT_FOUND";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const INVALID_LOCKFILE: &str = "INVALID_LOCKFILE";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const TARGET_RESOLUTION_FAILED: &str = "TARGET_RESOLUTION_FAILED";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const INSPECTION_FAILED: &str = "INSPECTION_FAILED";
     // Consumed by the command adapters in P09–P12.
     #[allow(dead_code)]
@@ -106,15 +93,145 @@ pub mod codes {
     // Consumed by the command adapters in P09–P12.
     #[allow(dead_code)]
     pub const CHECK_FAILED: &str = "CHECK_FAILED";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const IO_ERROR: &str = "IO_ERROR";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const SERIALIZATION_FAILED: &str = "SERIALIZATION_FAILED";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListData {
+    skills: Vec<ListSkill>,
+    lockfile_status: ListLockfileStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ListLockfileStatus {
+    Available,
+    Missing,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListSkill {
+    name: String,
+    source: std::path::PathBuf,
+    install_source: Option<ListInstallSource>,
+    include: Option<Vec<String>>,
+    locked_hash: Option<String>,
+    targets: Vec<ListTarget>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ListInstallSource {
+    Local {
+        path: std::path::PathBuf,
+    },
+    Git {
+        url: String,
+        path: std::path::PathBuf,
+        #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+        reference: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct ListTarget {
+    agent: String,
+    target: Option<std::path::PathBuf>,
+    status: ListTargetStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<OutputError>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ListTargetStatus {
+    Synced,
+    Missing,
+    Drifted,
+    Conflict,
+    BrokenSymlink,
+    SourceMissing,
+    ResolveFailed,
+    InspectFailed,
+}
+
+pub fn list_target_error(
+    state: &crate::application::list::ListedTargetState,
+) -> Option<OutputError> {
+    use crate::application::list::ListedTargetState;
+    let (code, message) = match state {
+        ListedTargetState::ResolveFailed(message) => (codes::TARGET_RESOLUTION_FAILED, message),
+        ListedTargetState::InspectFailed(message) => (codes::INSPECTION_FAILED, message),
+        _ => return None,
+    };
+    Some(OutputError {
+        code: code.to_owned(),
+        message: message.clone(),
+        hint: None,
+    })
+}
+
+impl From<&crate::application::list::ListReport> for ListData {
+    fn from(report: &crate::application::list::ListReport) -> Self {
+        use crate::application::list::{ListLockfileStatus as ReportStatus, ListedTargetState};
+        use crate::domain::source::InstallSource;
+        Self {
+            lockfile_status: match report.lockfile_status {
+                ReportStatus::Available => ListLockfileStatus::Available,
+                ReportStatus::Missing => ListLockfileStatus::Missing,
+            },
+            skills: report
+                .skills
+                .iter()
+                .map(|skill| ListSkill {
+                    name: skill.name.clone(),
+                    source: skill.source.clone(),
+                    install_source: skill.install_source.as_ref().map(|source| match source {
+                        InstallSource::Local(path) => {
+                            ListInstallSource::Local { path: path.clone() }
+                        }
+                        InstallSource::Git(source) => ListInstallSource::Git {
+                            url: source.url.clone(),
+                            path: source.path.clone(),
+                            reference: source.reference.clone(),
+                        },
+                    }),
+                    include: skill
+                        .include
+                        .as_ref()
+                        .map(|filter| filter.patterns().to_vec()),
+                    locked_hash: skill.locked_hash.clone(),
+                    targets: skill
+                        .targets
+                        .iter()
+                        .map(|target| ListTarget {
+                            agent: target.agent.clone(),
+                            target: target.target.clone(),
+                            status: match target.state {
+                                ListedTargetState::Synced => ListTargetStatus::Synced,
+                                ListedTargetState::Missing => ListTargetStatus::Missing,
+                                ListedTargetState::Drifted => ListTargetStatus::Drifted,
+                                ListedTargetState::Conflict => ListTargetStatus::Conflict,
+                                ListedTargetState::BrokenSymlink => ListTargetStatus::BrokenSymlink,
+                                ListedTargetState::SourceMissing => ListTargetStatus::SourceMissing,
+                                ListedTargetState::ResolveFailed(_) => {
+                                    ListTargetStatus::ResolveFailed
+                                }
+                                ListedTargetState::InspectFailed(_) => {
+                                    ListTargetStatus::InspectFailed
+                                }
+                            },
+                            error: list_target_error(&target.state),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]

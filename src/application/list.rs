@@ -1,6 +1,8 @@
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::{LinkStore, TargetResolver, TargetState};
 use crate::domain::lockfile::Lockfile;
+use crate::domain::package_filter::PackageFilter;
+use crate::domain::source::InstallSource;
 use crate::domain::target::TargetPath;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -8,9 +10,28 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListReport {
     pub skills: Vec<ListedSkill>,
+    pub lockfile_status: ListLockfileStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListLockfileStatus {
+    Available,
+    Missing,
 }
 
 impl ListReport {
+    pub fn is_success(&self) -> bool {
+        self.skills
+            .iter()
+            .flat_map(|skill| &skill.targets)
+            .all(|target| {
+                !matches!(
+                    target.state,
+                    ListedTargetState::InspectFailed(_) | ListedTargetState::ResolveFailed(_)
+                )
+            })
+    }
+
     pub fn display_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for skill in &self.skills {
@@ -22,7 +43,11 @@ impl ListReport {
                 lines.push(format!(
                     "  {} -> {} [{}]",
                     target.agent,
-                    target.target.display(),
+                    target
+                        .target
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "unresolved".to_owned()),
                     target.state
                 ));
             }
@@ -39,6 +64,9 @@ impl ListReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedSkill {
     pub name: String,
+    pub source: PathBuf,
+    pub install_source: Option<InstallSource>,
+    pub include: Option<PackageFilter>,
     pub locked_hash: Option<String>,
     pub targets: Vec<ListedTarget>,
 }
@@ -46,7 +74,7 @@ pub struct ListedSkill {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedTarget {
     pub agent: String,
-    pub target: std::path::PathBuf,
+    pub target: Option<PathBuf>,
     pub state: ListedTargetState,
 }
 
@@ -111,7 +139,7 @@ pub fn list_skills(
                 Err(error) => {
                     targets.push(ListedTarget {
                         agent: agent.as_str().to_owned(),
-                        target: std::path::PathBuf::new(),
+                        target: None,
                         state: ListedTargetState::ResolveFailed(error.to_string()),
                     });
                     continue;
@@ -122,7 +150,7 @@ pub fn list_skills(
                 Err(error) => {
                     targets.push(ListedTarget {
                         agent: agent.as_str().to_owned(),
-                        target: std::path::PathBuf::new(),
+                        target: None,
                         state: ListedTargetState::ResolveFailed(error.to_string()),
                     });
                     continue;
@@ -155,19 +183,31 @@ pub fn list_skills(
 
             targets.push(ListedTarget {
                 agent: agent.as_str().to_owned(),
-                target: target.as_path().to_path_buf(),
+                target: Some(target.as_path().to_path_buf()),
                 state,
             });
         }
 
+        targets.sort_by(|a, b| (&a.agent, &a.target).cmp(&(&b.agent, &b.target)));
         skills.push(ListedSkill {
             name: skill.name.as_str().to_owned(),
+            source: skill.source.as_path().to_path_buf(),
+            install_source: skill.install_source.clone(),
+            include: skill.include.clone(),
             locked_hash,
             targets,
         });
     }
 
-    ListReport { skills }
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    ListReport {
+        skills,
+        lockfile_status: if lockfile.is_some() {
+            ListLockfileStatus::Available
+        } else {
+            ListLockfileStatus::Missing
+        },
+    }
 }
 
 #[cfg(test)]
@@ -322,7 +362,7 @@ mod tests {
         assert_eq!(report.skills[0].name, "review");
         assert_eq!(
             report.skills[0].targets[0].target,
-            PathBuf::from("/targets/pi/review")
+            Some(PathBuf::from("/targets/pi/review"))
         );
         assert_eq!(
             report.skills[0].targets[0].state,
@@ -396,5 +436,36 @@ mod tests {
             report.skills[0].locked_hash.as_deref(),
             Some("sha256-locked")
         );
+    }
+    struct FailingLinkStore;
+    impl LinkStore for FailingLinkStore {
+        fn inspect_target(
+            &self,
+            target: &TargetPath,
+            _: &SourcePath,
+        ) -> Result<TargetState, LinkStoreError> {
+            Err(LinkStoreError::Inspect {
+                path: target.as_path().display().to_string(),
+                source: std::io::Error::other("injected inspection failure"),
+            })
+        }
+    }
+
+    #[test]
+    fn list_failures_are_typed_and_keep_collected_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let source = SourcePath::new(root.path()).unwrap();
+        let report = list_skills(
+            &config(source),
+            None,
+            &FailingLinkStore,
+            &FakeTargetResolver,
+        );
+        assert!(!report.is_success());
+        assert_eq!(report.skills.len(), 1);
+        assert!(matches!(
+            report.skills[0].targets[0].state,
+            ListedTargetState::InspectFailed(_)
+        ));
     }
 }
