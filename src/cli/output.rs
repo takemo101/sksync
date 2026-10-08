@@ -9,7 +9,6 @@ use thiserror::Error;
 #[serde(rename_all = "lowercase")]
 pub enum JsonCommand {
     List,
-    #[allow(dead_code)] // P10
     Plan,
     #[allow(dead_code)] // P11
     Check,
@@ -234,6 +233,101 @@ impl From<&crate::application::list::ListReport> for ListData {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct PlanData {
+    items: Vec<PlanItem>,
+    applicable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanItem {
+    owners: Vec<PlanOwner>,
+    source: std::path::PathBuf,
+    target: std::path::PathBuf,
+    #[serde(flatten)]
+    action: PlanAction,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanOwner {
+    skill: String,
+    agent: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+enum PlanAction {
+    CreateSymlink,
+    AlreadySynced,
+    Conflict {
+        reason: PlanConflictReason,
+    },
+    DriftedSymlink {
+        #[serde(rename = "actualSource")]
+        actual_source: std::path::PathBuf,
+    },
+    SourceMissing,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum PlanConflictReason {
+    RegularFile,
+    Directory,
+    BrokenSymlink,
+}
+
+impl From<&crate::domain::link_plan::LinkPlan> for PlanData {
+    fn from(plan: &crate::domain::link_plan::LinkPlan) -> Self {
+        use crate::domain::link_plan::{ConflictReason, PlanAction as Action};
+        let mut items = plan
+            .items
+            .iter()
+            .map(|item| {
+                let mut owners = item
+                    .owners
+                    .iter()
+                    .map(|owner| PlanOwner {
+                        skill: owner.skill.as_str().to_owned(),
+                        agent: owner.agent.as_str().to_owned(),
+                    })
+                    .collect::<Vec<_>>();
+                owners.sort_by(|left, right| {
+                    (&left.skill, &left.agent).cmp(&(&right.skill, &right.agent))
+                });
+                PlanItem {
+                    owners,
+                    source: item.source.as_path().to_path_buf(),
+                    target: item.target.as_path().to_path_buf(),
+                    action: match &item.action {
+                        Action::CreateSymlink => PlanAction::CreateSymlink,
+                        Action::AlreadySynced => PlanAction::AlreadySynced,
+                        Action::Conflict { reason } => PlanAction::Conflict {
+                            reason: match reason {
+                                ConflictReason::RegularFile => PlanConflictReason::RegularFile,
+                                ConflictReason::Directory => PlanConflictReason::Directory,
+                                ConflictReason::BrokenSymlink => PlanConflictReason::BrokenSymlink,
+                            },
+                        },
+                        Action::DriftedSymlink { actual_source } => PlanAction::DriftedSymlink {
+                            actual_source: actual_source.clone(),
+                        },
+                        Action::SourceMissing => PlanAction::SourceMissing,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.target.cmp(&right.target));
+        Self {
+            applicable: plan
+                .items
+                .iter()
+                .all(|item| matches!(item.action, Action::CreateSymlink | Action::AlreadySynced)),
+            items,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +467,52 @@ mod tests {
         write_json(&mut writer, &outdated(())).unwrap();
         assert_eq!(writer.calls, 1);
         assert_eq!(writer.bytes.last(), Some(&b'\n'));
+    }
+
+    #[test]
+    fn plan_json_dto_sorts_items_and_structured_owners_without_mutating_plan() {
+        use crate::domain::agent::AgentKind;
+        use crate::domain::link_plan::{LinkOwner, LinkPlan, LinkPlanItem, PlanAction as Action};
+        use crate::domain::skill::{SkillName, SourcePath};
+        use crate::domain::target::TargetPath;
+        let dir = tempfile::tempdir().unwrap();
+        let owners = [("zeta", "pi"), ("alpha", "universal"), ("alpha", "fx")]
+            .into_iter()
+            .map(|(skill, agent)| LinkOwner {
+                skill: SkillName::new(skill).unwrap(),
+                agent: agent.parse::<AgentKind>().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let plan = LinkPlan::new(
+            ["z", "a"]
+                .into_iter()
+                .map(|name| LinkPlanItem {
+                    owners: owners.clone(),
+                    source: SourcePath::new(dir.path().join("body")).unwrap(),
+                    target: TargetPath::new(dir.path().join(name)).unwrap(),
+                    action: Action::CreateSymlink,
+                })
+                .collect(),
+        );
+        let original = plan.clone();
+        let value = serde_json::to_value(PlanData::from(&plan)).unwrap();
+        assert_eq!(value["applicable"], true);
+        assert_eq!(
+            value["items"][0]["target"],
+            dir.path().join("a").display().to_string()
+        );
+        assert_eq!(
+            value["items"][1]["target"],
+            dir.path().join("z").display().to_string()
+        );
+        assert_eq!(
+            value["items"][0]["owners"],
+            serde_json::json!([
+                {"skill":"alpha","agent":"fx"},
+                {"skill":"alpha","agent":"universal"},
+                {"skill":"zeta","agent":"pi"}
+            ])
+        );
+        assert_eq!(plan, original);
     }
 }
