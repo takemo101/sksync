@@ -11,6 +11,13 @@ use crate::domain::skill::SourcePath;
 use crate::domain::source::InstallSource;
 use crate::domain::target::TargetPath;
 
+/// A committed operation succeeded but left an owned path requiring cleanup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupWarning {
+    pub path: PathBuf,
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigStoreError {
     #[error("failed to read config at {path}: {source}")]

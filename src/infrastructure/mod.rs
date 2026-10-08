@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod atomic_file;
 pub mod builtin_agents;
 pub mod fs;
 pub mod git;
