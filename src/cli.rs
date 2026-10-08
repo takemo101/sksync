@@ -40,7 +40,8 @@ use crate::application::remote::{
     collect_remote_source_problems, RemoteSourceChecker, RemoteSourceProblem, RemoteSourceStatus,
 };
 use crate::application::update::{
-    apply_update_report_sources, update_dependencies, update_dependency_batch, UpdateError,
+    apply_update_report_sources, merge_selected_lockfile, resolve_update_selection,
+    update_dependencies, update_dependency_batch, validate_selected_baseline, UpdateError,
 };
 use crate::domain::agent::AgentKind;
 use crate::domain::bundle::BundleName;
@@ -390,6 +391,8 @@ struct InstallArgs {
 
 #[derive(Debug, Args)]
 struct UpdateArgs {
+    /// Dependency keys to update; omit to update all dependencies.
+    skills: Vec<String>,
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(short = 'g', long)]
     global: bool,
@@ -2606,20 +2609,60 @@ fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     let config = load_config_for_scope(args.global, &current_dir)?;
-    validate_update_dependency_destinations(&config)?;
+    let selected = resolve_update_selection(&config, &args.skills)?;
+    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
+    let previous = if let Some(selected) = &selected {
+        let previous = match read_lockfile(&lockfile_path) {
+            Ok(previous) => Some(previous),
+            Err(crate::infrastructure::json::LockfileJsonError::Read { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("selected update requires a readable lockfile; run a full install/update to establish the baseline"),
+        };
+        validate_selected_baseline(&config, selected, previous.as_ref())?;
+        previous
+    } else {
+        None
+    };
+    if let (Some(selected), Some(previous)) = (&selected, &previous) {
+        validate_selected_update_destinations(&config, selected, previous)?;
+    } else {
+        validate_update_dependency_destinations(&config)?;
+    }
     let root_dir = if args.global {
         config_root_for_global()?
     } else {
         current_dir.clone()
     };
-    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     print_progress("Preparing skills...");
     let report = update_dependency_batch(
         &config,
-        None,
+        selected.as_ref(),
         &FileSystemSkillInstaller,
         &FileLockfileStore::new(&lockfile_path),
-        |prepared| build_update_lockfile(&config, prepared, &root_dir),
+        |prepared| {
+            if let Some(previous) = &previous {
+                let replacements = prepared
+                    .iter()
+                    .map(|content| {
+                        let skill = config
+                            .skills
+                            .iter()
+                            .find(|skill| skill.name == content.name)
+                            .expect("prepared dependency belongs to config");
+                        Ok((
+                            content.name.clone(),
+                            locked_prepared_skill(content, skill.include.clone())?,
+                        ))
+                    })
+                    .collect::<std::result::Result<BTreeMap<_, _>, UpdateError>>()?;
+                let mut merged = merge_selected_lockfile(previous, replacements);
+                merged.generated_by = format!("sksync@{}", env!("CARGO_PKG_VERSION"));
+                merged.generated_at = generated_at();
+                Ok(merged)
+            } else {
+                build_update_lockfile(&config, prepared, &root_dir)
+            }
+        },
     )?;
     let committed = !report.updated.is_empty();
     print_update_report(report);
@@ -3583,9 +3626,213 @@ fn validate_update_dependency_destinations(config: &ResolvedConfig) -> Result<()
     Ok(())
 }
 
+/// Unselected config and baseline paths are protected namespace observations,
+/// never health checks, fetch/hash candidates, or agent-target inspections.
+fn validate_selected_update_destinations(
+    config: &ResolvedConfig,
+    selected: &BTreeSet<SkillName>,
+    previous: &Lockfile,
+) -> Result<()> {
+    let mut destinations = config
+        .skills
+        .iter()
+        .filter(|skill| selected.contains(&skill.name))
+        .map(|skill| Ok((&skill.name, physical_content_path(skill.source.as_path())?)))
+        .collect::<Result<Vec<_>>>()?;
+    let selected_count = destinations.len();
+    let protected = config
+        .skills
+        .iter()
+        .filter(|skill| !selected.contains(&skill.name))
+        .map(|skill| (&skill.name, skill.source.as_path()))
+        .chain(
+            previous
+                .skills
+                .iter()
+                .filter(|(name, _)| !selected.contains(*name))
+                .map(|(name, skill)| (name, skill.source.as_path())),
+        );
+    for (name, path) in protected {
+        let observations = observed_content_paths(path, 40).with_context(|| {
+            format!(
+                "cannot establish selected-update namespace isolation for '{name}' ({})",
+                path.display()
+            )
+        })?;
+        for prerequisite in observations.lookup_directories {
+            for (selected_name, selected_path) in &destinations[..selected_count] {
+                if update_removes_lookup_directory(selected_path, &prerequisite)? {
+                    bail!("selected update of '{}' ({}) would remove namespace prerequisite {} for '{}'; use separate body paths or a full reconciliation", selected_name, selected_path.display(), prerequisite.display(), name);
+                }
+            }
+        }
+        for observed in observations.body_paths {
+            if !destinations[selected_count..]
+                .iter()
+                .any(|(existing_name, existing_path)| {
+                    *existing_name == name && *existing_path == observed
+                })
+            {
+                destinations.push((name, observed));
+            }
+        }
+    }
+    for index in 0..selected_count {
+        let (left, left_path) = &destinations[index];
+        for (right, right_path) in &destinations[index + 1..] {
+            if update_destinations_overlap(left_path, right_path)? {
+                bail!("dependency destinations overlap: '{}' ({}) and '{}' ({}); selected update would change protected content; use separate body paths or a full reconciliation", left, left_path.display(), right, right_path.display());
+            }
+        }
+    }
+    let destinations = destinations
+        .iter()
+        .map(|(name, path)| (*name, path.as_path()))
+        .collect::<Vec<_>>();
+    crate::infrastructure::install::validate_selected_update_destination_aliases(
+        config.skill_dir.as_path(),
+        &destinations,
+        selected_count,
+    )?;
+    Ok(())
+}
+
+/// Follow namespace symlinks, including dangling ones, while retaining their
+/// logical locations. A selected ancestor must not remove a protected alias.
+/// Read path metadata only: neither body contents nor directory entries.
+struct ContentPathObservations {
+    // Logical aliases and the final physical body endpoint (last).
+    body_paths: Vec<PathBuf>,
+    // Canceled '..' lookups must survive, but are not protected subtrees:
+    // replacing a child of an ordinary shared ancestor does not remove it.
+    lookup_directories: Vec<PathBuf>,
+}
+
+fn observed_content_paths(
+    path: &Path,
+    remaining_links: usize,
+) -> std::io::Result<ContentPathObservations> {
+    if remaining_links == 0 {
+        return Err(std::io::Error::other(
+            "namespace symlink cycle or excessive indirection",
+        ));
+    }
+    if path == Path::new("/") {
+        return Ok(ContentPathObservations {
+            body_paths: vec![path.to_path_buf()],
+            lookup_directories: Vec::new(),
+        });
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return resolve_observed_traversal(path, remaining_links);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("namespace path has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("unsupported namespace traversal"))?;
+    let mut parents = observed_content_paths(parent, remaining_links)?;
+    let physical_parent = parents
+        .body_paths
+        .pop()
+        .expect("namespace has a physical location");
+    let location = physical_parent.join(name);
+    let mut paths = parents
+        .body_paths
+        .into_iter()
+        .map(|parent| parent.join(name))
+        .collect::<Vec<_>>();
+    match fs::symlink_metadata(&location) {
+        Ok(metadata) if metadata.is_symlink() => {
+            paths.push(location.clone());
+            let referent = fs::read_link(&location)?;
+            let referent = if referent.is_absolute() {
+                referent
+            } else {
+                physical_parent.join(referent)
+            };
+            let referent = observed_content_paths(&referent, remaining_links - 1)?;
+            paths.extend(referent.body_paths);
+            parents
+                .lookup_directories
+                .extend(referent.lookup_directories);
+        }
+        Ok(_) => paths.push(fs::canonicalize(&location)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => paths.push(location),
+        Err(error) => return Err(error),
+    }
+    Ok(ContentPathObservations {
+        body_paths: paths,
+        lookup_directories: parents.lookup_directories,
+    })
+}
+
+fn resolve_observed_traversal(
+    path: &Path,
+    remaining_links: usize,
+) -> std::io::Result<ContentPathObservations> {
+    let mut resolved = PathBuf::new();
+    let mut lookup_directories = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                let observations = observed_content_paths(&resolved, remaining_links)?;
+                resolved = observations
+                    .body_paths
+                    .last()
+                    .expect("physical location")
+                    .clone();
+                if !fs::metadata(&resolved)?.is_dir() {
+                    return Err(std::io::Error::other(
+                        "namespace traversal parent is not a directory",
+                    ));
+                }
+                lookup_directories.extend(observations.lookup_directories);
+                lookup_directories.extend(observations.body_paths);
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            component => resolved.push(component.as_os_str()),
+        }
+    }
+    let mut observations = observed_content_paths(&resolved, remaining_links)?;
+    observations.lookup_directories.extend(lookup_directories);
+    Ok(observations)
+}
+
+fn update_removes_lookup_directory(
+    selected_root: &Path,
+    prerequisite: &Path,
+) -> std::io::Result<bool> {
+    if !update_destination_contains(selected_root, prerequisite)? {
+        return Ok(false);
+    }
+    // A proper descendant LOCATION is removed even when its symlink referent
+    // is the selected root. Resolve only its parent before testing root identity.
+    let parent = prerequisite
+        .parent()
+        .ok_or_else(|| std::io::Error::other("lookup directory has no parent"))?;
+    if update_destination_contains(selected_root, &physical_content_path(parent)?)? {
+        return Ok(true);
+    }
+    // Replacement preserves a valid directory at the selected root and its
+    // unchanged parent. This exemption is lookup-only, never body equality.
+    Ok(!update_destination_contains(prerequisite, selected_root)?)
+}
+
 fn update_destinations_overlap(left: &Path, right: &Path) -> std::io::Result<bool> {
+    Ok(update_destination_contains(left, right)? || update_destination_contains(right, left)?)
+}
+
+// Lookup prerequisites already exist as directories. Metadata/ancestor identity
+// comparisons suffice; unlike body paths they need no missing-namespace probes.
+fn update_destination_contains(left: &Path, right: &Path) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
-    if left.starts_with(right) || right.starts_with(left) {
+    if right.starts_with(left) {
         return Ok(true);
     }
     // Missing suffixes are compared relative to existing directory identities:
@@ -3611,7 +3858,7 @@ fn update_destinations_overlap(left: &Path, right: &Path) -> std::io::Result<boo
             {
                 let left_suffix = left.strip_prefix(left_parent).expect("ancestor prefix");
                 let right_suffix = right.strip_prefix(right_parent).expect("ancestor prefix");
-                if left_suffix.starts_with(right_suffix) || right_suffix.starts_with(left_suffix) {
+                if right_suffix.starts_with(left_suffix) {
                     return Ok(true);
                 }
             }
@@ -3631,18 +3878,7 @@ fn build_update_lockfile<R>(
     for skill in &config.skills {
         let locked =
             if let Some(content) = prepared.iter().find(|content| content.name == skill.name) {
-                LockedSkill {
-                    source: SourcePath::new(content.destination.clone()).map_err(|error| {
-                        UpdateError::BuildLockfile {
-                            message: error.to_string(),
-                        }
-                    })?,
-                    install_source: Some(content.installed.resolved_source.clone()),
-                    include: skill.include.clone(),
-                    hash: content.hash.clone(),
-                    files: content.files.clone(),
-                    targets: Vec::new(),
-                }
+                locked_prepared_skill(content, skill.include.clone())?
             } else {
                 let (hash, files) = update_legacy_content(skill.source.as_path(), prepared)?;
                 LockedSkill {
@@ -3661,6 +3897,24 @@ fn build_update_lockfile<R>(
         generated_at: generated_at(),
         root: root.to_path_buf(),
         skills,
+    })
+}
+
+fn locked_prepared_skill<R>(
+    content: &crate::application::ports::PreparedSkill<R>,
+    include: Option<PackageFilter>,
+) -> std::result::Result<LockedSkill, UpdateError> {
+    Ok(LockedSkill {
+        source: SourcePath::new(content.destination.clone()).map_err(|error| {
+            UpdateError::BuildLockfile {
+                message: error.to_string(),
+            }
+        })?,
+        install_source: Some(content.installed.resolved_source.clone()),
+        include,
+        hash: content.hash.clone(),
+        files: content.files.clone(),
+        targets: Vec::new(),
     })
 }
 

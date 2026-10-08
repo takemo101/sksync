@@ -59,7 +59,6 @@ pub enum UpdateError {
 }
 
 /// No names means a full update; explicit names are dependency keys, not a smaller config.
-#[allow(dead_code)] // P13 foundation; remove when MIK-018 connects positional CLI names.
 pub fn resolve_update_selection(
     config: &ResolvedConfig,
     names: &[String],
@@ -89,7 +88,6 @@ pub fn resolve_update_selection(
 }
 
 /// The caller loads a readable baseline in the chosen scope, then validates it under guards.
-#[allow(dead_code)] // P13 foundation; remove when MIK-018 connects the guarded baseline.
 pub fn validate_selected_baseline(
     config: &ResolvedConfig,
     selected: &BTreeSet<SkillName>,
@@ -107,7 +105,6 @@ pub fn validate_selected_baseline(
 }
 
 /// Preserve all other entries and metadata; the caller supplies successful generation metadata.
-#[allow(dead_code)] // P13 foundation; remove when MIK-018 builds selected batch candidates.
 pub fn merge_selected_lockfile(
     previous: &Lockfile,
     replacements: BTreeMap<SkillName, LockedSkill>,
@@ -656,6 +653,86 @@ mod batch_tests {
                 if ["prepare", "build", "serialize"].contains(&phase) {
                     assert!(!events.iter().any(|event| event.starts_with("publish:")));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_update_batch_failures_restore_all_selected_bodies_and_raw_lock() {
+        for absent in [false, true] {
+            for phase in [
+                "prepare",
+                "serialize",
+                "publish-alpha",
+                "publish-beta",
+                "lock",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let faults = BatchFaults {
+                    prepare: (phase == "prepare").then(|| "beta".into()),
+                    publish: phase.strip_prefix("publish-").map(str::to_owned),
+                    serialize: phase == "serialize",
+                    lock_publish: phase == "lock",
+                    ..Default::default()
+                };
+                let (mut config, adapter) = fixture(dir.path(), faults, absent);
+                let mut unselected = config.skills[0].clone();
+                unselected.name = SkillName::new("unselected").unwrap();
+                unselected.source = SourcePath::new(dir.path().join("skills/unselected")).unwrap();
+                config.skills.push(unselected);
+                fs::write(
+                    dir.path().join("skills/unselected"),
+                    b"untouched local edits",
+                )
+                .unwrap();
+                fs::write(dir.path().join("lock"), b"original raw selected baseline\n").unwrap();
+                let selected = BTreeSet::from([
+                    SkillName::new("alpha").unwrap(),
+                    SkillName::new("beta").unwrap(),
+                ]);
+                let result = update_dependency_batch(
+                    &config,
+                    Some(&selected),
+                    &adapter,
+                    &adapter,
+                    candidate,
+                );
+                assert!(result.is_err(), "{phase}");
+                assert_eq!(
+                    fs::read(dir.path().join("skills/alpha")).unwrap(),
+                    b"old alpha",
+                    "{phase}"
+                );
+                assert_eq!(
+                    fs::read(dir.path().join("skills/beta")).ok(),
+                    (!absent).then(|| b"old beta".to_vec()),
+                    "{phase}"
+                );
+                assert_eq!(
+                    fs::read(dir.path().join("skills/unselected")).unwrap(),
+                    b"untouched local edits"
+                );
+                assert_eq!(
+                    fs::read(dir.path().join("lock")).unwrap(),
+                    b"original raw selected baseline\n"
+                );
+                let events = adapter.events.borrow();
+                assert!(!events
+                    .iter()
+                    .any(|event| event.ends_with(":unselected") || event.starts_with("finalize:")));
+                let rollback = events
+                    .iter()
+                    .filter(|event| event.starts_with("rollback:"))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    rollback,
+                    if phase == "prepare" {
+                        vec!["rollback:alpha"]
+                    } else {
+                        vec!["rollback:beta", "rollback:alpha"]
+                    }
+                );
             }
         }
     }

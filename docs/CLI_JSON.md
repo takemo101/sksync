@@ -135,3 +135,9 @@ For `list`, a missing optional lockfile succeeds (exit `0`) with null locked has
 For `list`, resolution/inspection failures use `TARGET_RESOLUTION_FAILED` or `INSPECTION_FAILED`, set `ok: false`, retain collected rows in JSON, and exit `1` in both human and JSON modes. Missing links, source-missing bodies, drift, broken symlinks, and conflicts remain successful observations in both modes.
 
 A pre-write serialization failure, including an unrepresentable Unix path, emits one failed envelope with `data: null`, `SERIALIZATION_FAILED`, and exit `1`. A stdout write failure may prevent JSON delivery and is propagated without retrying or emitting a second response. Malformed CLI syntax retains Clap's stderr text and exit `2`; it is outside the JSON envelope contract.
+
+## Updating after an observation
+
+`update` remains human-output-only: `sksync update [skills...] [--global]` accepts explicit dependency keys or, without names, updates all dependencies. It has no `--json`, `--force`, or `--dry-run` flag. An `outdated` report is not a frozen update plan; a selected update records the exact Git commit actually prepared, which may be newer than the observation.
+
+Explicit selections require a readable existing lockfile and entries for every unselected configured skill. They merge only selected content records into the version-5 baseline, preserving unselected/stale records and leaving config, provenance, agents, and links unchanged. Missing/edited unselected bodies remain untouched; path-identity safety checks prevent collateral replacement. See [Updating dependencies](UPDATES.md) for baseline guidance, syntax, batch rollback, and manual-recovery limits.
