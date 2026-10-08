@@ -25,7 +25,7 @@ use crate::application::config::{apply_agent_target_mappings, AgentTargetDir, Re
 use crate::application::discovery::{
     discover_source_skills, infer_skill_name, source_with_selected_subpath, SkillCandidate,
 };
-use crate::application::init::{init_agents, init_global, init_project};
+use crate::application::init::{init_agents, init_global, init_project, InitError};
 use crate::application::list::{list_skills, ListReport, ListedTargetState};
 use crate::application::outdated::{
     collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
@@ -57,6 +57,9 @@ use crate::infrastructure::json::{
     default_agent_mapping_config, parse_install_source_value, read_agent_mapping_config,
     read_lockfile, AgentMappingConfig, FileConfigStore, FileDependencyConfigStore,
     FileLockfileStore,
+};
+use crate::infrastructure::write_guard::{
+    acquire_state_file_guard, prepare_state_parent, state_parent, WriteGuard,
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -434,7 +437,10 @@ fn dispatch(command: Command) -> Result<()> {
 
 fn run_init(args: InitArgs) -> Result<()> {
     if args.agents {
-        let result = init_agents(config_root_for_global()?, &FileInitStore)?;
+        let config_root = config_root_for_global()?;
+        let _guard = acquire_state_file_guard(&[config_root.join("agents.json")])
+            .context("failed to acquire agent mapping writer guard")?;
+        let result = init_agents(config_root, &FileInitStore)?;
         print_cleanup_warnings(&result.warnings);
         print_success(format!(
             "Updated agent mappings: {}",
@@ -444,6 +450,30 @@ fn run_init(args: InitArgs) -> Result<()> {
     }
 
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let root = if args.global {
+        config_root_for_global()?
+    } else {
+        current_dir.clone()
+    };
+    let config_path = config_path_for(args.global, &current_dir)?;
+    // Preserve create-only init's early refusal before creating guard containers.
+    // FileInitStore repeats this check under the guard to catch a competing init.
+    match fs::symlink_metadata(&config_path) {
+        Ok(_) => return Err(InitError::ConfigExists(config_path.display().to_string()).into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to inspect init config"),
+    }
+    let skills_dir = if args.global {
+        root.join("skills")
+    } else {
+        root.join(".sksync/skills")
+    };
+    let mut state_paths = vec![config_path];
+    if args.global {
+        state_paths.push(root.join("agents.json"));
+    }
+    let _guard =
+        acquire_directory_mutation_guard(&state_paths, &skills_dir, || Ok(skills_dir.clone()))?;
     let result = if args.global {
         init_global(config_root_for_global()?, &FileInitStore)?
     } else {
@@ -486,7 +516,10 @@ fn run_agents_list() -> Result<()> {
 }
 
 fn run_agents_refresh() -> Result<()> {
-    let result = init_agents(config_root_for_global()?, &FileInitStore)?;
+    let config_root = config_root_for_global()?;
+    let _guard = acquire_state_file_guard(&[config_root.join("agents.json")])
+        .context("failed to acquire agent mapping writer guard")?;
+    let result = init_agents(config_root, &FileInitStore)?;
     print_cleanup_warnings(&result.warnings);
     print_success(format!(
         "Updated agent mappings: {}",
@@ -848,6 +881,11 @@ impl RemoteSourceChecker for GitRemoteSourceChecker {
 fn run_import(args: ImportArgs) -> Result<()> {
     parse_agent_kinds(&args.agents)?;
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = if args.dry_run {
+        None
+    } else {
+        Some(acquire_mutation_guard(args.global, &current_dir, true)?)
+    };
     let config_path = config_path_for(args.global, &current_dir)?;
     let config = if config_path.exists() {
         Some(
@@ -1000,6 +1038,22 @@ fn run_bundle_export(args: BundleExportArgs) -> Result<()> {
     if args.dry_run {
         return Ok(());
     }
+    // Export replaces only its output entry, including manifest symlinks under
+    // --force. Lock the physical parent, not a replaceable inode or the referent.
+    let parent = plan
+        .destination
+        .path()
+        .parent()
+        .context("bundle output needs a parent")?;
+    fs::create_dir_all(parent)?;
+    let output_parent = fs::canonicalize(parent)?;
+    let _guard =
+        WriteGuard::acquire(&[output_parent]).context("failed to acquire export writer guard")?;
+    let current_parent = fs::canonicalize(parent)?;
+    if !_guard.covers(&[current_parent])? {
+        bail!("writer guard output parent changed during acquisition; retry the command");
+    }
+    validate_bundle_export_plan(&plan)?;
     apply_bundle_export_plan(&plan, BundleExportApplyOptions { force: args.force })?;
     print_success(format!(
         "Exported bundle: {} -> {}",
@@ -1114,6 +1168,11 @@ fn run_bundle_inspect(args: BundleInspectArgs) -> Result<()> {
 fn run_bundle_sync(args: BundleSyncArgs) -> Result<()> {
     parse_agent_kinds(&args.agents)?;
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = if args.dry_run {
+        None
+    } else {
+        Some(acquire_mutation_guard(args.global, &current_dir, false)?)
+    };
     let config_path = config_path_for(args.global, &current_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let root_dir = if args.global {
@@ -1352,6 +1411,11 @@ fn run_bundle_add(args: BundleAddArgs) -> Result<()> {
     let candidates = discover_bundle_manifest_candidates(&args.source, &root_dir)?;
     let bundle = select_bundle_manifest_candidates(&args.source, args.name.as_deref(), candidates)?
         .into_loaded_bundle();
+    let _guard = if args.dry_run {
+        None
+    } else {
+        Some(acquire_mutation_guard(args.global, &current_dir, true)?)
+    };
     let store = FileDependencyConfigStore::new(&config_path, default_skill_dir_for(args.global)?);
     print_progress("Planning changes...");
     let plan = store.plan_bundle_add(&bundle.entries, &args.agents, &bundle.provenance)?;
@@ -1460,6 +1524,11 @@ fn cleanup_bundle_add_artifacts(link_targets: &[PathBuf], skill_dirs: &[PathBuf]
 
 fn run_bundle_remove(args: BundleRemoveArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = if args.dry_run {
+        None
+    } else {
+        Some(acquire_mutation_guard(args.global, &current_dir, false)?)
+    };
     let config_path = config_path_for(args.global, &current_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let bundle_name = BundleName::new(args.name.clone()).context("invalid bundle name")?;
@@ -1898,6 +1967,9 @@ fn run_add(args: AddArgs) -> Result<()> {
         }
         AddSelectionOutcome::Selections(selections) => selections,
     };
+    // Discovery may prompt. Acquire only after selection, then reload config
+    // before any dependency write or body installation.
+    let _guard = acquire_mutation_guard(args.global, &current_dir, true)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let add_result = (|| -> Result<()> {
         let store =
@@ -1952,6 +2024,7 @@ fn run_add(args: AddArgs) -> Result<()> {
 
 fn run_attach(args: AttachArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     let config_path = config_path_for(args.global, &current_dir)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
     let attach_result = (|| -> Result<()> {
@@ -2049,6 +2122,7 @@ impl ConfigFileBackup {
 
 fn run_remove(args: RemoveArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     let config_path = config_path_for(args.global, &current_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     let config_backup = ConfigFileBackup::capture(&config_path)?;
@@ -2392,6 +2466,8 @@ fn run_plan(args: PlanArgs) -> Result<()> {
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     print_progress("Planning links...");
     let (config, plan, current_dir) = load_plan(args.global)?;
     let lockfile = build_lockfile_from_plan(&config, &plan, &current_dir)?;
@@ -2417,6 +2493,7 @@ fn run_apply(args: ApplyArgs) -> Result<()> {
 
 fn run_install(args: InstallArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     let mut config = load_config_for_scope(args.global, &current_dir)?;
     let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
     if lockfile_path.exists() {
@@ -2450,6 +2527,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
 
 fn run_update(args: UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let _guard = acquire_mutation_guard(args.global, &current_dir, false)?;
     let mut config = load_config_for_scope(args.global, &current_dir)?;
     print_progress("Installing skills...");
     let report = update_dependencies(&config, &FileSystemSkillInstaller)?;
@@ -2514,6 +2592,82 @@ fn build_plan_from_config(
     let plan = build_link_plan(&config, &fs_store, &fs_store, &target_resolver)?;
 
     Ok((config, plan, root_dir))
+}
+
+/// Resolve once for acquisition, then reload under the held guard. State files
+/// retain their logical scope base even when their physical parents are aliases.
+fn acquire_mutation_guard(
+    global: bool,
+    current_dir: &Path,
+    allow_missing: bool,
+) -> Result<WriteGuard> {
+    let config_path = config_path_for(global, current_dir)?;
+    let lockfile_path = lockfile_path_for(global, current_dir)?;
+    let resolve_store = || -> Result<PathBuf> {
+        match fs::symlink_metadata(&config_path) {
+            Ok(_) => Ok(load_config_from_path(&config_path, scope_for(global))?
+                .skill_dir
+                .as_path()
+                .to_path_buf()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
+                resolve_default_skill_dir(global, current_dir)
+            }
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to read config {}", config_path.display())),
+        }
+    };
+    let skills_dir = resolve_store()?;
+    let guard = acquire_directory_mutation_guard(
+        &[config_path.clone(), lockfile_path.clone()],
+        &skills_dir,
+        resolve_store,
+    )?;
+    // Reload the lockfile snapshot without changing callers' legacy optional-lock
+    // semantics. Callers that require a lockfile still parse it under this guard.
+    match fs::read(&lockfile_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to reload guarded lockfile"),
+    }
+    Ok(guard)
+}
+
+fn acquire_directory_mutation_guard(
+    state_paths: &[PathBuf],
+    skills_dir: &Path,
+    reload_store: impl FnOnce() -> Result<PathBuf>,
+) -> Result<WriteGuard> {
+    let mut resources = state_paths
+        .iter()
+        .map(|path| prepare_state_parent(path))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    fs::create_dir_all(skills_dir).with_context(|| {
+        format!(
+            "failed to create managed skill store {}",
+            skills_dir.display()
+        )
+    })?;
+    resources.push(fs::canonicalize(skills_dir)?);
+    resources.sort();
+    resources.dedup();
+    let guard =
+        WriteGuard::acquire(&resources).context("failed to acquire mutation writer guard")?;
+    let current_store = reload_store()?;
+    let mut current_resources = state_paths
+        .iter()
+        .map(|path| state_parent(path))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    current_resources.push(fs::canonicalize(current_store)?);
+    current_resources.sort();
+    current_resources.dedup();
+    if current_resources != resources
+        || !guard
+            .covers(&current_resources)
+            .context("failed to validate mutation writer guard")?
+    {
+        bail!("writer guard resources changed during acquisition; retry the command");
+    }
+    Ok(guard)
 }
 
 fn load_config_for_scope(global: bool, current_dir: &Path) -> Result<ResolvedConfig> {
@@ -3407,6 +3561,88 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn writer_guard_run_with_args_uses_the_guarded_use_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let home = temp.path().join("home");
+        fs::create_dir_all(project.join("skills")).unwrap();
+        fs::create_dir_all(home.join(".config")).unwrap();
+        fs::write(
+            project.join("sksync.config.json"),
+            br#"{"skillDir":"./skills","dependencies":{}}"#,
+        )
+        .unwrap();
+        let _guard =
+            crate::infrastructure::write_guard::WriteGuard::acquire(&[project.clone()]).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::tests::writer_guard_run_with_args_child",
+                "--nocapture",
+            ])
+            .current_dir(&project)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("SKSYNC_CLI_WRITER_GUARD_TEST", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(!project.join("sksync-lock.json").exists());
+    }
+
+    #[test]
+    fn writer_guard_run_with_args_child() {
+        if std::env::var_os("SKSYNC_CLI_WRITER_GUARD_TEST").is_none() {
+            return;
+        }
+        let error = super::run_with_args(["sksync", "update"]).unwrap_err();
+        assert!(format!("{error:#}").contains("writer guard"));
+    }
+
+    #[test]
+    fn writer_guard_rejects_changed_store_even_when_new_store_is_already_covered() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("skills");
+        let state = temp.path().join("config.json");
+        let result = super::acquire_directory_mutation_guard(&[state], &store, || {
+            Ok(temp.path().to_path_buf())
+        });
+        assert!(result.is_err(), "a changed resource set must abort");
+        assert!(crate::infrastructure::write_guard::WriteGuard::acquire(&[
+            temp.path().to_path_buf(),
+            store
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn writer_guard_rejects_retargeted_state_alias_after_acquisition() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&new).unwrap();
+        fs::write(old.join("config.json"), b"old").unwrap();
+        fs::write(new.join("config.json"), b"new").unwrap();
+        let state = temp.path().join("config.json");
+        symlink(old.join("config.json"), &state).unwrap();
+        let store = temp.path().join("skills");
+        let result = super::acquire_directory_mutation_guard(&[state.clone()], &store, || {
+            fs::remove_file(&state)?;
+            symlink(new.join("config.json"), &state)?;
+            Ok(store.clone())
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(old.join("config.json")).unwrap(), b"old");
+        assert_eq!(fs::read(new.join("config.json")).unwrap(), b"new");
+        assert!(
+            crate::infrastructure::write_guard::WriteGuard::acquire(&[old, new, store]).is_ok()
+        );
+    }
 
     fn remote_problem(skill: &str) -> RemoteSourceProblem {
         RemoteSourceProblem {

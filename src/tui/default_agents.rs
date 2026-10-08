@@ -7,6 +7,7 @@ use super::config::{config_path_for_scope, load_optional_config_for_scope, Confi
 use super::{prompt_config_scope, prompt_default_agents};
 use crate::application::config::ResolvedConfig;
 use crate::infrastructure::atomic_file::{write_atomic, WriteMode};
+use crate::infrastructure::write_guard::acquire_state_file_guard;
 
 pub(super) fn run(project_root: &Path) -> Result<()> {
     let scope = prompt_config_scope("Which config should store default agents?")?;
@@ -36,10 +37,10 @@ fn write_default_agents_config(
     default_skill_dir: &str,
     agents: &[String],
 ) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
+    // Prompting is finished before acquisition; reload raw JSON under the guard
+    // so unknown fields and concurrent preference changes are preserved.
+    let _guard = acquire_state_file_guard(&[config_path.to_path_buf()])
+        .context("failed to acquire preference writer guard")?;
     let mut value = if config_path.exists() {
         serde_json::from_str::<serde_json::Value>(
             &std::fs::read_to_string(config_path)
@@ -74,6 +75,32 @@ fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::write_default_agents_config;
+
+    #[test]
+    fn default_agents_writer_guard_preserves_busy_referent_and_unknown_fields() {
+        use crate::infrastructure::write_guard::WriteGuard;
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let physical = temp.path().join("dotfiles");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&physical).unwrap();
+        let path = project.join("config.json");
+        let referent = physical.join("config.json");
+        let bytes = br#"{ "unknown": 42, "dependencies": {}, "defaultAgents": ["pi"] }"#;
+        std::fs::write(&referent, bytes).unwrap();
+        std::os::unix::fs::symlink(&referent, &path).unwrap();
+        let guard = WriteGuard::acquire(&[physical.clone()]).unwrap();
+        assert!(write_default_agents_config(&path, "./skills", &["universal".into()]).is_err());
+        assert_eq!(std::fs::read(&referent).unwrap(), bytes);
+        drop(guard);
+        write_default_agents_config(&path, "./skills", &["universal".into()]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&referent).unwrap()).unwrap();
+        assert_eq!(value["unknown"], 42);
+        assert_eq!(value["defaultAgents"], serde_json::json!(["universal"]));
+        assert_eq!(std::fs::read_link(path).unwrap(), referent);
+        assert!(WriteGuard::acquire(&[physical]).is_ok());
+    }
 
     #[test]
     fn default_agents_symlink_preserves_fields_permissions_and_old_inode() {
