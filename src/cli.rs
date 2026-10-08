@@ -394,6 +394,9 @@ struct UpdateArgs {
 
 #[derive(Debug, Args)]
 struct ListArgs {
+    /// Print a versioned JSON response instead of human output.
+    #[arg(long)]
+    json: bool,
     /// Use ~/.sksync/config.json instead of project config.
     #[arg(short = 'g', long)]
     global: bool,
@@ -3263,11 +3266,11 @@ fn print_skill_list(report: &ListReport) {
             continue;
         }
         for target in &skill.targets {
-            let path = if target.target.as_os_str().is_empty() {
-                "unresolved".to_owned()
-            } else {
-                target.target.display().to_string()
-            };
+            let path = target
+                .target
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unresolved".to_owned());
             println!(
                 "  {} {:<14} {:<15} {}",
                 list_state_icon(&target.state),
@@ -3794,26 +3797,154 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn run_list(args: ListArgs) -> Result<()> {
+    let result = collect_list_report(args.global);
+    if args.json {
+        let (data, error) = match &result {
+            Ok(report) => (
+                Some(output::ListData::from(report)),
+                list_report_error(report),
+            ),
+            Err(error) => (None, Some(list_execution_error(error))),
+        };
+        render_list_json(
+            &mut std::io::stdout().lock(),
+            &output::JsonEnvelope {
+                schema_version: 1,
+                command: output::JsonCommand::List,
+                scope: if args.global {
+                    output::OutputScope::Global
+                } else {
+                    output::OutputScope::Project
+                },
+                ok: error.is_none(),
+                data,
+                error,
+            },
+        )?;
+    } else {
+        let report = result?;
+        print_skill_list(&report);
+        if !report.is_success() {
+            return Err(RenderedFailure { exit_code: 1 }.into());
+        }
+    }
+    Ok(())
+}
+
+fn render_list_json(
+    writer: &mut impl std::io::Write,
+    envelope: &output::JsonEnvelope<output::ListData>,
+) -> Result<()> {
+    match output::write_json(writer, envelope) {
+        Ok(()) => {}
+        Err(output::OutputWriteError::Serialize(source)) => {
+            // Serialization writes nothing, so a path-free failed envelope is still safe.
+            output::write_json(
+                writer,
+                &output::JsonEnvelope::<()> {
+                    schema_version: envelope.schema_version,
+                    command: envelope.command,
+                    scope: envelope.scope,
+                    ok: false,
+                    data: None,
+                    error: Some(output::OutputError {
+                        code: output::codes::SERIALIZATION_FAILED.to_owned(),
+                        message: source.to_string(),
+                        hint: None,
+                    }),
+                },
+            )?;
+            return Err(RenderedFailure { exit_code: 1 }.into());
+        }
+        Err(error @ output::OutputWriteError::Write(_)) => return Err(error.into()),
+    }
+    if !envelope.ok {
+        return Err(RenderedFailure { exit_code: 1 }.into());
+    }
+    Ok(())
+}
+
+fn collect_list_report(global: bool) -> Result<ListReport> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let config = load_config_for_scope(args.global, &current_dir)?;
-    let root_dir = if args.global {
+    let config = load_config_for_scope(global, &current_dir)?;
+    let root_dir = if global {
         config_root_for_global()?
     } else {
         current_dir.clone()
     };
-    let lockfile = read_lockfile(lockfile_path_for(args.global, &current_dir)?).ok();
+    let lockfile_path = lockfile_path_for(global, &current_dir)?;
+    let lockfile = match read_lockfile(&lockfile_path) {
+        Ok(lockfile) => Some(lockfile),
+        Err(crate::infrastructure::json::LockfileJsonError::Read { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            // A dangling file symlink is existing invalid state, not an absent optional lock.
+            match fs::symlink_metadata(&lockfile_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Ok(_) => return Err(source.into()),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
     let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
-    let report = list_skills(
+    Ok(list_skills(
         &config,
         lockfile.as_ref(),
         &FileSystemLinkStore,
         &target_resolver,
-    );
+    ))
+}
 
-    print_skill_list(&report);
+fn list_report_error(report: &ListReport) -> Option<output::OutputError> {
+    report
+        .skills
+        .iter()
+        .flat_map(|skill| &skill.targets)
+        .find_map(|target| output::list_target_error(&target.state))
+}
 
-    Ok(())
+fn list_execution_error(error: &anyhow::Error) -> output::OutputError {
+    use crate::application::config::ConfigResolveError;
+    use crate::application::ports::ConfigStoreError;
+    use crate::infrastructure::json::{AgentMappingJsonError, LockfileJsonError};
+    use output::codes;
+    let code = if let Some(error) = error.downcast_ref::<ConfigStoreError>() {
+        match error {
+            ConfigStoreError::Read { source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                codes::CONFIG_NOT_FOUND
+            }
+            ConfigStoreError::Read { .. } => codes::IO_ERROR,
+            ConfigStoreError::Parse { .. } | ConfigStoreError::Resolve(_) => codes::INVALID_CONFIG,
+        }
+    } else if let Some(error) = error.downcast_ref::<LockfileJsonError>() {
+        match error {
+            LockfileJsonError::Read { .. } | LockfileJsonError::Write { .. } => codes::IO_ERROR,
+            LockfileJsonError::Serialize(_) => codes::SERIALIZATION_FAILED,
+            LockfileJsonError::Parse { .. }
+            | LockfileJsonError::UnsupportedVersion { .. }
+            | LockfileJsonError::InvalidField(_) => codes::INVALID_LOCKFILE,
+        }
+    } else if let Some(error) = error.downcast_ref::<AgentMappingJsonError>() {
+        match error {
+            AgentMappingJsonError::Read { .. } => codes::IO_ERROR,
+            AgentMappingJsonError::Parse { .. } => codes::INVALID_CONFIG,
+        }
+    } else if error.is::<ConfigResolveError>() {
+        codes::INVALID_CONFIG
+    } else if error.is::<std::io::Error>() {
+        codes::IO_ERROR
+    } else {
+        codes::INTERNAL_ERROR
+    };
+    output::OutputError {
+        code: code.to_owned(),
+        message: error.to_string(),
+        hint: None,
+    }
 }
 
 fn run_wizard() -> Result<()> {
@@ -5600,5 +5731,120 @@ mod tests {
         assert!(report.problems.is_empty());
         assert_eq!(report.checked, 0);
         assert_eq!(report.skipped_local, 1);
+    }
+    fn list_json_test_envelope(
+        source: PathBuf,
+        scope: super::output::OutputScope,
+    ) -> super::output::JsonEnvelope<super::output::ListData> {
+        let report = crate::application::list::ListReport {
+            lockfile_status: crate::application::list::ListLockfileStatus::Missing,
+            skills: vec![crate::application::list::ListedSkill {
+                name: "review".into(),
+                source,
+                install_source: None,
+                include: None,
+                locked_hash: None,
+                targets: Vec::new(),
+            }],
+        };
+        super::output::JsonEnvelope {
+            schema_version: 1,
+            command: super::output::JsonCommand::List,
+            scope,
+            ok: true,
+            data: Some(super::output::ListData::from(&report)),
+            error: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_json_renderer_non_utf8_path_emits_failed_envelope() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        for (scope, scope_name) in [
+            (super::output::OutputScope::Project, "project"),
+            (super::output::OutputScope::Global, "global"),
+        ] {
+            let envelope = list_json_test_envelope(
+                PathBuf::from(OsString::from_vec(b"source-\xff".to_vec())),
+                scope,
+            );
+            let mut bytes = Vec::new();
+            let error = super::render_list_json(&mut bytes, &envelope).unwrap_err();
+            assert_eq!(
+                bytes.last(),
+                Some(&b'\n'),
+                "pre-write serialization failure must render JSON: {error}"
+            );
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["schemaVersion"], 1);
+            assert_eq!(value["command"], "list");
+            assert_eq!(value["scope"], scope_name);
+            assert_eq!(value["ok"], false);
+            assert!(value["data"].is_null());
+            assert_eq!(value["error"]["code"], "SERIALIZATION_FAILED");
+            assert!(value["error"]["message"].is_string());
+            assert_eq!(bytes.iter().filter(|&&b| b == b'\n').count(), 1);
+            assert_eq!(
+                error
+                    .downcast_ref::<super::RenderedFailure>()
+                    .unwrap()
+                    .exit_code,
+                1
+            );
+        }
+    }
+
+    #[derive(Default)]
+    struct ListJsonFailingWriter {
+        calls: usize,
+        prefix: Vec<u8>,
+    }
+    impl std::io::Write for ListJsonFailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.prefix.extend_from_slice(&bytes[..3]);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "injected stdout failure",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            panic!("renderer must not flush")
+        }
+    }
+
+    #[test]
+    fn list_json_renderer_write_failure_is_not_retried() {
+        let envelope =
+            list_json_test_envelope(PathBuf::from("source"), super::output::OutputScope::Project);
+        let mut writer = ListJsonFailingWriter::default();
+        let error = super::render_list_json(&mut writer, &envelope).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<super::output::OutputWriteError>(), Some(super::output::OutputWriteError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.prefix.len(), 3);
+        assert!(error.downcast_ref::<super::RenderedFailure>().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_json_renderer_serialization_fallback_write_failure_is_not_retried() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let envelope = list_json_test_envelope(
+            PathBuf::from(OsString::from_vec(b"source-\xff".to_vec())),
+            super::output::OutputScope::Project,
+        );
+        let mut writer = ListJsonFailingWriter::default();
+        let error = super::render_list_json(&mut writer, &envelope).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<super::output::OutputWriteError>(), Some(super::output::OutputWriteError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.prefix.len(), 3);
+        assert!(error.downcast_ref::<super::RenderedFailure>().is_none());
     }
 }
