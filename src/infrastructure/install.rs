@@ -1,10 +1,14 @@
 use crate::application::ports::{
-    InstalledSkillSource, SkillInstallError, SkillInstallRequest, SkillInstaller,
+    CleanupWarning, InstalledSkillSource, PreparedSkill, PreparedSkillInstaller, SkillInstallError,
+    SkillInstallRequest, SkillInstaller, SkillRollbackFailure,
 };
+use crate::domain::lockfile::LockedFile;
 use crate::domain::package_filter::PackageFilter;
+use crate::domain::skill::SkillName;
 use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::domain::source::{GitInstallSource, InstallSource};
 use crate::infrastructure::git::{GitClient, GitCommandError};
+use crate::infrastructure::hash::hash_directory;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -18,34 +22,423 @@ impl SkillInstaller for FileSystemSkillInstaller {
         destination: &Path,
         skill_name: &str,
     ) -> Result<InstalledSkillSource, SkillInstallError> {
-        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent).map_err(|error| SkillInstallError::Prepare {
-            path: parent.display().to_string(),
-            message: error.to_string(),
-        })?;
-
-        let staging = staging_dir(parent, skill_name);
-        if staging.exists() {
-            remove_dir(&staging)?;
-        }
-        fs::create_dir_all(&staging).map_err(|error| SkillInstallError::Prepare {
-            path: staging.display().to_string(),
-            message: error.to_string(),
-        })?;
-
-        let result = install_to_staging(request, &staging).and_then(|installed| {
-            validate_skill_package(&staging)?;
-            replace_destination(&staging, destination).map(|()| installed)
-        });
-        if result.is_err() && staging.exists() {
-            let _ = fs::remove_dir_all(&staging);
-        }
-        result
+        install_prepared(self.prepare_skill(request, destination, skill_name)?)
     }
 }
 
-// P05 will consume this check once install requests carry the configured managed root.
-#[allow(dead_code)]
+fn install_prepared(
+    mut prepared: PreparedSkill<SkillInstallReceipt>,
+) -> Result<InstalledSkillSource, SkillInstallError> {
+    let installer = FileSystemSkillInstaller;
+    if let Err(original) = installer.publish_skill(&mut prepared.receipt) {
+        return match installer.rollback_skill(&mut prepared.receipt) {
+            Ok(()) => Err(original),
+            Err(failure) => Err(SkillInstallError::RollbackFailed {
+                original: Box::new(original),
+                failure,
+            }),
+        };
+    }
+    prepared
+        .installed
+        .warnings
+        .extend(installer.finalize_skill(&mut prepared.receipt));
+    Ok(prepared.installed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationState {
+    Prepared,
+    OldMoved,
+    Published,
+    RolledBack,
+    Finalized,
+}
+
+/// Opaque ownership of a single directory cutover, not a crash-recovery journal.
+#[derive(Debug)]
+pub struct SkillInstallReceipt {
+    name: SkillName,
+    managed_root: PathBuf,
+    destination: PathBuf,
+    original: Option<DirectoryIdentity>,
+    staging: OwnedDirectory,
+    backup: Option<OwnedDirectory>,
+    state: PublicationState,
+    #[cfg(test)]
+    faults: InstallFaults,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct InstallFaults {
+    publish_after_backup: bool,
+    rollback: bool,
+    finalize: bool,
+}
+
+// Holding a handle prevents inode reuse from making a replacement look owned.
+#[derive(Debug)]
+struct DirectoryIdentity(fs::File);
+
+impl DirectoryIdentity {
+    fn read(path: &Path) -> std::io::Result<Option<Self>> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() => fs::File::open(path).map(Self).map(Some),
+            Ok(_) => Err(std::io::Error::other(
+                "expected a directory, not a symlink or other file",
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn matches(&self, path: &Path) -> std::io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        match fs::symlink_metadata(path) {
+            Ok(current) if current.is_dir() => {
+                let owned = self.0.metadata()?;
+                Ok(current.dev() == owned.dev() && current.ino() == owned.ino())
+            }
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct OwnedDirectory {
+    path: PathBuf,
+    identity: DirectoryIdentity,
+}
+
+impl OwnedDirectory {
+    fn create(parent: &Path, kind: &str, destination: &Path) -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let suffix = format!("-{sequence}");
+            // Skip the final name's ASCII sequence suffix regardless of prefix.
+            // Unicode filesystem aliases can change prefix spelling, so matching
+            // the complete candidate name (even ASCII-insensitively) is unsafe.
+            if destination.file_name().is_some_and(|final_name| {
+                final_name.as_encoded_bytes().ends_with(suffix.as_bytes())
+            }) {
+                continue;
+            }
+            let name = format!(".sksync-{kind}-{}{suffix}", std::process::id());
+            let path = parent.join(name);
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    let identity = DirectoryIdentity::read(&path)?.ok_or_else(|| {
+                        std::io::Error::other("new private directory disappeared")
+                    })?;
+                    return Ok(Self { path, identity });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn remove(&self) -> std::io::Result<()> {
+        if !self.identity.matches(&self.path)? {
+            return Err(std::io::Error::other(
+                "owned directory changed; refusing cleanup",
+            ));
+        }
+        fs::remove_dir_all(&self.path)
+    }
+}
+
+fn prepare_io(path: &Path, error: impl std::fmt::Display) -> SkillInstallError {
+    SkillInstallError::Prepare {
+        path: path.display().to_string(),
+        message: error.to_string(),
+    }
+}
+
+impl PreparedSkillInstaller for FileSystemSkillInstaller {
+    type Receipt = SkillInstallReceipt;
+
+    fn prepare_skill(
+        &self,
+        request: &SkillInstallRequest,
+        destination: &Path,
+        skill_name: &str,
+    ) -> Result<PreparedSkill<Self::Receipt>, SkillInstallError> {
+        let name = SkillName::new(skill_name).map_err(|error| prepare_io(destination, error))?;
+        fs::create_dir_all(&request.managed_root)
+            .map_err(|error| prepare_io(&request.managed_root, error))?;
+        validate_managed_destination(&request.managed_root, destination)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| prepare_io(destination, "missing destination parent"))?;
+        fs::create_dir_all(parent).map_err(|error| prepare_io(parent, error))?;
+        validate_managed_destination(&request.managed_root, destination)?;
+        // Use the physical sibling parent for all receipt I/O; metadata keeps the logical final path.
+        let physical_parent = parent
+            .canonicalize()
+            .map_err(|error| prepare_io(parent, error))?;
+        let physical_destination = physical_parent.join(
+            destination
+                .file_name()
+                .ok_or_else(|| prepare_io(destination, "missing body name"))?,
+        );
+        let root = request
+            .managed_root
+            .canonicalize()
+            .map_err(|error| prepare_io(&request.managed_root, error))?;
+        let original = DirectoryIdentity::read(&physical_destination)
+            .map_err(|error| prepare_io(destination, error))?;
+        let staging = OwnedDirectory::create(&physical_parent, "staging", &physical_destination)
+            .map_err(|error| prepare_io(parent, error))?;
+        let receipt = SkillInstallReceipt {
+            name: name.clone(),
+            managed_root: root,
+            destination: physical_destination,
+            original,
+            staging,
+            backup: None,
+            state: PublicationState::Prepared,
+            #[cfg(test)]
+            faults: InstallFaults::default(),
+        };
+        let installed = install_to_staging(request, &receipt.staging.path)?;
+        validate_skill_package(&receipt.staging.path)?;
+        let hashes = hash_directory(&receipt.staging.path)
+            .map_err(|error| prepare_io(&receipt.staging.path, error))?;
+        Ok(PreparedSkill {
+            name,
+            destination: destination.to_path_buf(),
+            installed,
+            hash: hashes.hash,
+            files: hashes
+                .files
+                .into_iter()
+                .map(|file| LockedFile {
+                    path: file.path,
+                    hash: file.hash,
+                })
+                .collect(),
+            receipt,
+        })
+    }
+
+    fn publish_skill(&self, receipt: &mut Self::Receipt) -> Result<(), SkillInstallError> {
+        let publish = |error| prepare_io(&receipt.destination, error);
+        if receipt.state != PublicationState::Prepared {
+            return Err(publish("receipt is not awaiting publication".into()));
+        }
+        validate_managed_destination(&receipt.managed_root, &receipt.destination)?;
+        receipt
+            .check_original()
+            .map_err(|error| publish(error.to_string()))?;
+        if !receipt
+            .staging
+            .identity
+            .matches(&receipt.staging.path)
+            .map_err(|error| publish(error.to_string()))?
+        {
+            return Err(publish("staging directory changed".into()));
+        }
+        if receipt.original.is_some() {
+            let parent = receipt
+                .staging
+                .path
+                .parent()
+                .ok_or_else(|| publish("missing sibling parent".into()))?;
+            let backup = OwnedDirectory::create(parent, "backup", &receipt.destination)
+                .map_err(|error| publish(error.to_string()))?;
+            receipt.backup = Some(backup);
+            receipt
+                .check_original()
+                .map_err(|error| publish(error.to_string()))?;
+            let old = receipt
+                .backup_path()
+                .ok_or_else(|| publish("missing backup path".into()))?;
+            fs::rename(&receipt.destination, old).map_err(|error| publish(error.to_string()))?;
+            receipt.state = PublicationState::OldMoved;
+        }
+        #[cfg(test)]
+        if receipt.faults.publish_after_backup {
+            return Err(publish("injected publication failure after backup".into()));
+        }
+        // Never replace an unexpected destination which appeared during cutover.
+        require_absent(&receipt.destination).map_err(|error| publish(error.to_string()))?;
+        fs::rename(&receipt.staging.path, &receipt.destination)
+            .map_err(|error| publish(error.to_string()))?;
+        receipt.state = PublicationState::Published;
+        Ok(())
+    }
+
+    fn rollback_skill(&self, receipt: &mut Self::Receipt) -> Result<(), SkillRollbackFailure> {
+        receipt.rollback().map_err(|error| SkillRollbackFailure {
+            skill: receipt.name.clone(),
+            retained_backup: receipt.backup_path().filter(|_| {
+                matches!(
+                    receipt.state,
+                    PublicationState::OldMoved | PublicationState::Published
+                )
+            }),
+            message: error.to_string(),
+        })
+    }
+
+    fn finalize_skill(&self, receipt: &mut Self::Receipt) -> Vec<CleanupWarning> {
+        if receipt.state != PublicationState::Published {
+            return vec![CleanupWarning {
+                path: receipt.destination.clone(),
+                message: "receipt is not published; no cleanup performed".into(),
+            }];
+        }
+        // Set the commit decision before cleanup: failure must never enable rollback.
+        receipt.state = PublicationState::Finalized;
+        if let Some(backup) = &receipt.backup {
+            let cleanup = || -> std::io::Result<()> {
+                #[cfg(test)]
+                if receipt.faults.finalize {
+                    return Err(std::io::Error::other("injected backup cleanup failure"));
+                }
+                receipt.check_backup()?;
+                backup.remove()
+            };
+            if let Err(error) = cleanup() {
+                return vec![CleanupWarning {
+                    path: backup.path.clone(),
+                    message: error.to_string(),
+                }];
+            }
+        }
+        Vec::new()
+    }
+}
+
+fn require_absent(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(std::io::Error::other(
+            "destination changed; refusing to overwrite it",
+        )),
+    }
+}
+
+impl SkillInstallReceipt {
+    fn backup_path(&self) -> Option<PathBuf> {
+        self.backup.as_ref().map(|backup| backup.path.join("body"))
+    }
+
+    fn check_original(&self) -> std::io::Result<()> {
+        match &self.original {
+            Some(identity) if identity.matches(&self.destination)? => Ok(()),
+            Some(_) => Err(std::io::Error::other(
+                "original destination changed; refusing publication",
+            )),
+            None => require_absent(&self.destination),
+        }
+    }
+
+    fn check_backup(&self) -> std::io::Result<()> {
+        let backup = self
+            .backup
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("backup is missing"))?;
+        let original = self
+            .original
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("original identity is missing"))?;
+        if !backup.identity.matches(&backup.path)?
+            || !original.matches(&backup.path.join("body"))?
+        {
+            return Err(std::io::Error::other(
+                "old backup changed; retaining recovery paths",
+            ));
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> std::io::Result<()> {
+        if self.state == PublicationState::RolledBack {
+            return Ok(());
+        }
+        if self.state == PublicationState::Finalized {
+            return Err(std::io::Error::other(
+                "already finalized; rollback is no longer safe",
+            ));
+        }
+        #[cfg(test)]
+        if self.faults.rollback {
+            return Err(std::io::Error::other("injected rollback failure"));
+        }
+        if matches!(
+            self.state,
+            PublicationState::Published | PublicationState::OldMoved
+        ) && self.original.is_some()
+        {
+            self.check_backup()?;
+        }
+        if self.state == PublicationState::Published {
+            if !self.staging.identity.matches(&self.destination)? {
+                return Err(std::io::Error::other(
+                    "published destination changed; refusing rollback deletion",
+                ));
+            }
+            fs::remove_dir_all(&self.destination)?;
+            // A failed restore can be retried without trying to delete an absent body.
+            self.state = if self.original.is_some() {
+                PublicationState::OldMoved
+            } else {
+                PublicationState::Prepared
+            };
+        }
+        if self.state == PublicationState::OldMoved {
+            require_absent(&self.destination)?;
+            self.check_backup()?;
+            let old = self
+                .backup_path()
+                .ok_or_else(|| std::io::Error::other("backup path is missing"))?;
+            fs::rename(old, &self.destination)?;
+            self.state = PublicationState::Prepared;
+        }
+        if self.staging.identity.matches(&self.staging.path)? {
+            self.staging.remove()?;
+        }
+        if let Some(backup) = &self.backup {
+            if !backup.identity.matches(&backup.path)? {
+                return Err(std::io::Error::other(
+                    "backup container changed; refusing cleanup",
+                ));
+            }
+            fs::remove_dir(&backup.path)?;
+        }
+        self.state = PublicationState::RolledBack;
+        Ok(())
+    }
+}
+
+impl Drop for SkillInstallReceipt {
+    fn drop(&mut self) {
+        // A failed rollback or an unfinalized publication may have the only old
+        // copy in backup/body. Never recursively remove that backup from Drop.
+        if self
+            .staging
+            .identity
+            .matches(&self.staging.path)
+            .unwrap_or(false)
+        {
+            let _ = self.staging.remove();
+        }
+        if let Some(backup) = &self.backup {
+            if backup.identity.matches(&backup.path).unwrap_or(false) {
+                let _ = fs::remove_dir(&backup.path); // empty containers only
+            }
+        }
+    }
+}
+
 pub(crate) fn validate_managed_destination(
     skill_dir: &Path,
     destination: &Path,
@@ -156,6 +549,7 @@ fn install_to_staging(
             Ok(InstalledSkillSource {
                 label: path.display().to_string(),
                 resolved_source: request.source.clone(),
+                warnings: Vec::new(),
             })
         }
         InstallSource::Git(git_source) => {
@@ -188,6 +582,7 @@ fn install_git_to_staging(
     Ok(InstalledSkillSource {
         label: format!("{}#{}:{}", git_source.url, rev, git_source.path.display()),
         resolved_source,
+        warnings: Vec::new(),
     })
 }
 
@@ -269,16 +664,6 @@ fn validate_skill_package(path: &Path) -> Result<(), SkillInstallError> {
         message: error.to_string(),
     })?;
     Ok(())
-}
-
-fn replace_destination(staging: &Path, destination: &Path) -> Result<(), SkillInstallError> {
-    if destination.exists() {
-        remove_dir(destination)?;
-    }
-    fs::rename(staging, destination).map_err(|error| SkillInstallError::Prepare {
-        path: destination.display().to_string(),
-        message: error.to_string(),
-    })
 }
 
 const PROTECTED_DIRS: &[&str] = &[".git", ".sksync", "node_modules"];
@@ -549,13 +934,6 @@ fn remove_dir(path: &Path) -> Result<(), SkillInstallError> {
     })
 }
 
-fn staging_dir(skill_dir: &Path, skill_name: &str) -> PathBuf {
-    skill_dir.join(format!(
-        ".sksync-update-{skill_name}-{}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{validate_managed_destination, FileSystemSkillInstaller};
@@ -564,6 +942,893 @@ mod tests {
     use crate::domain::source::{GitInstallSource, InstallSource};
     use std::path::Path;
     use std::process::Command;
+
+    #[test]
+    fn prepared_install_skips_final_destination_as_staging_candidate() {
+        use crate::application::ports::PreparedSkillInstaller;
+        // A fresh exact-test process makes the allocator's first sequence zero
+        // without sharing or mutating its counter with parallel installer tests.
+        if std::env::var_os("SKSYNC_TEST_STAGING_CANDIDATE").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            std::fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_STAGING_CANDIDATE", "1")
+                .arg("--exact")
+                .arg("infrastructure::install::tests::prepared_install_skips_final_destination_as_staging_candidate")
+                .arg("--nocapture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "collision child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let content = skill_md("review", "New");
+        std::fs::write(remote.join("SKILL.md"), &content).unwrap();
+        let name = format!(".sksync-staging-{}-0", std::process::id());
+        assert!(crate::domain::skill::SkillName::new(&name).is_ok());
+        let destination = root.join(&name);
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), &root),
+                &destination,
+                &name,
+            )
+            .unwrap();
+        assert!(
+            !destination.exists(),
+            "preparation created the absent live body as staging"
+        );
+        assert_ne!(prepared.receipt.staging.path, prepared.receipt.destination);
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            content
+        );
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn prepared_install_skips_case_alias_of_final_destination_as_staging_candidate() {
+        use crate::application::ports::PreparedSkillInstaller;
+        // A fresh exact-test process makes the allocator's first sequence zero
+        // without sharing or mutating its counter with parallel installer tests.
+        if std::env::var_os("SKSYNC_TEST_STAGING_CANDIDATE").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            std::fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_STAGING_CANDIDATE", "1")
+                .arg("--exact")
+                .arg("infrastructure::install::tests::prepared_install_skips_case_alias_of_final_destination_as_staging_candidate")
+                .arg("--nocapture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "collision child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let content = skill_md("review", "New");
+        std::fs::write(remote.join("SKILL.md"), &content).unwrap();
+        let probe = temp.path().join("CaseProbe");
+        std::fs::create_dir(&probe).unwrap();
+        eprintln!(
+            "temporary filesystem case-insensitive alias: {}",
+            temp.path().join("cASEpROBE").is_dir()
+        );
+        let name = format!(".SKSYNC-STAGING-{}-0", std::process::id());
+        assert!(crate::domain::skill::SkillName::new(&name).is_ok());
+        let destination = root.join(&name);
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), &root),
+                &destination,
+                &name,
+            )
+            .unwrap();
+        assert!(
+            !destination.exists(),
+            "preparation created the absent live body through a case alias of staging"
+        );
+        assert!(
+            !prepared
+                .receipt
+                .staging
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .eq_ignore_ascii_case(&name),
+            "allocation must conservatively exclude final-name case aliases"
+        );
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            content
+        );
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn prepared_install_skips_unicode_alias_of_final_destination_as_staging_candidate() {
+        use crate::application::ports::PreparedSkillInstaller;
+        // A fresh exact-test process makes the allocator's first sequence zero
+        // without sharing or mutating its counter with parallel installer tests.
+        if std::env::var_os("SKSYNC_TEST_STAGING_CANDIDATE").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            std::fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_STAGING_CANDIDATE", "1")
+                .arg("--exact")
+                .arg("infrastructure::install::tests::prepared_install_skips_unicode_alias_of_final_destination_as_staging_candidate")
+                .arg("--nocapture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "collision child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let content = skill_md("review", "New");
+        std::fs::write(remote.join("SKILL.md"), &content).unwrap();
+        let probe = temp.path().join("KelvinProbe");
+        std::fs::create_dir(&probe).unwrap();
+        eprintln!(
+            "temporary filesystem Kelvin-sign alias: {}",
+            temp.path().join("KelvinProbe").is_dir()
+        );
+        let name = format!(".sKsync-staging-{}-0", std::process::id());
+        assert!(crate::domain::skill::SkillName::new(&name).is_ok());
+        let destination = root.join(&name);
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), &root),
+                &destination,
+                &name,
+            )
+            .unwrap();
+        assert!(
+            !destination.exists(),
+            "preparation created the absent live body through a Unicode alias of staging"
+        );
+        assert!(
+            !prepared
+                .receipt
+                .staging
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-0"),
+            "allocation must exclude the matching sequence suffix independently of prefix"
+        );
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            content
+        );
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn prepared_install_skips_long_s_alias_of_final_destination_as_staging_candidate() {
+        use crate::application::ports::PreparedSkillInstaller;
+        // A fresh exact-test process makes the allocator's first sequence zero
+        // without sharing or mutating its counter with parallel installer tests.
+        if std::env::var_os("SKSYNC_TEST_STAGING_CANDIDATE").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            std::fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_STAGING_CANDIDATE", "1")
+                .arg("--exact")
+                .arg("infrastructure::install::tests::prepared_install_skips_long_s_alias_of_final_destination_as_staging_candidate")
+                .arg("--nocapture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "collision child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let content = skill_md("review", "New");
+        std::fs::write(remote.join("SKILL.md"), &content).unwrap();
+        let probe = temp.path().join("LongSProbe");
+        std::fs::create_dir(&probe).unwrap();
+        eprintln!(
+            "temporary filesystem long-s alias: {}",
+            temp.path().join("LongſProbe").is_dir()
+        );
+        let name = format!(".ſksync-staging-{}-0", std::process::id());
+        assert!(crate::domain::skill::SkillName::new(&name).is_ok());
+        let destination = root.join(&name);
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), &root),
+                &destination,
+                &name,
+            )
+            .unwrap();
+        assert!(
+            !destination.exists(),
+            "preparation created the absent live body through a Unicode alias of staging"
+        );
+        assert!(
+            !prepared
+                .receipt
+                .staging
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-0"),
+            "allocation must exclude the matching sequence suffix independently of prefix"
+        );
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            content
+        );
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn prepared_install_skips_matching_sequence_suffix_with_unrelated_prefix() {
+        use crate::application::ports::PreparedSkillInstaller;
+        // A fresh exact-test process makes the allocator's first sequence zero
+        // without sharing or mutating its counter with parallel installer tests.
+        if std::env::var_os("SKSYNC_TEST_STAGING_CANDIDATE").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            std::fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_STAGING_CANDIDATE", "1")
+                .arg("--exact")
+                .arg("infrastructure::install::tests::prepared_install_skips_matching_sequence_suffix_with_unrelated_prefix")
+                .arg("--nocapture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "collision child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let content = skill_md("review", "New");
+        std::fs::write(remote.join("SKILL.md"), &content).unwrap();
+        let name = format!("unrelated-public-prefix-{}-0", std::process::id());
+        assert!(crate::domain::skill::SkillName::new(&name).is_ok());
+        let destination = root.join(&name);
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), &root),
+                &destination,
+                &name,
+            )
+            .unwrap();
+        assert!(
+            !destination.exists(),
+            "preparation must preserve destination absence"
+        );
+        assert!(
+            !prepared
+                .receipt
+                .staging
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-0"),
+            "allocation must exclude the matching sequence suffix independently of prefix"
+        );
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            content
+        );
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn prepared_hash_and_files_match_published_bodies_with_excluded_directory_names() {
+        use crate::application::ports::PreparedSkillInstaller;
+        use crate::domain::lockfile::LockedFile;
+        for name in ["target", "node_modules", ".git"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("skills");
+            let remote = temp.path().join("remote");
+            std::fs::create_dir(&remote).unwrap();
+            std::fs::write(remote.join("SKILL.md"), skill_md(name, "New")).unwrap();
+            std::fs::write(remote.join("guide.md"), b"guide").unwrap();
+            for descendant in ["target", "node_modules", ".git"] {
+                std::fs::create_dir(remote.join(descendant)).unwrap();
+                std::fs::write(remote.join(descendant).join("ignored"), b"ignored").unwrap();
+            }
+            let destination = root.join(name);
+            let mut prepared = FileSystemSkillInstaller
+                .prepare_skill(
+                    &request(InstallSource::Local(remote), &root),
+                    &destination,
+                    name,
+                )
+                .unwrap();
+            assert!(!destination.exists());
+            assert_eq!(prepared.files.len(), 2);
+            FileSystemSkillInstaller
+                .publish_skill(&mut prepared.receipt)
+                .unwrap();
+            let published = crate::infrastructure::hash::hash_directory(&destination).unwrap();
+            assert_eq!(
+                prepared.hash, published.hash,
+                "directory hash changed for {name}"
+            );
+            let files = published
+                .files
+                .into_iter()
+                .map(|file| LockedFile {
+                    path: file.path,
+                    hash: file.hash,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(prepared.files, files, "file list changed for {name}");
+            assert!(FileSystemSkillInstaller
+                .finalize_skill(&mut prepared.receipt)
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn prepared_install_leaves_old_body_intact_and_hashes_filtered_staging() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        let destination = temp.path().join("skills/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("SKILL.md"), skill_md("review", "Old")).unwrap();
+        std::fs::write(remote.join("SKILL.md"), skill_md("review", "New")).unwrap();
+        std::fs::write(remote.join("ignored.txt"), b"ignored").unwrap();
+        let prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &filtered_request(
+                    InstallSource::Local(remote),
+                    PackageFilter::manifest_only(),
+                    destination.parent().unwrap(),
+                ),
+                &destination,
+                "review",
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+        assert_eq!(prepared.name.as_str(), "review");
+        assert_eq!(prepared.destination, destination);
+        assert_eq!(prepared.files.len(), 1);
+        assert_eq!(prepared.files[0].path, Path::new("SKILL.md"));
+    }
+
+    fn prepared_fixture(
+        existing: bool,
+    ) -> (
+        tempfile::TempDir,
+        crate::application::ports::PreparedSkill<super::SkillInstallReceipt>,
+    ) {
+        use crate::application::ports::PreparedSkillInstaller;
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        let destination = temp.path().join("skills/review");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(remote.join("SKILL.md"), skill_md("review", "New")).unwrap();
+        if existing {
+            std::fs::create_dir_all(&destination).unwrap();
+            std::fs::write(destination.join("SKILL.md"), skill_md("review", "Old")).unwrap();
+        }
+        let prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
+                &destination,
+                "review",
+            )
+            .unwrap();
+        (temp, prepared)
+    }
+
+    #[test]
+    fn prepared_install_failure_after_old_move_rolls_back_old_bytes() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (_temp, mut prepared) = prepared_fixture(true);
+        prepared.receipt.faults.publish_after_backup = true;
+        assert!(FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .is_err());
+        assert!(!prepared.destination.exists());
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(prepared.destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+    }
+
+    #[test]
+    fn prepared_install_published_body_rolls_back_to_old_bytes_or_absence() {
+        use crate::application::ports::PreparedSkillInstaller;
+        for existing in [true, false] {
+            let (_temp, mut prepared) = prepared_fixture(existing);
+            FileSystemSkillInstaller
+                .publish_skill(&mut prepared.receipt)
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(prepared.destination.join("SKILL.md")).unwrap(),
+                skill_md("review", "New")
+            );
+            assert_eq!(
+                prepared.hash,
+                crate::infrastructure::hash::hash_directory(&prepared.destination)
+                    .unwrap()
+                    .hash
+            );
+            FileSystemSkillInstaller
+                .rollback_skill(&mut prepared.receipt)
+                .unwrap();
+            FileSystemSkillInstaller
+                .rollback_skill(&mut prepared.receipt)
+                .unwrap();
+            if existing {
+                assert_eq!(
+                    std::fs::read_to_string(prepared.destination.join("SKILL.md")).unwrap(),
+                    skill_md("review", "Old")
+                );
+            } else {
+                assert!(!prepared.destination.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_install_unpublished_rollback_and_drop_only_clean_staging() {
+        use crate::application::ports::PreparedSkillInstaller;
+        for existing in [true, false] {
+            let (temp, mut prepared) = prepared_fixture(existing);
+            let staging = prepared.receipt.staging.path.clone();
+            FileSystemSkillInstaller
+                .rollback_skill(&mut prepared.receipt)
+                .unwrap();
+            assert!(!staging.exists());
+            assert_eq!(prepared.destination.exists(), existing);
+            drop(prepared);
+            assert_eq!(
+                std::fs::read_dir(temp.path().join("skills"))
+                    .unwrap()
+                    .count(),
+                usize::from(existing)
+            );
+            let (_temp, prepared) = prepared_fixture(existing);
+            let staging = prepared.receipt.staging.path.clone();
+            let destination = prepared.destination.clone();
+            drop(prepared);
+            assert!(!staging.exists());
+            assert_eq!(destination.exists(), existing);
+        }
+    }
+
+    #[test]
+    fn prepared_install_rollback_failure_retains_backup_through_drop() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (_temp, mut prepared) = prepared_fixture(true);
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        prepared.receipt.faults.rollback = true;
+        let failure = FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap_err();
+        assert_eq!(failure.skill.as_str(), "review");
+        let backup = failure.retained_backup.clone().unwrap();
+        assert!(failure.to_string().contains(&backup.display().to_string()));
+        drop(prepared);
+        assert_eq!(
+            std::fs::read_to_string(backup.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+    }
+
+    #[test]
+    fn prepared_install_finalize_failure_is_warning_not_rollback() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (_temp, mut prepared) = prepared_fixture(true);
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        prepared.receipt.faults.finalize = true;
+        let warnings = FileSystemSkillInstaller.finalize_skill(&mut prepared.receipt);
+        assert_eq!(warnings.len(), 1);
+        let retained = warnings[0].path.clone();
+        assert_eq!(
+            std::fs::read_to_string(prepared.destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "New")
+        );
+        assert!(FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .is_err());
+        drop(prepared);
+        assert!(retained.is_dir());
+    }
+
+    #[test]
+    fn prepared_install_finalize_removes_only_owned_backups() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (temp, mut prepared) = prepared_fixture(true);
+        let foreign = temp.path().join("skills/.sksync-update-review-foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::write(foreign.join("keep"), b"foreign").unwrap();
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert!(FileSystemSkillInstaller
+            .finalize_skill(&mut prepared.receipt)
+            .is_empty());
+        drop(prepared);
+        assert_eq!(std::fs::read(foreign.join("keep")).unwrap(), b"foreign");
+        assert_eq!(
+            std::fs::read_dir(temp.path().join("skills"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn prepared_install_rejects_changed_destination_without_deleting_it() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (_temp, mut prepared) = prepared_fixture(true);
+        let original = prepared.destination.with_extension("external");
+        std::fs::rename(&prepared.destination, &original).unwrap();
+        std::fs::create_dir(&prepared.destination).unwrap();
+        std::fs::write(prepared.destination.join("keep"), b"foreign").unwrap();
+        assert!(FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .is_err());
+        FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(prepared.destination.join("keep")).unwrap(),
+            b"foreign"
+        );
+        assert_eq!(
+            std::fs::read_to_string(original.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+    }
+
+    #[test]
+    fn prepared_install_rollback_preserves_unexpected_file_and_old_copy() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (_temp, mut prepared) = prepared_fixture(true);
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        std::fs::rename(
+            &prepared.destination,
+            prepared.destination.with_extension("external"),
+        )
+        .unwrap();
+        std::fs::write(&prepared.destination, b"foreign").unwrap();
+        let failure = FileSystemSkillInstaller
+            .rollback_skill(&mut prepared.receipt)
+            .unwrap_err();
+        let backup = failure.retained_backup.unwrap();
+        drop(prepared);
+        assert_eq!(
+            std::fs::read_to_string(backup.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+        assert_eq!(
+            std::fs::read(backup.parent().unwrap().parent().unwrap().join("review")).unwrap(),
+            b"foreign"
+        );
+    }
+
+    #[test]
+    fn prepared_install_invalid_package_preserves_old_body_and_cleans_staging() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (temp, prepared) = prepared_fixture(true);
+        drop(prepared);
+        let remote = temp.path().join("remote");
+        std::fs::write(remote.join("SKILL.md"), b"invalid").unwrap();
+        let destination = temp.path().join("skills/review");
+        assert!(FileSystemSkillInstaller
+            .prepare_skill(
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
+                &destination,
+                "review"
+            )
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+        assert_eq!(
+            std::fs::read_dir(temp.path().join("skills"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_install_wrapper_reports_original_and_retained_recovery_path() {
+        let (_temp, mut prepared) = prepared_fixture(true);
+        prepared.receipt.faults.publish_after_backup = true;
+        prepared.receipt.faults.rollback = true;
+        let error = super::install_prepared(prepared).unwrap_err();
+        assert!(matches!(error, SkillInstallError::RollbackFailed { .. }));
+        let message = error.to_string();
+        assert!(message.contains("injected publication failure"));
+        assert!(message.contains("injected rollback failure"));
+        assert!(message.contains(".sksync-backup-"));
+    }
+
+    #[test]
+    fn prepared_install_sibling_staging_is_exclusive_and_preserves_legacy_leftovers() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let (temp, first) = prepared_fixture(true);
+        let legacy = temp.path().join(format!(
+            "skills/.sksync-update-review-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("keep"), b"foreign").unwrap();
+        let destination = temp.path().join("skills/review");
+        let second = FileSystemSkillInstaller
+            .prepare_skill(
+                &request(
+                    InstallSource::Local(temp.path().join("remote")),
+                    destination.parent().unwrap(),
+                ),
+                &destination,
+                "review",
+            )
+            .unwrap();
+        assert_ne!(first.receipt.staging.path, second.receipt.staging.path);
+        let physical_parent = destination.parent().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            first.receipt.staging.path.parent(),
+            Some(physical_parent.as_path())
+        );
+        assert_eq!(
+            second.receipt.staging.path.parent(),
+            Some(physical_parent.as_path())
+        );
+        drop(first);
+        drop(second);
+        assert_eq!(std::fs::read(legacy.join("keep")).unwrap(), b"foreign");
+    }
+
+    #[test]
+    fn prepared_install_drop_never_deletes_replaced_staging_symlink() {
+        let (_temp, prepared) = prepared_fixture(true);
+        let staging = prepared.receipt.staging.path.clone();
+        let moved = staging.with_extension("external");
+        std::fs::rename(&staging, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &staging).unwrap();
+        drop(prepared);
+        assert_eq!(std::fs::read_link(&staging).unwrap(), moved);
+        assert_eq!(
+            std::fs::read_to_string(staging.join("SKILL.md")).unwrap(),
+            skill_md("review", "New")
+        );
+    }
+
+    #[test]
+    fn legacy_install_wrapper_returns_cleanup_warnings_after_success() {
+        let (_temp, mut prepared) = prepared_fixture(true);
+        let destination = prepared.destination.clone();
+        prepared.receipt.faults.finalize = true;
+        let installed = super::install_prepared(prepared).unwrap();
+        assert_eq!(installed.warnings.len(), 1);
+        assert!(installed.warnings[0].path.join("body/SKILL.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "New")
+        );
+    }
+
+    #[test]
+    fn legacy_install_wrapper_restores_old_bytes_or_absence_on_publication_error() {
+        for existing in [true, false] {
+            let (_temp, mut prepared) = prepared_fixture(existing);
+            let destination = prepared.destination.clone();
+            prepared.receipt.faults.publish_after_backup = true;
+            let error = super::install_prepared(prepared).unwrap_err();
+            assert!(!matches!(error, SkillInstallError::RollbackFailed { .. }));
+            if existing {
+                assert_eq!(
+                    std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+                    skill_md("review", "Old")
+                );
+            } else {
+                assert!(!destination.exists());
+            }
+            assert_eq!(
+                std::fs::read_dir(destination.parent().unwrap())
+                    .unwrap()
+                    .count(),
+                usize::from(existing)
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_git_install_metadata_records_actual_ref_and_filtered_content() {
+        use crate::application::ports::PreparedSkillInstaller;
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        create_git_skill_repo(&remote, &skill_md("review", "Old"));
+        let rev = git_output(&remote, &["rev-parse", "HEAD"]);
+        std::fs::write(
+            remote.join("skills/review/SKILL.md"),
+            skill_md("review", "New"),
+        )
+        .unwrap();
+        git(&remote, &["add", "."]);
+        git(&remote, &["commit", "-m", "new"]);
+        let root = temp.path().join("store");
+        let destination = root.join("github/repo/review");
+        let source = InstallSource::Git(GitInstallSource {
+            url: remote.display().to_string(),
+            reference: Some(rev.clone()),
+            path: "skills/review".into(),
+        });
+        let mut prepared = FileSystemSkillInstaller
+            .prepare_skill(
+                &filtered_request(source.clone(), PackageFilter::manifest_only(), &root),
+                &destination,
+                "review",
+            )
+            .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(prepared.destination, destination);
+        assert_eq!(prepared.installed.resolved_source, source);
+        assert_eq!(prepared.files[0].path, Path::new("SKILL.md"));
+        FileSystemSkillInstaller
+            .publish_skill(&mut prepared.receipt)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
+            skill_md("review", "Old")
+        );
+        let hashes = crate::infrastructure::hash::hash_directory(&destination).unwrap();
+        assert_eq!(prepared.hash, hashes.hash);
+        assert_eq!(prepared.files[0].hash, hashes.files[0].hash);
+        assert!(FileSystemSkillInstaller
+            .finalize_skill(&mut prepared.receipt)
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_install_rejects_unmanaged_body_files_symlinks_and_escaping_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        std::fs::write(remote.join("SKILL.md"), skill_md("review", "New")).unwrap();
+        let root = temp.path().join("skills");
+        std::fs::create_dir(&root).unwrap();
+        let destination = root.join("review");
+        let request = request(InstallSource::Local(remote), &root);
+        std::fs::write(&destination, b"foreign").unwrap();
+        assert!(FileSystemSkillInstaller
+            .install_skill(&request, &destination, "review")
+            .is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"foreign");
+        std::fs::remove_file(&destination).unwrap();
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &destination).unwrap();
+        assert!(FileSystemSkillInstaller
+            .install_skill(&request, &destination, "review")
+            .is_err());
+        assert!(FileSystemSkillInstaller
+            .install_skill(&request, &destination.join("missing/review"), "review")
+            .is_err());
+        assert_eq!(std::fs::read_link(&destination).unwrap(), outside);
+        assert!(!outside.join("missing").exists());
+    }
 
     #[test]
     fn managed_destination_accepts_flat_and_missing_namespaced_bodies() {
@@ -721,7 +1986,7 @@ mod tests {
 
         FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -750,11 +2015,14 @@ mod tests {
 
         FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Git(GitInstallSource {
-                    url: remote.display().to_string(),
-                    reference: Some(rev.clone()),
-                    path: "skills/review".into(),
-                })),
+                &request(
+                    InstallSource::Git(GitInstallSource {
+                        url: remote.display().to_string(),
+                        reference: Some(rev.clone()),
+                        path: "skills/review".into(),
+                    }),
+                    destination.parent().unwrap(),
+                ),
                 &destination,
                 "review",
             )
@@ -775,11 +2043,14 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Git(GitInstallSource {
-                    url: remote.display().to_string(),
-                    reference: None,
-                    path: "../review".into(),
-                })),
+                &request(
+                    InstallSource::Git(GitInstallSource {
+                        url: remote.display().to_string(),
+                        reference: None,
+                        path: "../review".into(),
+                    }),
+                    destination.parent().unwrap(),
+                ),
                 &destination,
                 "review",
             )
@@ -808,11 +2079,14 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Git(GitInstallSource {
-                    url: remote.display().to_string(),
-                    reference: None,
-                    path: "skills/escape".into(),
-                })),
+                &request(
+                    InstallSource::Git(GitInstallSource {
+                        url: remote.display().to_string(),
+                        reference: None,
+                        path: "skills/escape".into(),
+                    }),
+                    destination.parent().unwrap(),
+                ),
                 &destination,
                 "escape",
             )
@@ -835,7 +2109,7 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -859,7 +2133,7 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -871,13 +2145,13 @@ mod tests {
                 if message == "SKILL.md YAML frontmatter is missing"
         ));
         assert!(!destination.exists());
-        assert!(!temp
-            .path()
-            .join(format!(
-                "skills/.sksync-update-review-{}",
-                std::process::id()
-            ))
-            .exists());
+        assert_eq!(
+            std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "failed preparation must remove its owned staging directory"
+        );
     }
 
     #[test]
@@ -894,7 +2168,7 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -922,7 +2196,7 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -950,7 +2224,7 @@ mod tests {
 
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(remote)),
+                &request(InstallSource::Local(remote), destination.parent().unwrap()),
                 &destination,
                 "review",
             )
@@ -976,7 +2250,11 @@ mod tests {
 
         FileSystemSkillInstaller
             .install_skill(
-                &filtered_request(InstallSource::Local(remote), PackageFilter::manifest_only()),
+                &filtered_request(
+                    InstallSource::Local(remote),
+                    PackageFilter::manifest_only(),
+                    destination.parent().unwrap(),
+                ),
                 &destination,
                 "herdr",
             )
@@ -1001,6 +2279,7 @@ mod tests {
                 &filtered_request(
                     InstallSource::Local(remote),
                     PackageFilter::new(vec!["SKILL.md".into(), "references".into()]).unwrap(),
+                    destination.parent().unwrap(),
                 ),
                 &destination,
                 "review",
@@ -1026,6 +2305,7 @@ mod tests {
                 &filtered_request(
                     InstallSource::Local(remote),
                     PackageFilter::new(vec!["SKILL.md".into(), "assets/*.png".into()]).unwrap(),
+                    destination.parent().unwrap(),
                 ),
                 &destination,
                 "review",
@@ -1049,6 +2329,7 @@ mod tests {
                 &filtered_request(
                     InstallSource::Local(remote),
                     PackageFilter::new(vec!["missing".into()]).unwrap(),
+                    destination.parent().unwrap(),
                 ),
                 &destination,
                 "review",
@@ -1074,6 +2355,7 @@ mod tests {
                 &filtered_request(
                     InstallSource::Local(remote),
                     PackageFilter::new(vec!["SKILL.md".into(), "**".into()]).unwrap(),
+                    destination.parent().unwrap(),
                 ),
                 &destination,
                 "review",
@@ -1090,31 +2372,40 @@ mod tests {
         let destination = temp.path().join("skills/review");
         let error = FileSystemSkillInstaller
             .install_skill(
-                &request(InstallSource::Local(temp.path().join("missing"))),
+                &request(
+                    InstallSource::Local(temp.path().join("missing")),
+                    destination.parent().unwrap(),
+                ),
                 &destination,
                 "review",
             )
             .expect_err("missing source should fail");
 
         assert!(matches!(error, SkillInstallError::MissingSourcePath { .. }));
-        assert!(!temp
-            .path()
-            .join(format!(
-                "skills/.sksync-update-review-{}",
-                std::process::id()
-            ))
-            .exists());
+        assert_eq!(
+            std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .count(),
+            0,
+            "failed preparation must remove its owned staging directory"
+        );
     }
 
-    fn request(source: InstallSource) -> SkillInstallRequest {
+    fn request(source: InstallSource, managed_root: &Path) -> SkillInstallRequest {
         SkillInstallRequest {
+            managed_root: managed_root.to_path_buf(),
             source,
             include: None,
         }
     }
 
-    fn filtered_request(source: InstallSource, include: PackageFilter) -> SkillInstallRequest {
+    fn filtered_request(
+        source: InstallSource,
+        include: PackageFilter,
+        managed_root: &Path,
+    ) -> SkillInstallRequest {
         SkillInstallRequest {
+            managed_root: managed_root.to_path_buf(),
             source,
             include: Some(include),
         }
