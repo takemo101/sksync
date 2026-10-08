@@ -249,3 +249,305 @@ fn skill_property_names_exclude_reserved_components_in_both_schemas() {
 fn parse_json(content: &str) -> Value {
     serde_json::from_str(content).expect("valid JSON")
 }
+
+#[test]
+fn output_schema_v1_covers_success_partial_and_aborted_reports_for_every_command() {
+    let schema = parse_json(include_str!("../schemas/sksync-output.schema.json"));
+    assert_eq!(
+        schema["$id"],
+        "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-output.schema.json"
+    );
+    assert_eq!(schema["properties"]["schemaVersion"]["const"], 1);
+    let error = serde_json::json!({"code": "IO_ERROR", "message": "Failed.", "hint": "Try again."});
+    let reports = [
+        (
+            "list",
+            serde_json::json!({
+                "skills": [{"name": "review", "source": "/tmp/review", "installSource": null,
+                    "include": null, "lockedHash": null, "targets": []}], "lockfileStatus": "missing"
+            }),
+        ),
+        ("plan", serde_json::json!({"items": [], "applicable": true})),
+        (
+            "check",
+            serde_json::json!({"healthy": true, "problems": []}),
+        ),
+        ("outdated", serde_json::json!({"rows": [], "problems": []})),
+    ];
+    for (command, data) in reports {
+        for scope in ["project", "global"] {
+            for (ok, report) in [
+                (true, data.clone()),
+                (false, data.clone()),
+                (false, Value::Null),
+            ] {
+                let response = serde_json::json!({"schemaVersion": 1, "command": command,
+                    "scope": scope, "ok": ok, "data": report, "error": if ok { Value::Null } else { error.clone() }});
+                assert!(
+                    output_schema_matches(&schema, &schema, &response),
+                    "{response}"
+                );
+                let mut missing = response.clone();
+                missing.as_object_mut().unwrap().remove("data");
+                assert!(!output_schema_matches(&schema, &schema, &missing));
+                let mut wrong_shape = response.clone();
+                wrong_shape["data"] = serde_json::json!({"wrongCommandReport": []});
+                assert!(!output_schema_matches(&schema, &schema, &wrong_shape));
+            }
+        }
+    }
+}
+
+#[test]
+fn output_schema_fixtures_cover_all_tags_required_nulls_and_variant_fields() {
+    let schema = parse_json(include_str!("../schemas/sksync-output.schema.json"));
+    let error = serde_json::json!({"code": "INSPECTION_FAILED", "message": "Cannot inspect."});
+    for status in [
+        "synced",
+        "missing",
+        "drifted",
+        "conflict",
+        "brokenSymlink",
+        "sourceMissing",
+        "resolveFailed",
+        "inspectFailed",
+    ] {
+        let mut target =
+            serde_json::json!({"agent": "pi", "target": "/tmp/target", "status": status});
+        if matches!(status, "resolveFailed" | "inspectFailed") {
+            target["error"] = error.clone();
+        }
+        if status == "resolveFailed" {
+            target["target"] = Value::Null;
+        }
+        assert!(output_schema_matches(
+            &schema,
+            &schema["$defs"]["listTarget"],
+            &target
+        ));
+        target["status"] = "unknown".into();
+        assert!(!output_schema_matches(
+            &schema,
+            &schema["$defs"]["listTarget"],
+            &target
+        ));
+    }
+    for source in [
+        serde_json::json!({"type":"local", "path":"./source"}),
+        serde_json::json!({"type":"git", "url":"./repo.git", "path":"skills/review", "ref":"main"}),
+    ] {
+        let skill = serde_json::json!({"name":"review", "source":"/tmp/review", "installSource":source,
+            "include":["SKILL.md"], "lockedHash":"abc", "targets":[]});
+        assert!(output_schema_matches(
+            &schema,
+            &schema["$defs"]["listSkill"],
+            &skill
+        ));
+        for field in ["installSource", "include", "lockedHash", "targets"] {
+            let mut missing = skill.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(!output_schema_matches(
+                &schema,
+                &schema["$defs"]["listSkill"],
+                &missing
+            ));
+        }
+    }
+    for action in [
+        "createSymlink",
+        "alreadySynced",
+        "conflict",
+        "driftedSymlink",
+        "sourceMissing",
+    ] {
+        let mut item = serde_json::json!({"owners":[{"skill":"review", "agent":"pi"},{"skill":"review", "agent":"fx"}],
+            "source":"/tmp/source", "target":"/tmp/target", "action":action});
+        if action == "driftedSymlink" {
+            item["actualSource"] = "/tmp/other".into();
+        }
+        if action == "conflict" {
+            for reason in ["regularFile", "directory", "brokenSymlink"] {
+                item["reason"] = reason.into();
+                assert!(output_schema_matches(
+                    &schema,
+                    &schema["$defs"]["planItem"],
+                    &item
+                ));
+            }
+            item["reason"] = "regularFile".into();
+        }
+        assert!(output_schema_matches(
+            &schema,
+            &schema["$defs"]["planItem"],
+            &item
+        ));
+    }
+    for (kind, fields) in [
+        ("sourceHashDrift", vec!["skill", "expected", "actual"]),
+        ("targetMissing", vec!["skill", "agent", "path"]),
+        (
+            "targetUnexpectedSymlink",
+            vec!["skill", "agent", "path", "actualSource"],
+        ),
+        (
+            "brokenSymlink",
+            vec!["skill", "agent", "path", "actualSource"],
+        ),
+        ("targetConflict", vec!["skill", "agent", "path", "reason"]),
+        ("inspectFailed", vec!["skill", "agent", "message"]),
+        ("hashFailed", vec!["skill", "message"]),
+        ("includeMismatch", vec!["skill", "expected", "actual"]),
+    ] {
+        let mut problem = serde_json::json!({"kind":kind});
+        for field in &fields {
+            problem[field] = "fixture".into();
+        }
+        assert!(output_schema_matches(
+            &schema,
+            &schema["$defs"]["checkProblem"],
+            &problem
+        ));
+        for field in &fields {
+            let mut missing = problem.clone();
+            missing.as_object_mut().unwrap().remove(*field);
+            assert!(!output_schema_matches(
+                &schema,
+                &schema["$defs"]["checkProblem"],
+                &missing
+            ));
+        }
+    }
+    let partial = serde_json::json!({"schemaVersion":1,"command":"outdated","scope":"project","ok":false,
+        "data":{"rows":[{"skill":"review","current":"old","wanted":"main","latest":"new","source":"./repo.git","status":"outdated"}],
+            "problems":[{"skill":"qa","source":"./missing.git","wanted":"main","error":{"code":"REMOTE_QUERY_FAILED","message":"Query failed."}}]},
+        "error":{"code":"REMOTE_QUERY_FAILED","message":"A query failed."}});
+    assert!(output_schema_matches(&schema, &schema, &partial));
+    let mut invalid = partial.clone();
+    invalid["data"]["rows"] = Value::Null;
+    assert!(!output_schema_matches(&schema, &schema, &invalid));
+    invalid = partial.clone();
+    invalid["ok"] = true.into();
+    assert!(!output_schema_matches(&schema, &schema, &invalid));
+    invalid = partial.clone();
+    invalid["error"] = Value::Null;
+    assert!(!output_schema_matches(&schema, &schema, &invalid));
+    invalid = partial.clone();
+    invalid["schemaVersion"] = 2.into();
+    assert!(!output_schema_matches(&schema, &schema, &invalid));
+    // Compatible optional additions do not invalidate older consumers' contracts.
+    invalid = partial;
+    invalid["futureField"] = true.into();
+    assert!(output_schema_matches(&schema, &schema, &invalid));
+}
+
+// Test-only evaluator for the published output schema's keyword subset. Reject
+// unhandled keywords so future schema edits cannot silently weaken fixture checks.
+fn output_schema_matches(root: &Value, schema: &Value, value: &Value) -> bool {
+    for keyword in schema.as_object().expect("schema object").keys() {
+        assert!(
+            [
+                "$schema",
+                "$id",
+                "$defs",
+                "title",
+                "description",
+                "$ref",
+                "type",
+                "const",
+                "enum",
+                "required",
+                "properties",
+                "items",
+                "allOf",
+                "oneOf",
+                "anyOf",
+                "minLength"
+            ]
+            .contains(&keyword.as_str()),
+            "unsupported schema keyword {keyword}"
+        );
+    }
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        return output_schema_matches(
+            root,
+            root.pointer(reference.strip_prefix('#').unwrap())
+                .expect("local schema reference"),
+            value,
+        );
+    }
+    if let Some(expected) = schema.get("const") {
+        if value != expected {
+            return false;
+        }
+    }
+    if let Some(variants) = schema.get("enum").and_then(Value::as_array) {
+        if !variants.contains(value) {
+            return false;
+        }
+    }
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        let valid = match kind {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            "integer" => value.is_i64() || value.is_u64(),
+            _ => panic!("unsupported schema type {kind}"),
+        };
+        if !valid {
+            return false;
+        }
+    }
+    if let Some(min) = schema.get("minLength").and_then(Value::as_u64) {
+        if value
+            .as_str()
+            .is_some_and(|s| (s.chars().count() as u64) < min)
+        {
+            return false;
+        }
+    }
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        if value.is_object()
+            && required
+                .iter()
+                .any(|key| value.get(key.as_str().unwrap()).is_none())
+        {
+            return false;
+        }
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for (key, property) in properties {
+            if let Some(field) = value.get(key) {
+                if !output_schema_matches(root, property, field) {
+                    return false;
+                }
+            }
+        }
+    }
+    if let (Some(item_schema), Some(items)) = (schema.get("items"), value.as_array()) {
+        if !items
+            .iter()
+            .all(|item| output_schema_matches(root, item_schema, item))
+        {
+            return false;
+        }
+    }
+    for keyword in ["allOf", "oneOf", "anyOf"] {
+        if let Some(variants) = schema.get(keyword).and_then(Value::as_array) {
+            let matches = variants
+                .iter()
+                .filter(|variant| output_schema_matches(root, variant, value))
+                .count();
+            if match keyword {
+                "allOf" => matches != variants.len(),
+                "oneOf" => matches != 1,
+                "anyOf" => matches == 0,
+                _ => unreachable!(),
+            } {
+                return false;
+            }
+        }
+    }
+    true
+}

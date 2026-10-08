@@ -314,10 +314,26 @@ fn run_sksync(project_root: &Path, args: &[String]) -> Result<()> {
         )
     });
 
+    combine_command_and_restore_results(result, restore_result)
+}
+
+fn combine_command_and_restore_results(
+    result: Result<()>,
+    restore_result: Result<()>,
+) -> Result<()> {
     match (result, restore_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(error)) => Err(error),
+        // The command report is already visible, but restoration is a new failure.
+        // Do not keep its marker in this error chain or main would suppress both.
+        (Err(error), Err(restore_error))
+            if error
+                .downcast_ref::<crate::cli::RenderedFailure>()
+                .is_some() =>
+        {
+            Err(restore_error)
+        }
         (Err(error), Err(restore_error)) => Err(error.context(format!(
             "also failed to restore working directory: {restore_error}"
         ))),
@@ -334,6 +350,125 @@ mod tests {
     use crate::infrastructure::json::AgentMappingConfig;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn restoration_failure() -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected restoration failure",
+        ))
+        .context("failed to restore working directory /temporary/project")
+    }
+
+    fn rendered_command_failure() -> anyhow::Error {
+        anyhow::Error::new(crate::cli::RenderedFailure { exit_code: 7 })
+            .context("failed to run sksync check")
+    }
+
+    #[test]
+    fn tui_command_result_combination_preserves_restoration_error_after_rendered_failure() {
+        let error = super::combine_command_and_restore_results(
+            Err(rendered_command_failure()),
+            Err(restoration_failure()),
+        )
+        .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::cli::RenderedFailure>()
+            .is_none());
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        assert!(format!("{error:?}").contains("failed to restore working directory"));
+    }
+
+    #[test]
+    fn tui_command_result_combination_reports_restoration_failure_once_at_boundary() {
+        let result = super::combine_command_and_restore_results(
+            Err(rendered_command_failure()),
+            Err(restoration_failure()),
+        );
+        let mut stderr = Vec::new();
+        assert_eq!(
+            crate::finish(result, &mut stderr),
+            std::process::ExitCode::FAILURE
+        );
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert_eq!(stderr.matches("Error:").count(), 1);
+        assert_eq!(stderr.matches("injected restoration failure").count(), 1);
+        assert!(stderr.contains("failed to restore working directory"));
+        assert!(!stderr.contains("command failure already rendered"));
+        assert!(!stderr.contains("failed to run sksync check"));
+    }
+
+    #[test]
+    fn tui_command_result_combination_keeps_marker_suppressed_after_successful_restore() {
+        let error =
+            super::combine_command_and_restore_results(Err(rendered_command_failure()), Ok(()))
+                .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<crate::cli::RenderedFailure>()
+                .unwrap()
+                .exit_code,
+            7
+        );
+        let mut stderr = Vec::new();
+        assert_eq!(
+            crate::finish(Err(error), &mut stderr),
+            std::process::ExitCode::from(7)
+        );
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn tui_command_result_combination_retains_both_unrendered_failures() {
+        let error = super::combine_command_and_restore_results(
+            Err(anyhow::anyhow!("injected command failure")),
+            Err(restoration_failure()),
+        )
+        .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::cli::RenderedFailure>()
+            .is_none());
+        let mut stderr = Vec::new();
+        assert_eq!(
+            crate::finish(Err(error), &mut stderr),
+            std::process::ExitCode::FAILURE
+        );
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert_eq!(stderr.matches("Error:").count(), 1);
+        assert!(stderr.contains("injected command failure"));
+        assert!(stderr.contains("failed to restore working directory /temporary/project"));
+    }
+
+    #[test]
+    fn tui_command_result_combination_reports_standalone_restoration_failure() {
+        let error = super::combine_command_and_restore_results(Ok(()), Err(restoration_failure()))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let mut stderr = Vec::new();
+        assert_eq!(
+            crate::finish(Err(error), &mut stderr),
+            std::process::ExitCode::FAILURE
+        );
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("injected restoration failure"));
+    }
+
+    #[test]
+    fn tui_command_result_combination_preserves_success_and_standalone_command_failure() {
+        assert!(super::combine_command_and_restore_results(Ok(()), Ok(())).is_ok());
+        let error = super::combine_command_and_restore_results(
+            Err(anyhow::anyhow!("injected command failure")),
+            Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected command failure");
+    }
 
     #[test]
     fn wizard_intents_include_add_bundle() {
