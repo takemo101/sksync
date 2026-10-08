@@ -1,19 +1,21 @@
 # CLI JSON output
 
-`list` and `plan` default to human output. Use `--json` for one newline-terminated version-1 JSON response:
+`list`, `plan`, and `check` default to human output. Use `--json` for one newline-terminated version-1 JSON response:
 
 ```sh
 sksync list --json
 sksync list --json --global
 sksync plan --json
 sksync plan --json --global
+sksync check --json
+sksync check --json --global
 ```
 
 The invocation uses only the selected project or global config. Listing does not fetch sources, hash current skill bodies, create a skill store, repair targets, or write state.
 
 ## Envelope
 
-Every delivered response has `schemaVersion: 1`, `command: "list"` or `"plan"`, `scope: "project"` or `"global"`, `ok`, `data`, and `error`. Success has `error: null`. Input-loading or serialization failures have `data: null`; list resolution/inspection failures retain the collected report in `data`.
+Every delivered response has `schemaVersion: 1`, `command: "list"`, `"plan"`, or `"check"`, `scope: "project"` or `"global"`, `ok`, `data`, and `error`. Success has `error: null`. Input-loading or serialization failures have `data: null`; list resolution/inspection failures retain the collected report in `data`.
 
 ```json
 {
@@ -69,10 +71,47 @@ Planning is read-only: it does not fetch or validate packages, hash bodies, read
 
 A completed plan always exits `0`, including blockers (`ok: true`, `applicable: false`). Loading/planning errors exit `1` with `ok: false` and `data: null`: config errors use `CONFIG_NOT_FOUND`/`INVALID_CONFIG`, target resolution uses `TARGET_RESOLUTION_FAILED`, target inspection uses `INSPECTION_FAILED`, and source inspection I/O uses `IO_ERROR`. Human mode retains the same plan and exits. Serialization/write failures follow the shared behavior below.
 
+## Check data
+
+Checking is read-only and local: it loads the required lockfile and selected config, hashes recorded bodies, and inspects desired targets. It does not fetch sources, create directories, acquire writer guards, write state, or repair links. `--global` uses only the global config/lockfile and current home, without project fallback.
+
+- `healthy` is true only when `problems` is empty; empty arrays remain arrays.
+- Problems are sorted lexicographically by kind, skill, agent, then path. Fields not relevant to a variant are omitted.
+- `sourceHashDrift` and `includeMismatch` have `skill`, `expected`, and `actual`. Include values retain the existing report strings (comma-separated patterns or `<full package>`).
+- Target findings (including `inspectFailed`) emit one JSON row per actual `(skill, agent)` owner pair. A shared physical target is inspected only once; owner identifiers are never comma-joined or combined into inferred pairs. Human output keeps one grouped physical finding and its existing owner labels/count.
+- `targetMissing` has `skill`, `agent`, and `path`.
+- `targetUnexpectedSymlink` and `brokenSymlink` also have `actualSource`, preserving the observed symlink destination.
+- `targetConflict` has `skill`, `agent`, `path`, and the report's explanatory `reason` string.
+- `inspectFailed` has `skill`, `agent`, and `message`; `hashFailed` has `skill` and `message`. These findings remain in the completed report alongside other problems.
+
+```json
+{
+  "schemaVersion": 1,
+  "command": "check",
+  "scope": "project",
+  "ok": false,
+  "data": {
+    "healthy": false,
+    "problems": [{
+      "kind": "targetMissing",
+      "skill": "review",
+      "agent": "universal",
+      "path": "/work/project/.agents/skills/review"
+    }]
+  },
+  "error": {
+    "code": "CHECK_FAILED",
+    "message": "Installed state does not match the lockfile."
+  }
+}
+```
+
+Healthy checks exit `0` with `ok: true` and `error: null`. Completed unhealthy checks exit `1` with `CHECK_FAILED` and the **full report** in `data`, including hash/inspection failures. Aborted input-loading or target-resolution failures also exit `1`, but have `data: null`: missing required lockfiles use `LOCKFILE_NOT_FOUND`, malformed ones use `INVALID_LOCKFILE`, unreadable ones (including dangling lockfile symlinks) use `IO_ERROR`, and config/resolution errors use the shared typed codes. Human mode retains the same report, grouping, and exit decisions; no duplicate summary is appended to JSON.
+
 ## Exit behavior and compatibility
 
-A missing optional lockfile succeeds (exit `0`) with null locked hashes. Existing malformed lockfiles now fail instead of being silently ignored (`INVALID_LOCKFILE`). Missing configs use `CONFIG_NOT_FOUND`; invalid configs use `INVALID_CONFIG`; unreadable inputs use `IO_ERROR`.
+For `list`, a missing optional lockfile succeeds (exit `0`) with null locked hashes. Existing malformed lockfiles now fail instead of being silently ignored (`INVALID_LOCKFILE`). Missing configs use `CONFIG_NOT_FOUND`; invalid configs use `INVALID_CONFIG`; unreadable inputs use `IO_ERROR`.
 
-Resolution/inspection failures use `TARGET_RESOLUTION_FAILED` or `INSPECTION_FAILED`, set `ok: false`, retain collected rows in JSON, and exit `1` in both human and JSON modes. Missing links, source-missing bodies, drift, broken symlinks, and conflicts remain successful observations in both modes.
+For `list`, resolution/inspection failures use `TARGET_RESOLUTION_FAILED` or `INSPECTION_FAILED`, set `ok: false`, retain collected rows in JSON, and exit `1` in both human and JSON modes. Missing links, source-missing bodies, drift, broken symlinks, and conflicts remain successful observations in both modes.
 
 A pre-write serialization failure, including an unrepresentable Unix path, emits one failed envelope with `data: null`, `SERIALIZATION_FAILED`, and exit `1`. A stdout write failure may prevent JSON delivery and is propagated without retrying or emitting a second response. Malformed CLI syntax retains Clap's stderr text and exit `2`; it is outside the JSON envelope contract.

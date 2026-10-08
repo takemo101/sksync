@@ -10,7 +10,6 @@ use thiserror::Error;
 pub enum JsonCommand {
     List,
     Plan,
-    #[allow(dead_code)] // P11
     Check,
     #[allow(dead_code)] // P12
     Outdated,
@@ -80,8 +79,6 @@ pub(crate) struct RenderedFailure {
 pub mod codes {
     pub const CONFIG_NOT_FOUND: &str = "CONFIG_NOT_FOUND";
     pub const INVALID_CONFIG: &str = "INVALID_CONFIG";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const LOCKFILE_NOT_FOUND: &str = "LOCKFILE_NOT_FOUND";
     pub const INVALID_LOCKFILE: &str = "INVALID_LOCKFILE";
     pub const TARGET_RESOLUTION_FAILED: &str = "TARGET_RESOLUTION_FAILED";
@@ -89,8 +86,6 @@ pub mod codes {
     // Consumed by the command adapters in P09–P12.
     #[allow(dead_code)]
     pub const REMOTE_QUERY_FAILED: &str = "REMOTE_QUERY_FAILED";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const CHECK_FAILED: &str = "CHECK_FAILED";
     pub const IO_ERROR: &str = "IO_ERROR";
     pub const SERIALIZATION_FAILED: &str = "SERIALIZATION_FAILED";
@@ -328,6 +323,182 @@ impl From<&crate::domain::link_plan::LinkPlan> for PlanData {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct CheckData<'a> {
+    healthy: bool,
+    problems: Vec<CheckProblemData<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum CheckProblemData<'a> {
+    SourceHashDrift {
+        skill: &'a str,
+        expected: &'a str,
+        actual: &'a str,
+    },
+    TargetMissing {
+        skill: &'a str,
+        agent: &'a str,
+        path: &'a str,
+    },
+    TargetUnexpectedSymlink {
+        skill: &'a str,
+        agent: &'a str,
+        path: &'a str,
+        #[serde(rename = "actualSource")]
+        actual_source: &'a str,
+    },
+    BrokenSymlink {
+        skill: &'a str,
+        agent: &'a str,
+        path: &'a str,
+        #[serde(rename = "actualSource")]
+        actual_source: &'a str,
+    },
+    TargetConflict {
+        skill: &'a str,
+        agent: &'a str,
+        path: &'a str,
+        reason: &'a str,
+    },
+    InspectFailed {
+        skill: &'a str,
+        agent: &'a str,
+        message: &'a str,
+    },
+    HashFailed {
+        skill: &'a str,
+        message: &'a str,
+    },
+    IncludeMismatch {
+        skill: &'a str,
+        expected: &'a str,
+        actual: &'a str,
+    },
+}
+
+impl<'a> From<&'a crate::application::check::CheckReport> for CheckData<'a> {
+    fn from(report: &'a crate::application::check::CheckReport) -> Self {
+        use crate::application::check::CheckProblem;
+        let mut problems = report
+            .problems
+            .iter()
+            .flat_map(|problem| match problem {
+                CheckProblem::SourceHashDrift {
+                    skill,
+                    expected,
+                    actual,
+                } => vec![CheckProblemData::SourceHashDrift {
+                    skill,
+                    expected,
+                    actual,
+                }],
+                CheckProblem::TargetMissing { owners, path, .. } => owners
+                    .iter()
+                    .map(|owner| CheckProblemData::TargetMissing {
+                        skill: owner.skill.as_str(),
+                        agent: owner.agent.as_str(),
+                        path,
+                    })
+                    .collect(),
+                CheckProblem::TargetUnexpectedSymlink {
+                    owners,
+                    path,
+                    actual_source,
+                    ..
+                } => owners
+                    .iter()
+                    .map(|owner| CheckProblemData::TargetUnexpectedSymlink {
+                        skill: owner.skill.as_str(),
+                        agent: owner.agent.as_str(),
+                        path,
+                        actual_source,
+                    })
+                    .collect(),
+                CheckProblem::BrokenSymlink {
+                    owners,
+                    path,
+                    actual_source,
+                    ..
+                } => owners
+                    .iter()
+                    .map(|owner| CheckProblemData::BrokenSymlink {
+                        skill: owner.skill.as_str(),
+                        agent: owner.agent.as_str(),
+                        path,
+                        actual_source,
+                    })
+                    .collect(),
+                CheckProblem::TargetConflict {
+                    owners,
+                    path,
+                    reason,
+                    ..
+                } => owners
+                    .iter()
+                    .map(|owner| CheckProblemData::TargetConflict {
+                        skill: owner.skill.as_str(),
+                        agent: owner.agent.as_str(),
+                        path,
+                        reason,
+                    })
+                    .collect(),
+                CheckProblem::InspectFailed {
+                    owners, message, ..
+                } => owners
+                    .iter()
+                    .map(|owner| CheckProblemData::InspectFailed {
+                        skill: owner.skill.as_str(),
+                        agent: owner.agent.as_str(),
+                        message,
+                    })
+                    .collect(),
+                CheckProblem::HashFailed { skill, message } => {
+                    vec![CheckProblemData::HashFailed { skill, message }]
+                }
+                CheckProblem::IncludeMismatch {
+                    skill,
+                    expected,
+                    actual,
+                } => vec![CheckProblemData::IncludeMismatch {
+                    skill,
+                    expected,
+                    actual,
+                }],
+            })
+            .collect::<Vec<_>>();
+        problems.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+        Self {
+            healthy: report.is_success(),
+            problems,
+        }
+    }
+}
+
+impl CheckProblemData<'_> {
+    fn sort_key(&self) -> (&str, &str, &str, &str) {
+        match self {
+            Self::SourceHashDrift { skill, .. } => ("sourceHashDrift", *skill, "", ""),
+            Self::TargetMissing {
+                skill, agent, path, ..
+            } => ("targetMissing", *skill, *agent, *path),
+            Self::TargetUnexpectedSymlink {
+                skill, agent, path, ..
+            } => ("targetUnexpectedSymlink", *skill, *agent, *path),
+            Self::BrokenSymlink {
+                skill, agent, path, ..
+            } => ("brokenSymlink", *skill, *agent, *path),
+            Self::TargetConflict {
+                skill, agent, path, ..
+            } => ("targetConflict", *skill, *agent, *path),
+            Self::InspectFailed { skill, agent, .. } => ("inspectFailed", *skill, *agent, ""),
+            Self::HashFailed { skill, .. } => ("hashFailed", *skill, "", ""),
+            Self::IncludeMismatch { skill, .. } => ("includeMismatch", *skill, "", ""),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +685,271 @@ mod tests {
             ])
         );
         assert_eq!(plan, original);
+    }
+    #[test]
+    fn check_json_dto_preserves_all_variants_and_sorts_without_changing_report() {
+        use crate::application::check::{CheckProblem as Problem, CheckReport};
+        let report = CheckReport {
+            problems: vec![
+                Problem::TargetUnexpectedSymlink {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("review").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "review".into(),
+                    agent: "pi".into(),
+                    path: "target".into(),
+                    actual_source: "other".into(),
+                },
+                Problem::TargetMissing {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("zeta").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "zeta".into(),
+                    agent: "pi".into(),
+                    path: "z".into(),
+                },
+                Problem::SourceHashDrift {
+                    skill: "review".into(),
+                    expected: "old-hash".into(),
+                    actual: "new-hash".into(),
+                },
+                Problem::TargetConflict {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("review").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "review".into(),
+                    agent: "pi".into(),
+                    path: "target".into(),
+                    reason: "regular file exists".into(),
+                },
+                Problem::InspectFailed {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("review").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "review".into(),
+                    agent: "pi".into(),
+                    message: "inspection error".into(),
+                },
+                Problem::IncludeMismatch {
+                    skill: "review".into(),
+                    expected: "SKILL.md".into(),
+                    actual: "<full package>".into(),
+                },
+                Problem::HashFailed {
+                    skill: "review".into(),
+                    message: "hash error".into(),
+                },
+                Problem::BrokenSymlink {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("review").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "review".into(),
+                    agent: "pi".into(),
+                    path: "target".into(),
+                    actual_source: "absent".into(),
+                },
+                Problem::TargetMissing {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("alpha").unwrap(),
+                        agent: "pi".parse().unwrap(),
+                    }],
+                    skill: "alpha".into(),
+                    agent: "pi".into(),
+                    path: "z".into(),
+                },
+                Problem::TargetMissing {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("alpha").unwrap(),
+                        agent: "fx".parse().unwrap(),
+                    }],
+                    skill: "alpha".into(),
+                    agent: "fx".into(),
+                    path: "z".into(),
+                },
+                Problem::TargetMissing {
+                    owners: vec![crate::domain::link_plan::LinkOwner {
+                        skill: crate::domain::skill::SkillName::new("alpha").unwrap(),
+                        agent: "fx".parse().unwrap(),
+                    }],
+                    skill: "alpha".into(),
+                    agent: "fx".into(),
+                    path: "a".into(),
+                },
+            ],
+        };
+        let original = report.clone();
+        let value = serde_json::to_value(CheckData::from(&report)).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"healthy":false,"problems":[
+                {"kind":"brokenSymlink","skill":"review","agent":"pi","path":"target","actualSource":"absent"},
+                {"kind":"hashFailed","skill":"review","message":"hash error"},
+                {"kind":"includeMismatch","skill":"review","expected":"SKILL.md","actual":"<full package>"},
+                {"kind":"inspectFailed","skill":"review","agent":"pi","message":"inspection error"},
+                {"kind":"sourceHashDrift","skill":"review","expected":"old-hash","actual":"new-hash"},
+                {"kind":"targetConflict","skill":"review","agent":"pi","path":"target","reason":"regular file exists"},
+                {"kind":"targetMissing","skill":"alpha","agent":"fx","path":"a"},
+                {"kind":"targetMissing","skill":"alpha","agent":"fx","path":"z"},
+                {"kind":"targetMissing","skill":"alpha","agent":"pi","path":"z"},
+                {"kind":"targetMissing","skill":"zeta","agent":"pi","path":"z"},
+                {"kind":"targetUnexpectedSymlink","skill":"review","agent":"pi","path":"target","actualSource":"other"}
+            ]})
+        );
+        assert_eq!(report, original);
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/sksync-output.schema.json")).unwrap();
+        for problem in value["problems"].as_array().unwrap() {
+            let variant = schema["$defs"]["checkProblem"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|variant| variant["properties"]["kind"]["const"] == problem["kind"])
+                .unwrap();
+            for field in variant["required"].as_array().unwrap() {
+                assert!(
+                    problem.get(field.as_str().unwrap()).is_some(),
+                    "missing {field}"
+                );
+            }
+            for (field, field_value) in problem.as_object().unwrap() {
+                assert!(field_value.is_string());
+                assert!(
+                    variant["properties"].get(field).is_some(),
+                    "unexpected {field}"
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(CheckData::from(&CheckReport { problems: vec![] })).unwrap(),
+            serde_json::json!({"healthy":true,"problems":[]})
+        );
+    }
+    #[test]
+    fn check_json_shared_target_preserves_pairs_and_inspects_once_for_every_finding() {
+        use crate::application::check::{check_lockfile_with_plan, group_check_problems};
+        use crate::application::ports::{
+            LinkStore, LinkStoreError, SourceHash, SourceHashStore, SourceHashStoreError,
+            TargetState,
+        };
+        use crate::domain::agent::AgentKind;
+        use crate::domain::link_plan::{LinkOwner, LinkPlan, LinkPlanItem, PlanAction};
+        use crate::domain::lockfile::Lockfile;
+        use crate::domain::skill::{SkillName, SourcePath};
+        use crate::domain::target::TargetPath;
+        use std::cell::Cell;
+
+        struct NoHashes;
+        impl SourceHashStore for NoHashes {
+            fn hash_source(&self, _: &SourcePath) -> Result<SourceHash, SourceHashStoreError> {
+                panic!("empty lockfile must not hash a body")
+            }
+        }
+        struct Links {
+            state: Option<TargetState>,
+            inspections: Cell<usize>,
+        }
+        impl LinkStore for Links {
+            fn inspect_target(
+                &self,
+                target: &TargetPath,
+                _: &SourcePath,
+            ) -> Result<TargetState, LinkStoreError> {
+                self.inspections.set(self.inspections.get() + 1);
+                self.state.clone().ok_or_else(|| LinkStoreError::Inspect {
+                    path: target.as_path().display().to_string(),
+                    source: std::io::Error::other("injected inspection failure"),
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let source = dir.path().join("body");
+        let other = dir.path().join("other");
+        let owners = [("review", "pi"), ("qa", "universal"), ("review", "fx")]
+            .into_iter()
+            .map(|(skill, agent)| LinkOwner {
+                skill: SkillName::new(skill).unwrap(),
+                agent: agent.parse::<AgentKind>().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let plan = LinkPlan::new(vec![LinkPlanItem {
+            owners,
+            source: SourcePath::new(source).unwrap(),
+            target: TargetPath::new(&target).unwrap(),
+            action: PlanAction::CreateSymlink,
+        }]);
+        let lock = Lockfile {
+            generated_by: "test".into(),
+            generated_at: "test".into(),
+            root: dir.path().to_path_buf(),
+            skills: Default::default(),
+        };
+        for (state, kind) in [
+            (Some(TargetState::Missing), "targetMissing"),
+            (
+                Some(TargetState::SymlinkToUnexpectedSource {
+                    actual_source: other.clone(),
+                }),
+                "targetUnexpectedSymlink",
+            ),
+            (
+                Some(TargetState::BrokenSymlink {
+                    actual_source: other.clone(),
+                }),
+                "brokenSymlink",
+            ),
+            (Some(TargetState::RegularFileConflict), "targetConflict"),
+            (Some(TargetState::DirectoryConflict), "targetConflict"),
+            (None, "inspectFailed"),
+        ] {
+            let links = Links {
+                state,
+                inspections: Cell::new(0),
+            };
+            let report = check_lockfile_with_plan(&lock, &plan, &NoHashes, &links);
+            let original = report.clone();
+            assert_eq!(report.problems.len(), 1, "one physical observation");
+            assert_eq!(group_check_problems(&report.problems)[0].count, 1);
+            assert!(report.display_lines()[0].contains("agent=fx, pi, universal"));
+            let value = serde_json::to_value(CheckData::from(&report)).unwrap();
+            let rows = value["problems"].as_array().unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (
+                        row["skill"].as_str().unwrap(),
+                        row["agent"].as_str().unwrap()
+                    ))
+                    .collect::<Vec<_>>(),
+                [("qa", "universal"), ("review", "fx"), ("review", "pi")]
+            );
+            for row in rows {
+                assert_eq!(row["kind"], kind);
+                if kind == "inspectFailed" {
+                    assert!(row["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("injected inspection failure"));
+                } else {
+                    assert_eq!(row["path"], target.display().to_string());
+                }
+                if matches!(kind, "brokenSymlink" | "targetUnexpectedSymlink") {
+                    assert_eq!(row["actualSource"], other.display().to_string());
+                }
+                if kind == "targetConflict" {
+                    assert!(row["reason"].is_string());
+                }
+            }
+            assert_eq!(
+                links.inspections.get(),
+                1,
+                "DTO conversion must not reinspect"
+            );
+            assert_eq!(report, original);
+        }
     }
 }

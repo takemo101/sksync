@@ -1,6 +1,6 @@
 use crate::application::config::ResolvedConfig;
 use crate::application::ports::{LinkStore, SourceHashStore, TargetState};
-use crate::domain::link_plan::LinkPlan;
+use crate::domain::link_plan::{LinkOwner, LinkPlan};
 use crate::domain::lockfile::Lockfile;
 use crate::domain::target::TargetPath;
 
@@ -26,6 +26,7 @@ impl CheckReport {
     }
 }
 
+/// Target findings retain exact owner pairs; their skill/agent strings are human labels only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckProblem {
     SourceHashDrift {
@@ -34,29 +35,34 @@ pub enum CheckProblem {
         actual: String,
     },
     TargetMissing {
+        owners: Vec<LinkOwner>,
         skill: String,
         agent: String,
         path: String,
     },
     TargetUnexpectedSymlink {
+        owners: Vec<LinkOwner>,
         skill: String,
         agent: String,
         path: String,
         actual_source: String,
     },
     TargetConflict {
+        owners: Vec<LinkOwner>,
         skill: String,
         agent: String,
         path: String,
         reason: String,
     },
     BrokenSymlink {
+        owners: Vec<LinkOwner>,
         skill: String,
         agent: String,
         path: String,
         actual_source: String,
     },
     InspectFailed {
+        owners: Vec<LinkOwner>,
         skill: String,
         agent: String,
         message: String,
@@ -80,7 +86,9 @@ impl CheckProblem {
                 expected,
                 actual,
             } => format!("source drift: {skill} expected {expected} but got {actual}"),
-            Self::TargetMissing { skill, agent, path } => {
+            Self::TargetMissing {
+                skill, agent, path, ..
+            } => {
                 format!("target missing: skill={skill}, agent={agent}, path={path}")
             }
             Self::TargetUnexpectedSymlink {
@@ -88,6 +96,7 @@ impl CheckProblem {
                 agent,
                 path,
                 actual_source,
+                ..
             } => format!(
                 "target drift: skill={skill}, agent={agent}, path={path}, actual={actual_source}"
             ),
@@ -96,12 +105,14 @@ impl CheckProblem {
                 agent,
                 path,
                 reason,
+                ..
             } => format!("target conflict: skill={skill}, agent={agent}, path={path}, {reason}"),
             Self::BrokenSymlink {
                 skill,
                 agent,
                 path,
                 actual_source,
+                ..
             } => format!(
                 "broken symlink: skill={skill}, agent={agent}, path={path}, target={actual_source}"
             ),
@@ -109,6 +120,7 @@ impl CheckProblem {
                 skill,
                 agent,
                 message,
+                ..
             } => format!("inspect failed: skill={skill}, agent={agent}, {message}"),
             Self::HashFailed { skill, message } => {
                 format!("hash failed: skill={skill}, {message}")
@@ -183,9 +195,9 @@ pub fn group_check_problems(problems: &[CheckProblem]) -> Vec<ProblemGroup> {
     let target_missing: Vec<String> = problems
         .iter()
         .filter_map(|problem| match problem {
-            CheckProblem::TargetMissing { skill, agent, path } => {
-                Some(format!("{skill} · {agent} · {path}"))
-            }
+            CheckProblem::TargetMissing {
+                skill, agent, path, ..
+            } => Some(format!("{skill} · {agent} · {path}")),
             _ => None,
         })
         .collect();
@@ -204,6 +216,7 @@ pub fn group_check_problems(problems: &[CheckProblem]) -> Vec<ProblemGroup> {
                 agent,
                 path,
                 actual_source,
+                ..
             } => Some(format!("{skill} · {agent} · {path} → {actual_source}")),
             _ => None,
         })
@@ -227,6 +240,7 @@ pub fn group_check_problems(problems: &[CheckProblem]) -> Vec<ProblemGroup> {
                 agent,
                 path,
                 actual_source,
+                ..
             } => Some(format!("{skill} · {agent} · {path} → {actual_source}")),
             _ => None,
         })
@@ -245,6 +259,7 @@ pub fn group_check_problems(problems: &[CheckProblem]) -> Vec<ProblemGroup> {
                 skill,
                 agent,
                 message,
+                ..
             } => Some(format!("{skill} · {agent}: {message}")),
             _ => None,
         })
@@ -300,6 +315,7 @@ fn group_target_conflicts(problems: &[CheckProblem]) -> Option<ProblemGroup> {
             agent,
             path,
             reason,
+            ..
         } = problem
         {
             let parent = std::path::Path::new(path)
@@ -349,6 +365,10 @@ pub fn check_lockfile(
                 &mut problems,
                 skill_name.as_str(),
                 target.agent.as_str(),
+                &[LinkOwner {
+                    skill: skill_name.clone(),
+                    agent: target.agent.clone(),
+                }],
                 &target.path,
                 &locked_skill.source,
                 link_store,
@@ -397,6 +417,7 @@ fn inspect_plan_targets(
             problems,
             &item.skill_label(),
             &item.agent_label(),
+            &item.owners,
             &item.target,
             &item.source,
             link_store,
@@ -457,6 +478,7 @@ fn inspect_target(
     problems: &mut Vec<CheckProblem>,
     skill: &str,
     agent: &str,
+    owners: &[LinkOwner],
     target: &TargetPath,
     expected_source: &crate::domain::skill::SourcePath,
     link_store: &impl LinkStore,
@@ -465,12 +487,14 @@ fn inspect_target(
     match state {
         Ok(TargetState::SymlinkToExpectedSource) => {}
         Ok(TargetState::Missing) => problems.push(CheckProblem::TargetMissing {
+            owners: owners.to_vec(),
             skill: skill.to_owned(),
             agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
         }),
         Ok(TargetState::SymlinkToUnexpectedSource { actual_source }) => {
             problems.push(CheckProblem::TargetUnexpectedSymlink {
+                owners: owners.to_vec(),
                 skill: skill.to_owned(),
                 agent: agent.to_owned(),
                 path: target.as_path().display().to_string(),
@@ -478,12 +502,14 @@ fn inspect_target(
             });
         }
         Ok(TargetState::RegularFileConflict) => problems.push(CheckProblem::TargetConflict {
+            owners: owners.to_vec(),
             skill: skill.to_owned(),
             agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
             reason: "regular file exists".to_owned(),
         }),
         Ok(TargetState::DirectoryConflict) => problems.push(CheckProblem::TargetConflict {
+            owners: owners.to_vec(),
             skill: skill.to_owned(),
             agent: agent.to_owned(),
             path: target.as_path().display().to_string(),
@@ -491,6 +517,7 @@ fn inspect_target(
         }),
         Ok(TargetState::BrokenSymlink { actual_source }) => {
             problems.push(CheckProblem::BrokenSymlink {
+                owners: owners.to_vec(),
                 skill: skill.to_owned(),
                 agent: agent.to_owned(),
                 path: target.as_path().display().to_string(),
@@ -498,6 +525,7 @@ fn inspect_target(
             });
         }
         Err(error) => problems.push(CheckProblem::InspectFailed {
+            owners: owners.to_vec(),
             skill: skill.to_owned(),
             agent: agent.to_owned(),
             message: error.to_string(),
@@ -759,7 +787,8 @@ mod tests {
         assert_eq!(links.inspections.get(), 1);
         assert!(matches!(
             &report.problems[0],
-            CheckProblem::TargetMissing { agent, .. } if agent == "pi, universal"
+            CheckProblem::TargetMissing { owners, agent, .. }
+                if agent == "pi, universal" && owners == &plan.items[0].owners
         ));
     }
 
@@ -769,18 +798,30 @@ mod tests {
 
         let problems = vec![
             CheckProblem::TargetConflict {
+                owners: vec![LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: "pi".parse().unwrap(),
+                }],
                 skill: "review".to_owned(),
                 agent: "pi".to_owned(),
                 path: ".pi/agent/skills/review".to_owned(),
                 reason: "regular file exists".to_owned(),
             },
             CheckProblem::TargetConflict {
+                owners: vec![LinkOwner {
+                    skill: SkillName::new("tdd").unwrap(),
+                    agent: "pi".parse().unwrap(),
+                }],
                 skill: "tdd".to_owned(),
                 agent: "pi".to_owned(),
                 path: ".pi/agent/skills/tdd".to_owned(),
                 reason: "directory exists".to_owned(),
             },
             CheckProblem::TargetConflict {
+                owners: vec![LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: "codex".parse().unwrap(),
+                }],
                 skill: "review".to_owned(),
                 agent: "codex".to_owned(),
                 path: ".codex/skills/review".to_owned(),
@@ -825,11 +866,19 @@ mod tests {
                 actual: "sha256-b".to_owned(),
             },
             CheckProblem::TargetMissing {
+                owners: vec![LinkOwner {
+                    skill: SkillName::new("tdd").unwrap(),
+                    agent: "pi".parse().unwrap(),
+                }],
                 skill: "tdd".to_owned(),
                 agent: "pi".to_owned(),
                 path: ".pi/agent/skills/tdd".to_owned(),
             },
             CheckProblem::TargetConflict {
+                owners: vec![LinkOwner {
+                    skill: SkillName::new("review").unwrap(),
+                    agent: "pi".parse().unwrap(),
+                }],
                 skill: "review".to_owned(),
                 agent: "pi".to_owned(),
                 path: ".pi/agent/skills/review".to_owned(),

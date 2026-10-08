@@ -407,6 +407,9 @@ struct ListArgs {
 
 #[derive(Debug, Args)]
 struct CheckArgs {
+    /// Print a versioned JSON response instead of human output.
+    #[arg(long)]
+    json: bool,
     /// Use ~/.sksync/sksync-lock.json instead of project lockfile.
     #[arg(short = 'g', long)]
     global: bool,
@@ -3796,10 +3799,61 @@ fn generated_at() -> String {
 }
 
 fn run_check(args: CheckArgs) -> Result<()> {
+    let result = collect_check_report(args.global);
+    if args.json {
+        let (data, error) = match &result {
+            Ok(report) => (
+                Some(output::CheckData::from(report)),
+                (!report.is_success()).then(|| output::OutputError {
+                    code: output::codes::CHECK_FAILED.to_owned(),
+                    message: "Installed state does not match the lockfile.".to_owned(),
+                    hint: None,
+                }),
+            ),
+            Err(error) => (None, Some(read_execution_error(error))),
+        };
+        render_command_json(
+            &mut std::io::stdout().lock(),
+            &output::JsonEnvelope {
+                schema_version: 1,
+                command: output::JsonCommand::Check,
+                scope: if args.global {
+                    output::OutputScope::Global
+                } else {
+                    output::OutputScope::Project
+                },
+                ok: error.is_none(),
+                data,
+                error,
+            },
+        )
+    } else {
+        let report = result?;
+        if report.is_success() {
+            print_success("Check passed. Config, lockfile, hashes, and links are healthy.");
+            Ok(())
+        } else {
+            print_check_problems(&report.problems);
+            Err(RenderedFailure { exit_code: 1 }.into())
+        }
+    }
+}
+
+fn collect_check_report(global: bool) -> Result<crate::application::check::CheckReport> {
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let lockfile = read_lockfile(lockfile_path_for(args.global, &current_dir)?)?;
-    let config = load_config_for_scope(args.global, &current_dir)?;
-    let root_dir = if args.global {
+    let lockfile_path = lockfile_path_for(global, &current_dir)?;
+    let lockfile = match read_lockfile(&lockfile_path) {
+        Err(crate::infrastructure::json::LockfileJsonError::Read { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound
+                && fs::symlink_metadata(&lockfile_path).is_ok() =>
+        {
+            // A dangling required lockfile is unreadable existing state, not absence.
+            return Err(source.into());
+        }
+        result => result?,
+    };
+    let config = load_config_for_scope(global, &current_dir)?;
+    let root_dir = if global {
         config_root_for_global()?
     } else {
         current_dir.clone()
@@ -3807,21 +3861,13 @@ fn run_check(args: CheckArgs) -> Result<()> {
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     let target_resolver = TargetPathResolver::new(&root_dir, home_dir);
     let plan = build_desired_link_plan(&config, &target_resolver)?;
-    let report = check_lockfile_with_config_and_plan(
+    Ok(check_lockfile_with_config_and_plan(
         &config,
         &lockfile,
         &plan,
         &Sha256SourceHashStore,
         &FileSystemLinkStore,
-    );
-
-    if report.is_success() {
-        print_success("Check passed. Config, lockfile, hashes, and links are healthy.");
-        Ok(())
-    } else {
-        print_check_problems(&report.problems);
-        Err(RenderedFailure { exit_code: 1 }.into())
-    }
+    ))
 }
 
 fn run_list(args: ListArgs) -> Result<()> {
@@ -3950,6 +3996,11 @@ fn read_execution_error(error: &anyhow::Error) -> output::OutputError {
         }
     } else if let Some(error) = error.downcast_ref::<LockfileJsonError>() {
         match error {
+            LockfileJsonError::Read { source, .. }
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                codes::LOCKFILE_NOT_FOUND
+            }
             LockfileJsonError::Read { .. } | LockfileJsonError::Write { .. } => codes::IO_ERROR,
             LockfileJsonError::Serialize(_) => codes::SERIALIZATION_FAILED,
             LockfileJsonError::Parse { .. }
@@ -4270,6 +4321,10 @@ mod tests {
 
     fn target_conflict(skill: &str, agent: &str, path: &str) -> CheckProblem {
         CheckProblem::TargetConflict {
+            owners: vec![crate::domain::link_plan::LinkOwner {
+                skill: SkillName::new(skill).unwrap(),
+                agent: agent.parse().unwrap(),
+            }],
             skill: skill.to_owned(),
             agent: agent.to_owned(),
             path: path.to_owned(),
