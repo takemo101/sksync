@@ -2495,6 +2495,59 @@ mod tests {
     }
 
     #[test]
+    fn config_rejects_reserved_skill_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = temp.path().join("local");
+        for field in ["skills", "dependencies"] {
+            for name in [".", "..", " . ", " .. "] {
+                let value = serde_json::json!({
+                    "skillDir": temp.path().join("skills"),
+                    field: { name: { "source": local, "agents": ["pi"] } }
+                });
+                let raw: RawConfig = serde_json::from_value(value).unwrap();
+                assert!(
+                    matches!(
+                        raw.resolve(),
+                        Err(ConfigResolveError::InvalidSkillName { .. })
+                    ),
+                    "accepted {field} name {name:?}"
+                );
+            }
+            let value = serde_json::json!({
+                "skillDir": temp.path().join("skills"),
+                "agents": { "pi": {} },
+                field: { ".review": { "source": local, "agents": ["pi"] } }
+            });
+            let raw: RawConfig = serde_json::from_value(value).unwrap();
+            assert!(raw.resolve().is_ok());
+        }
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_reserved_skill_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = temp.path().join("local");
+        for name in [".", "..", " . ", " .. "] {
+            let value = serde_json::json!({
+                "name": "workflow", "description": "Local workflow",
+                "entries": { name: { "source": local } }
+            });
+            assert!(
+                matches!(
+                    parse_bundle_manifest(&value.to_string(), "inline"),
+                    Err(BundleManifestJsonError::InvalidEntryName { .. })
+                ),
+                "accepted bundle entry {name:?}"
+            );
+        }
+        let value = serde_json::json!({
+            "name": "workflow", "description": "Local workflow",
+            "entries": { ".review": { "source": local } }
+        });
+        assert!(parse_bundle_manifest(&value.to_string(), "inline").is_ok());
+    }
+
+    #[test]
     fn rejects_duplicate_skill_name_across_skills_and_dependencies() {
         let raw = serde_json::from_str::<RawConfig>(
             r#"{
