@@ -194,10 +194,29 @@ fn write_atomic_with_candidates<C: IntoIterator<Item = PathBuf>>(
     let parent = destination
         .parent()
         .expect("resolved destination has a parent");
-    // Never open the final path as staging, even when its name matches a candidate.
-    let candidates = candidates(parent)
-        .into_iter()
-        .filter(|candidate| candidate != &destination);
+    // Never open the final path as staging. Unicode filesystem aliases can
+    // change prefix spelling, so exclude its ASCII sequence suffix independently
+    // of prefix, as the sibling body allocator does. This is allocation-only;
+    // arbitrary public output names remain valid.
+    let candidates = candidates(parent).into_iter().filter(|candidate| {
+        if candidate == &destination {
+            return false;
+        }
+        let Some(name) = candidate.file_name() else {
+            return true;
+        };
+        let bytes = name.as_encoded_bytes();
+        let Some(separator) = bytes.iter().rposition(|byte| *byte == b'-') else {
+            return true;
+        };
+        let suffix = &bytes[separator..];
+        if suffix.len() == 1 || !suffix[1..].iter().all(u8::is_ascii_digit) {
+            return true;
+        }
+        !destination
+            .file_name()
+            .is_some_and(|final_name| final_name.as_encoded_bytes().ends_with(suffix))
+    });
     // Replacements are private from creation through writing. New destinations
     // retain normal creation permissions; original special bits are restored below.
     let creation_mode = if original.is_some() { 0o600 } else { 0o666 };
@@ -514,6 +533,137 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), b"complete bytes");
             assert!(!next.exists());
             assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        }
+    }
+
+    fn assert_absent_alias_candidate_is_excluded(mode: WriteMode) {
+        for final_name in [
+            ".sKsync-write-123-0",
+            ".ſksync-write-123-0",
+            ".SKSYNC-WRITE-123-0",
+            "unrelated-prefix-0",
+        ] {
+            for fail_at in [
+                None,
+                Some(Phase::Write),
+                Some(Phase::Sync),
+                Some(Phase::Publish),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().canonicalize().unwrap();
+                let path = root.join(final_name);
+                let candidate = root.join(".sksync-write-123-0");
+                let next = root.join(".sksync-write-123-1");
+                // Probe actual temporary-filesystem alias behavior without leaving
+                // the destination present when the atomic writer begins.
+                fs::write(&candidate, b"alias probe").unwrap();
+                eprintln!("{mode:?} {final_name}: aliases candidate={}", path.exists());
+                fs::remove_file(&candidate).unwrap();
+                let mut reached_publish = false;
+                let result = write_atomic_with_candidates(
+                    &path,
+                    b"complete bytes",
+                    mode,
+                    |_| [candidate.clone(), next.clone()],
+                    |phase, temporary| {
+                        if phase != Phase::Remove {
+                            assert!(
+                                !path.exists(),
+                                "{mode:?} {final_name}: destination appeared before {phase:?}"
+                            );
+                            assert_eq!(temporary.path, next, "matching ASCII sequence suffix must be excluded independently of prefix");
+                        }
+                        if phase == Phase::Publish {
+                            reached_publish = true;
+                        }
+                        if Some(phase) == fail_at {
+                            return Err(io::Error::other("injected alias publication failure"));
+                        }
+                        Ok(())
+                    },
+                );
+                if fail_at.is_some() {
+                    assert!(result.is_err());
+                    assert!(!path.exists());
+                    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+                } else {
+                    assert!(result.unwrap().warnings.is_empty());
+                    assert!(reached_publish);
+                    assert_eq!(fs::read(&path).unwrap(), b"complete bytes");
+                    assert!(!next.exists());
+                    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn atomic_create_excludes_alias_candidate_before_publication() {
+        assert_absent_alias_candidate_is_excluded(WriteMode::CreateNew);
+    }
+
+    #[test]
+    fn atomic_absent_replace_excludes_alias_candidate_before_publication() {
+        assert_absent_alias_candidate_is_excluded(WriteMode::Replace);
+    }
+
+    #[test]
+    fn atomic_alias_candidate_preserves_existing_file_and_private_replacement() {
+        for final_name in [".sKsync-write-123-0", ".ſksync-write-123-0"] {
+            for fail_at in [
+                None,
+                Some(Phase::Write),
+                Some(Phase::Sync),
+                Some(Phase::Publish),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().canonicalize().unwrap();
+                let path = root.join(final_name);
+                let candidate = root.join(".sksync-write-123-0");
+                let next = root.join(".sksync-write-123-1");
+                fs::write(&path, b"old private bytes").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+                assert!(write_atomic_with_candidates(
+                    &path,
+                    b"new",
+                    WriteMode::CreateNew,
+                    |_| [candidate.clone(), next.clone()],
+                    |_, _| panic!("existing create must not stage")
+                )
+                .is_err());
+                assert_eq!(fs::read(&path).unwrap(), b"old private bytes");
+                let result = write_atomic_with_candidates(
+                    &path,
+                    b"new",
+                    WriteMode::Replace,
+                    |_| [candidate.clone(), next.clone()],
+                    |phase, temporary| {
+                        assert_eq!(temporary.path, next);
+                        assert_eq!(fs::read(&path).unwrap(), b"old private bytes");
+                        assert_eq!(
+                            temporary.file.metadata()?.permissions().mode() & 0o7777,
+                            0o600
+                        );
+                        if Some(phase) == fail_at {
+                            return Err(io::Error::other("injected private alias write failure"));
+                        }
+                        Ok(())
+                    },
+                );
+                if fail_at.is_some() {
+                    assert!(result.is_err());
+                    assert_eq!(fs::read(&path).unwrap(), b"old private bytes");
+                } else {
+                    assert!(result.unwrap().warnings.is_empty());
+                    assert_eq!(fs::read(&path).unwrap(), b"new");
+                }
+                assert_eq!(
+                    fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+                    0o600
+                );
+                assert!(!next.exists());
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            }
         }
     }
 

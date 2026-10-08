@@ -9,10 +9,52 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-// P06 consumes this foundation API at mutation boundaries; no command entry
-// point acquires guards until that issue.
+use super::atomic_file::resolve_write_path;
+
+/// Create only the state file's required parent, then resolve aliases for I/O.
+/// Logical config-relative bases are not changed by this physical guard location.
+pub(crate) fn prepare_state_parent(path: &Path) -> io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    state_parent(path)
+}
+
+pub(crate) fn state_parent(path: &Path) -> io::Result<PathBuf> {
+    Ok(resolve_write_path(path)?
+        .parent()
+        .expect("resolved file has a parent")
+        .to_path_buf())
+}
+
+/// For mutations confined to state files (preferences and agent-map refresh).
+/// Call only after interactive confirmation and retain through publication.
+pub(crate) fn acquire_state_file_guard(paths: &[PathBuf]) -> io::Result<WriteGuard> {
+    let mut parents = paths
+        .iter()
+        .map(|path| prepare_state_parent(path))
+        .collect::<io::Result<Vec<_>>>()?;
+    parents.sort();
+    parents.dedup();
+    let guard = WriteGuard::acquire(&parents)?;
+    let mut current = paths
+        .iter()
+        .map(|path| state_parent(path))
+        .collect::<io::Result<Vec<_>>>()?;
+    current.sort();
+    current.dedup();
+    if current != parents || !guard.covers(&current)? {
+        return Err(io::Error::other(
+            "writer guard resources changed during acquisition",
+        ));
+    }
+    Ok(guard)
+}
+
 pub struct WriteGuard {
     directories: Vec<PathBuf>,
     handles: Vec<File>,
