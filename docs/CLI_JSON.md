@@ -1,6 +1,6 @@
 # CLI JSON output
 
-`list`, `plan`, and `check` default to human output. Use `--json` for one newline-terminated version-1 JSON response:
+`list`, `plan`, `check`, and `outdated` default to human output. Use `--json` for one newline-terminated version-1 JSON response:
 
 ```sh
 sksync list --json
@@ -9,13 +9,15 @@ sksync plan --json
 sksync plan --json --global
 sksync check --json
 sksync check --json --global
+sksync outdated --json
+sksync outdated --json --global
 ```
 
 The invocation uses only the selected project or global config. Listing does not fetch sources, hash current skill bodies, create a skill store, repair targets, or write state.
 
 ## Envelope
 
-Every delivered response has `schemaVersion: 1`, `command: "list"`, `"plan"`, or `"check"`, `scope: "project"` or `"global"`, `ok`, `data`, and `error`. Success has `error: null`. Input-loading or serialization failures have `data: null`; list resolution/inspection failures retain the collected report in `data`.
+Every delivered response has `schemaVersion: 1`, `command: "list"`, `"plan"`, `"check"`, or `"outdated"`, `scope: "project"` or `"global"`, `ok`, `data`, and `error`. Success has `error: null`. Input-loading or serialization failures have `data: null`; list resolution/inspection failures retain the collected report in `data`.
 
 ```json
 {
@@ -107,6 +109,24 @@ Checking is read-only and local: it loads the required lockfile and selected con
 ```
 
 Healthy checks exit `0` with `ok: true` and `error: null`. Completed unhealthy checks exit `1` with `CHECK_FAILED` and the **full report** in `data`, including hash/inspection failures. Aborted input-loading or target-resolution failures also exit `1`, but have `data: null`: missing required lockfiles use `LOCKFILE_NOT_FOUND`, malformed ones use `INVALID_LOCKFILE`, unreadable ones (including dangling lockfile symlinks) use `IO_ERROR`, and config/resolution errors use the shared typed codes. Human mode retains the same report, grouping, and exit decisions; no duplicate summary is appended to JSON.
+
+## Outdated data and migration
+
+`outdated` queries configured Git refs against recorded Git install sources in the required lockfile. It does not install content, hash bodies, inspect/repair links, acquire writer guards, or write state. Local dependencies and up-to-date Git sources are omitted. This is a current observation, not a frozen update plan: a moving ref may change before an update.
+
+- `rows` contains successful outdated results sorted by skill, preserving the six string fields `skill`, `current`, `wanted`, `latest`, `source`, and `status` (`outdated`).
+- `problems` contains failed probes sorted by skill, with `skill`, `source`, `wanted`, and structured `error` (`code: "REMOTE_QUERY_FAILED"` and an explanatory `message`). Failed probes never appear as error text in `latest`. Remaining probes continue after failures.
+- Empty results use `rows: []` and `problems: []`. All-success probes exit `0`, even when updates are available. Any failed probe exits `1` in **both** output modes; JSON has `ok: false`, top-level `REMOTE_QUERY_FAILED`, and retains successful rows plus every problem in `data`. Human output shows both rows and failures, without claiming everything is current.
+- Input-loading failures exit `1` with `data: null`: `CONFIG_NOT_FOUND`, `INVALID_CONFIG`, `LOCKFILE_NOT_FOUND`, `INVALID_LOCKFILE`, or `IO_ERROR`. Global scope uses only the global config/lockfile, without project fallback.
+
+**Breaking change:** `outdated --json` now emits the shared envelope instead of a bare array. There is no legacy-array flag. Replace `jq '.[]'` with `jq '.data.rows'`, and inspect `.ok`, `.error`, and `.data.problems`. Exit `1` can carry usable partial rows:
+
+```sh
+status=0
+sksync outdated --json > outdated.json || status=$?
+jq '.ok, .error, .data.problems, .data.rows' outdated.json
+printf 'sksync exit status: %s\n' "$status"
+```
 
 ## Exit behavior and compatibility
 

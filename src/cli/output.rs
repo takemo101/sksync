@@ -3,15 +3,13 @@ use std::io::Write;
 use serde::Serialize;
 use thiserror::Error;
 
-// P09–P12 consume these output-only APIs. Remove each narrow allowance as its
-// command adapter lands; the application/domain reports remain presentation-free.
+// Output-only APIs; application/domain reports remain presentation-free.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JsonCommand {
     List,
     Plan,
     Check,
-    #[allow(dead_code)] // P12
     Outdated,
 }
 
@@ -83,8 +81,6 @@ pub mod codes {
     pub const INVALID_LOCKFILE: &str = "INVALID_LOCKFILE";
     pub const TARGET_RESOLUTION_FAILED: &str = "TARGET_RESOLUTION_FAILED";
     pub const INSPECTION_FAILED: &str = "INSPECTION_FAILED";
-    // Consumed by the command adapters in P09–P12.
-    #[allow(dead_code)]
     pub const REMOTE_QUERY_FAILED: &str = "REMOTE_QUERY_FAILED";
     pub const CHECK_FAILED: &str = "CHECK_FAILED";
     pub const IO_ERROR: &str = "IO_ERROR";
@@ -495,6 +491,66 @@ impl CheckProblemData<'_> {
             Self::InspectFailed { skill, agent, .. } => ("inspectFailed", *skill, *agent, ""),
             Self::HashFailed { skill, .. } => ("hashFailed", *skill, "", ""),
             Self::IncludeMismatch { skill, .. } => ("includeMismatch", *skill, "", ""),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct OutdatedData<'a> {
+    rows: Vec<OutdatedRowData<'a>>,
+    problems: Vec<OutdatedProblemData<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct OutdatedRowData<'a> {
+    skill: &'a str,
+    current: &'a str,
+    wanted: &'a str,
+    latest: &'a str,
+    source: &'a str,
+    status: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct OutdatedProblemData<'a> {
+    skill: &'a str,
+    source: &'a str,
+    wanted: &'a str,
+    error: OutputError,
+}
+
+impl<'a> From<&'a crate::application::outdated::OutdatedReport> for OutdatedData<'a> {
+    fn from(report: &'a crate::application::outdated::OutdatedReport) -> Self {
+        use crate::application::outdated::RemoteRefError;
+        Self {
+            rows: report
+                .rows
+                .iter()
+                .map(|row| OutdatedRowData {
+                    skill: &row.skill,
+                    current: &row.current,
+                    wanted: &row.wanted,
+                    latest: &row.latest,
+                    source: &row.source,
+                    status: &row.status,
+                })
+                .collect(),
+            problems: report
+                .problems
+                .iter()
+                .map(|problem| OutdatedProblemData {
+                    skill: &problem.skill,
+                    source: &problem.source,
+                    wanted: &problem.wanted,
+                    error: match &problem.error {
+                        RemoteRefError::Query(message) => OutputError {
+                            code: codes::REMOTE_QUERY_FAILED.to_owned(),
+                            message: message.clone(),
+                            hint: None,
+                        },
+                    },
+                })
+                .collect(),
         }
     }
 }

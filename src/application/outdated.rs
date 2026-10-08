@@ -7,6 +7,7 @@ use crate::domain::source::InstallSource;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutdatedReport {
     pub rows: Vec<OutdatedRow>,
+    pub problems: Vec<OutdatedProblem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +20,15 @@ pub struct OutdatedRow {
     pub status: String,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutdatedProblem {
+    pub skill: String,
+    pub source: String,
+    pub wanted: String,
+    pub error: RemoteRefError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RemoteRefError {
     #[error("{0}")]
     Query(String),
@@ -34,40 +43,47 @@ pub fn collect_outdated(
     lockfile: &Lockfile,
     resolver: &impl RemoteRefResolver,
 ) -> OutdatedReport {
-    let rows = config
-        .skills
-        .iter()
-        .filter_map(|skill| {
-            let locked = lockfile.skills.get(&skill.name)?;
-            match (&skill.install_source, &locked.install_source) {
-                (Some(InstallSource::Git(config_git)), Some(InstallSource::Git(locked_git))) => {
-                    let wanted_ref = config_git.wanted_ref();
-                    let latest = resolver
-                        .git_remote_rev(&config_git.url, wanted_ref)
-                        .unwrap_or_else(|error| format!("error: {error}"));
-                    let current = locked_git
-                        .reference
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    if latest == current {
-                        None
-                    } else {
-                        Some(OutdatedRow {
-                            skill: skill.name.as_str().to_owned(),
-                            current,
-                            wanted: wanted_ref.to_owned(),
-                            latest,
-                            source: config_git.url.clone(),
-                            status: "outdated".to_owned(),
-                        })
-                    }
+    let mut rows = Vec::new();
+    let mut problems = Vec::new();
+    for skill in &config.skills {
+        let Some(locked) = lockfile.skills.get(&skill.name) else {
+            continue;
+        };
+        if let (Some(InstallSource::Git(config_git)), Some(InstallSource::Git(locked_git))) =
+            (&skill.install_source, &locked.install_source)
+        {
+            let wanted_ref = config_git.wanted_ref();
+            let latest = match resolver.git_remote_rev(&config_git.url, wanted_ref) {
+                Ok(latest) => latest,
+                Err(error) => {
+                    problems.push(OutdatedProblem {
+                        skill: skill.name.as_str().to_owned(),
+                        source: config_git.url.clone(),
+                        wanted: wanted_ref.to_owned(),
+                        error,
+                    });
+                    continue;
                 }
-                _ => None,
+            };
+            let current = locked_git
+                .reference
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned());
+            if latest != current {
+                rows.push(OutdatedRow {
+                    skill: skill.name.as_str().to_owned(),
+                    current,
+                    wanted: wanted_ref.to_owned(),
+                    latest,
+                    source: config_git.url.clone(),
+                    status: "outdated".to_owned(),
+                });
             }
-        })
-        .collect();
-
-    OutdatedReport { rows }
+        }
+    }
+    rows.sort_by(|left, right| left.skill.cmp(&right.skill));
+    problems.sort_by(|left, right| left.skill.cmp(&right.skill));
+    OutdatedReport { rows, problems }
 }
 
 #[cfg(test)]
@@ -145,5 +161,75 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
         assert_eq!(report.rows[0].current, "old");
         assert_eq!(report.rows[0].latest, "new");
+    }
+    #[test]
+    fn mixed_remote_results_retain_typed_problems_and_continue_after_failure() {
+        struct MixedResolver;
+        impl RemoteRefResolver for MixedResolver {
+            fn git_remote_rev(
+                &self,
+                repo: &str,
+                reference: &str,
+            ) -> Result<String, RemoteRefError> {
+                assert_eq!(reference, "main");
+                match repo {
+                    "failed" => Err(RemoteRefError::Query("offline".into())),
+                    "current" => Ok("old".into()),
+                    "outdated" => Ok("new".into()),
+                    _ => panic!("local sources must not be probed"),
+                }
+            }
+        }
+        let mut config = config_with_source(
+            &SkillName::new("seed").unwrap(),
+            InstallSource::Local("local".into()),
+        );
+        config.skills.clear();
+        let mut lockfile = lockfile_with_source(
+            SkillName::new("seed").unwrap(),
+            InstallSource::Local("local".into()),
+        );
+        lockfile.skills.clear();
+        for (name, url) in [
+            ("a-failed", "failed"),
+            ("current", "current"),
+            ("z-outdated", "outdated"),
+            ("local", "local"),
+        ] {
+            let name = SkillName::new(name).unwrap();
+            let source = if url == "local" {
+                InstallSource::Local("local".into())
+            } else {
+                InstallSource::Git(GitInstallSource {
+                    url: url.into(),
+                    reference: Some("main".into()),
+                    path: ".".into(),
+                })
+            };
+            config
+                .skills
+                .extend(config_with_source(&name, source.clone()).skills);
+            let mut locked_source = source;
+            if let InstallSource::Git(git) = &mut locked_source {
+                git.reference = Some("old".into());
+            }
+            lockfile
+                .skills
+                .extend(lockfile_with_source(name, locked_source).skills);
+        }
+        let report = collect_outdated(&config, &lockfile, &MixedResolver);
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].skill, "z-outdated");
+        assert_eq!(report.rows[0].latest, "new");
+        assert_eq!(
+            report.problems,
+            vec![super::OutdatedProblem {
+                skill: "a-failed".into(),
+                source: "failed".into(),
+                wanted: "main".into(),
+                error: RemoteRefError::Query("offline".into())
+            }]
+        );
+        assert!(report.rows.iter().all(|row| !row.latest.contains("error:")));
     }
 }
