@@ -179,6 +179,23 @@ pub(crate) fn validate_update_destination_aliases(
     validate_update_destination_aliases_inner(
         managed_root,
         destinations,
+        destinations.len(),
+        #[cfg(test)]
+        false,
+    )
+}
+
+/// Protected paths follow selected paths. Observe namespace identity only, without
+/// validating unselected body health or probing groups unrelated to the selection.
+pub(crate) fn validate_selected_update_destination_aliases(
+    managed_root: &Path,
+    destinations: &[(&SkillName, &Path)],
+    selected_count: usize,
+) -> Result<(), SkillInstallError> {
+    validate_update_destination_aliases_inner(
+        managed_root,
+        destinations,
+        selected_count,
         #[cfg(test)]
         false,
     )
@@ -187,6 +204,7 @@ pub(crate) fn validate_update_destination_aliases(
 fn validate_update_destination_aliases_inner(
     managed_root: &Path,
     destinations: &[(&SkillName, &Path)],
+    selected_count: usize,
     #[cfg(test)] fail_cleanup: bool,
 ) -> Result<(), SkillInstallError> {
     if destinations.len() < 2 {
@@ -197,9 +215,29 @@ fn validate_update_destination_aliases_inner(
         .map_err(|error| prepare_io(managed_root, error))?;
     let mut groups: Vec<UpdateDestinationProbe> = Vec::new();
     for (index, (_, path)) in destinations.iter().enumerate() {
-        validate_managed_destination(&root, path)?;
-        let physical = resolve_managed_directory(path)?;
-        let mut parent = physical.as_path();
+        let physical = if index < selected_count {
+            validate_managed_destination(&root, path)?;
+            resolve_managed_directory(path)?
+        } else {
+            // Logical aliases remain in the caller's overlap observations, but
+            // probes must use physical containers, never open protected leaves.
+            let parent = path
+                .parent()
+                .ok_or_else(|| prepare_io(path, "missing protected path parent"))?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| prepare_io(path, "missing protected path name"))?;
+            resolve_managed_directory(parent)?.join(name)
+        };
+        // Protected leaves may be missing, files, or resolved dangling links.
+        // Start at their parent; never open/traverse the protected body itself.
+        let mut parent = if index < selected_count {
+            physical.as_path()
+        } else {
+            physical
+                .parent()
+                .ok_or_else(|| prepare_io(path, "missing protected path parent"))?
+        };
         let identity = loop {
             if let Some(identity) =
                 DirectoryIdentity::read(parent).map_err(|error| prepare_io(parent, error))?
@@ -245,7 +283,12 @@ fn validate_update_destination_aliases_inner(
         }
     }
     for group in groups {
-        if group.destinations.len() < 2 {
+        if group.destinations.len() < 2
+            || !group
+                .destinations
+                .iter()
+                .any(|(index, _)| *index < selected_count)
+        {
             continue;
         }
         if let Some(existing) = group
@@ -286,7 +329,7 @@ fn validate_update_destination_aliases_inner(
         let probe =
             OwnedDirectory::create_excluding(&group.parent, "destination-probe-é", &excluded)
                 .map_err(|error| prepare_io(&group.parent, error))?;
-        let result = probe_update_destination_group(&probe, &group, destinations);
+        let result = probe_update_destination_group(&probe, &group, destinations, selected_count);
         let cleanup = || {
             #[cfg(test)]
             if fail_cleanup {
@@ -330,6 +373,7 @@ fn probe_update_destination_group(
     probe: &OwnedDirectory,
     group: &UpdateDestinationProbe,
     destinations: &[(&SkillName, &Path)],
+    selected_count: usize,
 ) -> Result<(), SkillInstallError> {
     // A per-directory case/normalization policy need not be inherited by a new
     // private directory. Verify inheritance against lookups in the real parent;
@@ -408,6 +452,11 @@ fn probe_update_destination_group(
     }
     for (index, (left, identity)) in mirrored.iter().enumerate() {
         for (other_index, (right, other_identity)) in mirrored.iter().enumerate().skip(index + 1) {
+            if group.destinations[index].0 >= selected_count
+                && group.destinations[other_index].0 >= selected_count
+            {
+                continue;
+            }
             let overlaps = right
                 .ancestors()
                 .map(|ancestor| identity.matches(ancestor))
@@ -1290,6 +1339,7 @@ mod tests {
             let error = super::validate_update_destination_aliases_inner(
                 &root,
                 &[(&first, &left), (&second, &right)],
+                2,
                 true,
             )
             .unwrap_err();
