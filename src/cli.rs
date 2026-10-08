@@ -32,7 +32,7 @@ use crate::application::discovery::{
 use crate::application::init::{init_agents, init_global, init_project, InitError};
 use crate::application::list::{list_skills, ListReport, ListedTargetState};
 use crate::application::outdated::{
-    collect_outdated, OutdatedRow, RemoteRefError, RemoteRefResolver,
+    collect_outdated, OutdatedReport, OutdatedRow, RemoteRefError, RemoteRefResolver,
 };
 use crate::application::plan::{build_desired_link_plan, build_link_plan};
 use crate::application::ports::{AddDependencyOptions, DependencyConfigStore, LockfileStore};
@@ -2417,33 +2417,70 @@ fn symlink_points_to_locked_source(target: &Path, source: &Path) -> Result<bool>
 }
 
 fn run_outdated(args: OutdatedArgs) -> Result<()> {
-    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
-    let config = load_config_for_scope(args.global, &current_dir)?;
-    let lockfile_path = lockfile_path_for(args.global, &current_dir)?;
-    let lockfile = read_lockfile(&lockfile_path)?;
-    let report = collect_outdated(&config, &lockfile, &GitRemoteRefResolver);
-    let rows = report.rows;
+    let result = collect_outdated_report(args.global);
     if args.json {
-        let json_rows = rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "skill": row.skill,
-                    "current": row.current,
-                    "wanted": row.wanted,
-                    "latest": row.latest,
-                    "source": row.source,
-                    "status": row.status,
-                })
-            })
-            .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&json_rows)?);
-    } else if rows.is_empty() {
-        print_success("All skills are up to date.");
+        let (data, error) = match &result {
+            Ok(report) => (
+                Some(output::OutdatedData::from(report)),
+                (!report.problems.is_empty()).then(|| output::OutputError {
+                    code: output::codes::REMOTE_QUERY_FAILED.to_owned(),
+                    message: "One or more remote queries failed.".to_owned(),
+                    hint: None,
+                }),
+            ),
+            Err(error) => (None, Some(read_execution_error(error))),
+        };
+        render_command_json(
+            &mut std::io::stdout().lock(),
+            &output::JsonEnvelope {
+                schema_version: 1,
+                command: output::JsonCommand::Outdated,
+                scope: if args.global {
+                    output::OutputScope::Global
+                } else {
+                    output::OutputScope::Project
+                },
+                ok: error.is_none(),
+                data,
+                error,
+            },
+        )
     } else {
-        print_outdated_rows(&rows);
+        let report = result?;
+        if !report.rows.is_empty() {
+            print_outdated_rows(&report.rows);
+        } else if report.problems.is_empty() {
+            print_success("All skills are up to date.");
+        }
+        if !report.problems.is_empty() {
+            print_section_with_count("Remote query failures", report.problems.len());
+            for problem in &report.problems {
+                print_detail(format!(
+                    "{} ({} {}): {}",
+                    problem.skill, problem.source, problem.wanted, problem.error
+                ));
+            }
+            return Err(RenderedFailure { exit_code: 1 }.into());
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+fn collect_outdated_report(global: bool) -> Result<OutdatedReport> {
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    let config = load_config_for_scope(global, &current_dir)?;
+    let lockfile_path = lockfile_path_for(global, &current_dir)?;
+    let lockfile = match read_lockfile(&lockfile_path) {
+        Err(crate::infrastructure::json::LockfileJsonError::Read { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound
+                && fs::symlink_metadata(&lockfile_path).is_ok() =>
+        {
+            // A dangling required lockfile is unreadable existing state, not absence.
+            return Err(source.into());
+        }
+        result => result?,
+    };
+    Ok(collect_outdated(&config, &lockfile, &GitRemoteRefResolver))
 }
 
 struct GitRemoteRefResolver;

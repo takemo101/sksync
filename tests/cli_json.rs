@@ -963,3 +963,252 @@ fn check_json_shared_target_emits_singular_universal_pi_fx_owners() {
     assert_eq!(fs::read(root.join("sksync-lock.json")).unwrap(), lock);
     assert_eq!(fs::read_link(&target).unwrap(), source);
 }
+
+#[test]
+fn outdated_json_empty_and_input_errors_are_single_envelopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let output = sksync(root, &["outdated", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(json_response(&output)["error"]["code"], "CONFIG_NOT_FOUND");
+    assert!(output.stderr.is_empty());
+    fs::write(root.join("sksync.config.json"), r#"{"dependencies":{}}"#).unwrap();
+    let output = sksync(root, &["outdated", "--json"]);
+    assert_eq!(
+        json_response(&output)["error"]["code"],
+        "LOCKFILE_NOT_FOUND"
+    );
+    fs::write(root.join("sksync-lock.json"), "invalid").unwrap();
+    let output = sksync(root, &["outdated", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_response(&output);
+    assert_eq!(value["error"]["code"], "INVALID_LOCKFILE");
+    assert!(value["data"].is_null());
+    assert_eq!(value["ok"], false);
+    assert!(output.stderr.is_empty());
+    fs::write(root.join("sksync.config.json"), "invalid").unwrap();
+    let output = sksync(root, &["outdated", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_response(&output);
+    assert_eq!(value["error"]["code"], "INVALID_CONFIG");
+    assert!(value["data"].is_null());
+    assert_eq!(value["ok"], false);
+    assert!(output.stderr.is_empty());
+    fs::write(root.join("sksync.config.json"), r#"{"dependencies":{}}"#).unwrap();
+    fs::write(
+        root.join("sksync-lock.json"),
+        serde_json::json!({
+            "lockfileVersion":5,"generatedBy":"test","generatedAt":"test","root":".","skills":{}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = sksync(root, &["outdated", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        json_response(&output),
+        serde_json::json!({
+            "schemaVersion":1,"command":"outdated","scope":"project","ok":true,
+            "data":{"rows":[],"problems":[]},"error":null
+        })
+    );
+    assert!(output.stderr.is_empty());
+}
+
+fn outdated_git_command(root: &Path) -> Command {
+    let home = root.join("home");
+    let config = home.join(".config");
+    fs::create_dir_all(&config).unwrap();
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    command
+}
+
+#[test]
+fn outdated_json_local_git_partial_report_and_human_exit() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let repo = root.join("repo.git");
+    let output = outdated_git_command(root)
+        .args(["init", "--bare", "--initial-branch=main"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // Local fixture history only; never mutate the workspace's index/history.
+    let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfixture\nM 100644 inline SKILL.md\ndata 5\nbody\n\n\n";
+    let mut child = outdated_git_command(root)
+        .arg("-C")
+        .arg(&repo)
+        .args(["fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = outdated_git_command(root)
+        .arg("-C")
+        .arg(&repo)
+        .args(["rev-parse", "main"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let latest = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    let unavailable = root.join("unavailable.git");
+    let mut dependencies = serde_json::Map::new();
+    let mut locked = serde_json::Map::new();
+    for (name, url, current) in [
+        ("zeta", &repo, "old"),
+        ("alpha", &repo, "old"),
+        ("current", &repo, latest.as_str()),
+        ("failed-z", &unavailable, "old"),
+        ("failed-a", &unavailable, "old"),
+    ] {
+        dependencies.insert(name.into(), serde_json::json!({"source":{"provider":"git","url":url,"path":".","ref":"main"},"agents":["universal"]}));
+        locked.insert(name.into(), serde_json::json!({"source":format!(".sksync/skills/{name}"),
+            "installSource":{"type":"git","url":url,"path":".","ref":current},"hash":"sha256-test","files":[]}));
+    }
+    dependencies.insert(
+        "local".into(),
+        serde_json::json!({"source":"./absent-local","agents":["universal"]}),
+    );
+    let config_path = root.join("sksync.config.json");
+    let lock_path = root.join("sksync-lock.json");
+    fs::write(
+        &config_path,
+        serde_json::json!({"dependencies":dependencies}).to_string(),
+    )
+    .unwrap();
+    fs::write(&lock_path, serde_json::json!({"lockfileVersion":5,"generatedBy":"test","generatedAt":"test","root":".","skills":locked}).to_string()).unwrap();
+    let config_bytes = fs::read(&config_path).unwrap();
+    let lock_bytes = fs::read(&lock_path).unwrap();
+    for args in [&["outdated", "--json"][..], &["outdated"][..]] {
+        let output = sksync(root, args);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        if args.len() == 2 {
+            let value = json_response(&output);
+            assert_eq!(value["ok"], false);
+            assert_eq!(value["error"]["code"], "REMOTE_QUERY_FAILED");
+            let rows = value["data"]["rows"].as_array().unwrap();
+            assert_eq!(rows.len(), 2);
+            for (row, name) in rows.iter().zip(["alpha", "zeta"]) {
+                assert_eq!(
+                    row,
+                    &serde_json::json!({"skill":name,"current":"old","wanted":"main","latest":latest,"source":repo,"status":"outdated"})
+                );
+            }
+            let problems = value["data"]["problems"].as_array().unwrap();
+            assert_eq!(problems.len(), 2);
+            for (problem, name) in problems.iter().zip(["failed-a", "failed-z"]) {
+                assert_eq!(problem["skill"], name);
+                assert_eq!(problem["source"], unavailable.display().to_string());
+                assert_eq!(problem["wanted"], "main");
+                assert_eq!(problem["error"]["code"], "REMOTE_QUERY_FAILED");
+                assert!(!problem["error"]["message"].as_str().unwrap().is_empty());
+                assert!(problem["error"].get("hint").is_none());
+            }
+        } else {
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains("alpha") && text.contains("zeta"));
+            assert!(text.contains("failed-a") && text.contains("failed-z"));
+            assert!(!text.contains("All skills are up to date"));
+        }
+    }
+    assert_eq!(fs::read(&config_path).unwrap(), config_bytes);
+    assert_eq!(fs::read(&lock_path).unwrap(), lock_bytes);
+    assert!(!root.join(".sksync").exists());
+    // All-success probes still exit zero when updates exist, in both modes.
+    let mut config: serde_json::Value = serde_json::from_slice(&config_bytes).unwrap();
+    config["dependencies"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|name, _| !name.starts_with("failed-"));
+    fs::write(&config_path, config.to_string()).unwrap();
+    for args in [&["outdated", "--json"][..], &["outdated"][..]] {
+        let output = sksync(root, args);
+        assert!(output.status.success(), "{output:?}");
+        if args.len() == 2 {
+            let value = json_response(&output);
+            assert_eq!(value["ok"], true);
+            assert!(value["error"].is_null());
+            assert_eq!(value["data"]["rows"].as_array().unwrap().len(), 2);
+            assert_eq!(value["data"]["problems"], serde_json::json!([]));
+        }
+    }
+    // A report with only failed probes is still a usable failed report, not "up to date".
+    let mut config: serde_json::Value = serde_json::from_slice(&config_bytes).unwrap();
+    config["dependencies"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|name, _| name.starts_with("failed-"));
+    fs::write(&config_path, config.to_string()).unwrap();
+    for args in [&["outdated", "--json"][..], &["outdated"][..]] {
+        let output = sksync(root, args);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stderr.is_empty());
+        if args.len() == 2 {
+            let value = json_response(&output);
+            assert_eq!(value["data"]["rows"], serde_json::json!([]));
+            assert_eq!(value["data"]["problems"].as_array().unwrap().len(), 2);
+        } else {
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("All skills are up to date"));
+        }
+    }
+    config["dependencies"].as_object_mut().unwrap().clear();
+    fs::write(&config_path, config.to_string()).unwrap();
+    let output = sksync(root, &["outdated"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("All skills are up to date"));
+}
+
+#[test]
+fn outdated_json_global_scope_uses_only_injected_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let global = root.join("home/.sksync");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(root.join("sksync.config.json"), "invalid project config").unwrap();
+    fs::write(global.join("config.json"), r#"{"dependencies":{}}"#).unwrap();
+    fs::write(global.join("sksync-lock.json"), serde_json::json!({"lockfileVersion":5,"generatedBy":"test","generatedAt":"test","root":".","skills":{}}).to_string()).unwrap();
+    let output = sksync(root, &["outdated", "--json", "--global"]);
+    assert!(output.status.success(), "{output:?}");
+    let value = json_response(&output);
+    assert_eq!(value["scope"], "global");
+    assert_eq!(value["data"], serde_json::json!({"rows":[],"problems":[]}));
+    assert!(output.stderr.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn outdated_json_unreadable_required_lockfile_is_io_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("sksync.config.json"), r#"{"dependencies":{}}"#).unwrap();
+    let lock = root.join("sksync-lock.json");
+    fs::create_dir(&lock).unwrap();
+    for dangling in [false, true] {
+        if dangling {
+            fs::remove_dir(&lock).unwrap();
+            std::os::unix::fs::symlink(root.join("absent"), &lock).unwrap();
+        }
+        let output = sksync(root, &["outdated", "--json"]);
+        assert_eq!(output.status.code(), Some(1));
+        let value = json_response(&output);
+        assert_eq!(value["error"]["code"], "IO_ERROR");
+        assert_eq!(value["ok"], false);
+        assert!(value["data"].is_null());
+        assert!(output.stderr.is_empty());
+    }
+}
