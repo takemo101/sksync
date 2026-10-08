@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -9,8 +9,8 @@ use super::ports::{
     PreparedSkillInstaller, SkillInstallError, SkillInstallRequest, SkillInstaller,
     SkillRollbackFailure,
 };
-use crate::domain::lockfile::Lockfile;
-use crate::domain::skill::SkillName;
+use crate::domain::lockfile::{LockedSkill, Lockfile};
+use crate::domain::skill::{SkillName, SkillNameError};
 use crate::domain::source::InstallSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +30,20 @@ pub struct UpdatedSkill {
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
+    #[error("invalid skill name '{name}': {source}; use dependency keys from the chosen config")]
+    InvalidSkillName {
+        name: String,
+        #[source]
+        source: SkillNameError,
+    },
+    #[error("unknown skill '{skill}'; choose a dependency key from the chosen config")]
+    UnknownSkill { skill: SkillName },
+    #[error("skill '{skill}' has no dependency install source; configure a dependency before updating it")]
+    NotDependency { skill: SkillName },
+    #[error("selected update requires an existing readable lockfile; run a full install/update to establish the baseline")]
+    MissingBaseline,
+    #[error("lockfile has no entry for unselected skill '{skill}'; run a full install/update to establish the baseline")]
+    MissingUnselectedEntry { skill: SkillName },
     #[error(transparent)]
     Install(#[from] SkillInstallError),
     #[error(transparent)]
@@ -42,6 +56,65 @@ pub enum UpdateError {
         original: Box<UpdateError>,
         failures: Vec<SkillRollbackFailure>,
     },
+}
+
+/// No names means a full update; explicit names are dependency keys, not a smaller config.
+#[allow(dead_code)] // P13 foundation; remove when MIK-018 connects positional CLI names.
+pub fn resolve_update_selection(
+    config: &ResolvedConfig,
+    names: &[String],
+) -> Result<Option<BTreeSet<SkillName>>, UpdateError> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let mut selected = BTreeSet::new();
+    for raw in names {
+        let name = SkillName::new(raw).map_err(|source| UpdateError::InvalidSkillName {
+            name: raw.clone(),
+            source,
+        })?;
+        let skill = config
+            .skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .ok_or_else(|| UpdateError::UnknownSkill {
+                skill: name.clone(),
+            })?;
+        if skill.install_source.is_none() {
+            return Err(UpdateError::NotDependency { skill: name });
+        }
+        selected.insert(name);
+    }
+    Ok(Some(selected))
+}
+
+/// The caller loads a readable baseline in the chosen scope, then validates it under guards.
+#[allow(dead_code)] // P13 foundation; remove when MIK-018 connects the guarded baseline.
+pub fn validate_selected_baseline(
+    config: &ResolvedConfig,
+    selected: &BTreeSet<SkillName>,
+    previous: Option<&Lockfile>,
+) -> Result<(), UpdateError> {
+    let previous = previous.ok_or(UpdateError::MissingBaseline)?;
+    for skill in &config.skills {
+        if !selected.contains(&skill.name) && !previous.skills.contains_key(&skill.name) {
+            return Err(UpdateError::MissingUnselectedEntry {
+                skill: skill.name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Preserve all other entries and metadata; the caller supplies successful generation metadata.
+#[allow(dead_code)] // P13 foundation; remove when MIK-018 builds selected batch candidates.
+pub fn merge_selected_lockfile(
+    previous: &Lockfile,
+    replacements: BTreeMap<SkillName, LockedSkill>,
+) -> Lockfile {
+    let mut merged = previous.clone();
+    merged.skills.extend(replacements);
+    merged
 }
 
 fn rollback_failure_details(failures: &[SkillRollbackFailure]) -> String {
@@ -706,5 +779,282 @@ mod batch_tests {
             .borrow()
             .iter()
             .any(|event| event.ends_with(":beta")));
+    }
+}
+
+#[cfg(test)]
+mod selected_update_tests {
+    use super::*;
+    use crate::domain::agent::AgentKind;
+    use crate::domain::lockfile::{Digest, LinkType, LockedFile, LockedSkill, LockedTarget};
+    use crate::domain::package_filter::PackageFilter;
+    use crate::domain::scope::Scope;
+    use crate::domain::skill::{SkillNameError, SourcePath};
+    use crate::domain::source::GitInstallSource;
+    use crate::domain::target::TargetPath;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    fn config(root: &Path) -> ResolvedConfig {
+        let mut config = super::tests::config(
+            root.join("skills"),
+            InstallSource::Local(root.join("local/review")),
+        );
+        let mut qa = config.skills[0].clone();
+        qa.name = SkillName::new("qa").unwrap();
+        qa.source = SourcePath::new(root.join("skills/qa")).unwrap();
+        qa.install_source = Some(InstallSource::Git(GitInstallSource {
+            url: root.join("local-repo.git").to_string_lossy().into_owned(),
+            reference: Some("main".into()),
+            path: "skills/qa".into(),
+        }));
+        qa.include = Some(PackageFilter::manifest_only());
+        config.skills.push(qa);
+        config
+    }
+
+    fn locked(config: &ResolvedConfig) -> Lockfile {
+        Lockfile {
+            generated_by: "old generator".into(),
+            generated_at: "old timestamp".into(),
+            root: config.skill_dir.as_path().parent().unwrap().into(),
+            skills: config
+                .skills
+                .iter()
+                .map(|skill| {
+                    (
+                        skill.name.clone(),
+                        LockedSkill {
+                            source: skill.source.clone(),
+                            install_source: skill.install_source.clone(),
+                            include: skill.include.clone(),
+                            hash: Digest::new(format!("old-{}", skill.name)).unwrap(),
+                            files: vec![LockedFile {
+                                path: "SKILL.md".into(),
+                                hash: Digest::new("old-file").unwrap(),
+                            }],
+                            targets: vec![LockedTarget {
+                                agent: AgentKind::Pi,
+                                scope: Scope::Project,
+                                path: TargetPath::new(
+                                    config.skill_dir.as_path().join("legacy-target"),
+                                )
+                                .unwrap(),
+                                link_type: LinkType::Symlink,
+                            }],
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn select(config: &ResolvedConfig, names: &[&str]) -> Result<BTreeSet<SkillName>, UpdateError> {
+        resolve_update_selection(
+            config,
+            &names.iter().map(|name| (*name).into()).collect::<Vec<_>>(),
+        )
+        .map(|selection| selection.expect("explicit names"))
+    }
+
+    #[test]
+    fn selected_update_empty_input_means_full_even_without_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        assert_eq!(resolve_update_selection(&config, &[]).unwrap(), None);
+        for skill in &mut config.skills {
+            skill.install_source = None;
+        }
+        assert_eq!(resolve_update_selection(&config, &[]).unwrap(), None);
+        config.skills.clear();
+        assert_eq!(resolve_update_selection(&config, &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn selected_update_trims_deduplicates_and_sorts_local_and_git_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let snapshot = config.clone();
+        let selection = select(&config, &[" review ", "qa", "review", " qa "]).unwrap();
+        assert_eq!(
+            selection.iter().map(SkillName::as_str).collect::<Vec<_>>(),
+            ["qa", "review"]
+        );
+        assert_eq!(config, snapshot);
+    }
+
+    #[test]
+    fn selected_update_matches_case_sensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        assert!(
+            matches!(select(&config, &["Review"]), Err(UpdateError::UnknownSkill { skill }) if skill.as_str() == "Review")
+        );
+        let mut upper = config.skills[0].clone();
+        upper.name = SkillName::new("Review").unwrap();
+        config.skills.push(upper);
+        assert_eq!(select(&config, &["Review", "review"]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn selected_update_rejects_invalid_names_with_typed_causes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        for (name, expected) in [
+            (".", SkillNameError::ReservedPathComponent),
+            (" .. ", SkillNameError::ReservedPathComponent),
+            (" ", SkillNameError::Empty),
+            ("skills/review", SkillNameError::ContainsPathSeparator),
+            ("skills\\review", SkillNameError::ContainsPathSeparator),
+        ] {
+            let error = select(&config, &["review", name]).unwrap_err();
+            assert!(error.to_string().contains("skill name"));
+            assert!(
+                matches!(error, UpdateError::InvalidSkillName { name: raw, source } if raw == name && source == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn selected_update_rejects_whole_set_for_unknown_or_legacy_only_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        assert!(
+            matches!(select(&config, &["review", " missing "]), Err(UpdateError::UnknownSkill { skill }) if skill.as_str() == "missing")
+        );
+        config.skills[1].install_source = None;
+        let error = select(&config, &["review", "qa"]).unwrap_err();
+        assert!(error.to_string().contains("dependency"));
+        assert!(matches!(error, UpdateError::NotDependency { skill } if skill.as_str() == "qa"));
+    }
+
+    #[test]
+    fn selected_update_requires_baseline_even_when_every_skill_is_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let selected = select(&config, &["review", "qa"]).unwrap();
+        let error = validate_selected_baseline(&config, &selected, None).unwrap_err();
+        assert!(error.to_string().contains("full install/update"));
+        assert!(matches!(error, UpdateError::MissingBaseline));
+    }
+
+    #[test]
+    fn selected_update_requires_unselected_dependency_and_legacy_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        let selected = select(&config, &["review"]).unwrap();
+        let mut previous = locked(&config);
+        previous.skills.remove(&SkillName::new("qa").unwrap());
+        for legacy in [false, true] {
+            if legacy {
+                config.skills[1].install_source = None;
+            }
+            let error =
+                validate_selected_baseline(&config, &selected, Some(&previous)).unwrap_err();
+            assert!(error.to_string().contains("full install/update"));
+            assert!(
+                matches!(error, UpdateError::MissingUnselectedEntry { skill } if skill.as_str() == "qa")
+            );
+        }
+    }
+
+    #[test]
+    fn selected_update_allows_absent_selected_entry_and_does_not_inspect_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let selected = select(&config, &["review"]).unwrap();
+        let mut previous = locked(&config);
+        previous.skills.remove(&SkillName::new("review").unwrap());
+        assert!(validate_selected_baseline(&config, &selected, Some(&previous)).is_ok());
+        assert!(!config.skill_dir.as_path().exists());
+        let all = select(&config, &["review", "qa"]).unwrap();
+        previous.skills.clear();
+        assert!(validate_selected_baseline(&config, &all, Some(&previous)).is_ok());
+    }
+
+    #[test]
+    fn selected_update_merge_preserves_unselected_and_stale_entries_and_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let mut previous = locked(&config);
+        let review = SkillName::new("review").unwrap();
+        let qa = SkillName::new("qa").unwrap();
+        let stale = SkillName::new("removed-dependency").unwrap();
+        previous
+            .skills
+            .insert(stale.clone(), previous.skills[&qa].clone());
+        let snapshot = previous.clone();
+        let mut replacement = previous.skills[&review].clone();
+        replacement.source = SourcePath::new(dir.path().join("skills/new-review")).unwrap();
+        replacement.install_source = config.skills[1].install_source.clone();
+        replacement.include = Some(PackageFilter::manifest_only());
+        replacement.hash = Digest::new("new-body").unwrap();
+        replacement.files[0].hash = Digest::new("new-file").unwrap();
+        replacement.targets.clear();
+        let merged = merge_selected_lockfile(
+            &previous,
+            BTreeMap::from([(review.clone(), replacement.clone())]),
+        );
+        let mut expected = snapshot.clone();
+        expected.skills.insert(review, replacement);
+        assert_eq!(merged, expected);
+        assert_eq!(previous, snapshot);
+        assert_eq!(
+            merge_selected_lockfile(&previous, BTreeMap::new()),
+            previous
+        );
+    }
+
+    #[test]
+    fn selected_update_merge_inserts_new_selected_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let mut previous = locked(&config);
+        let review = SkillName::new("review").unwrap();
+        let replacement = previous.skills.remove(&review).unwrap();
+        let merged = merge_selected_lockfile(
+            &previous,
+            BTreeMap::from([(review.clone(), replacement.clone())]),
+        );
+        assert_eq!(merged.skills[&review], replacement);
+        assert_eq!(merged.skills.len(), previous.skills.len() + 1);
+    }
+
+    #[test]
+    fn selected_update_merge_leaves_legacy_target_normalization_to_v5_serializer() {
+        use crate::infrastructure::json::{read_lockfile, write_lockfile};
+        for version in [2, 3, 4, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sksync-lock.json");
+            let raw = serde_json::json!({
+                "lockfileVersion": version, "generatedBy": "old", "generatedAt": "old", "root": ".",
+                "skills": {"qa": {
+                    "source": "skills/qa", "installSource": {"type": "local", "path": "local/qa"},
+                    "include": ["SKILL.md"], "hash": "old-hash", "files": [{"path": "SKILL.md", "hash": "old-file"}],
+                    "targets": [{"agent": "pi", "scope": "project", "path": ".pi/skills/qa", "linkType": "symlink"}]
+                }}
+            });
+            std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+            let previous = read_lockfile(&path).unwrap();
+            let config = config(dir.path());
+            let replacement = locked(&config).skills[&SkillName::new("review").unwrap()].clone();
+            let merged = merge_selected_lockfile(
+                &previous,
+                BTreeMap::from([(SkillName::new("review").unwrap(), replacement)]),
+            );
+            assert_eq!(
+                merged.skills[&SkillName::new("qa").unwrap()],
+                previous.skills[&SkillName::new("qa").unwrap()]
+            );
+            write_lockfile(&path, &merged).unwrap();
+            let published: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(published["lockfileVersion"], 5);
+            assert_eq!(published["root"], ".");
+            let mut expected = raw["skills"]["qa"].clone();
+            expected.as_object_mut().unwrap().remove("targets");
+            assert_eq!(published["skills"]["qa"], expected);
+            assert!(published["skills"]["review"].get("targets").is_none());
+        }
     }
 }
