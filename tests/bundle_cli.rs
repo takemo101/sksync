@@ -2,22 +2,76 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
+fn sksync_command(root: &Path, args: &[&str]) -> Command {
+    // Keep repeated calls in one fixture on the same isolated home.
+    sksync_command_with_home(root, &root.join(".sksync-test-home"), args)
+}
+
 fn sksync(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sksync"))
+    sksync_command(root, args).output().expect("run sksync")
+}
+
+fn sksync_command_with_home(root: &Path, home: &Path, args: &[&str]) -> Command {
+    let config_home = home.join(".config");
+    fs::create_dir_all(&config_home).expect("create isolated home and config root");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sksync"));
+    command
         .current_dir(root)
-        .args(args)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("XDG_CONFIG_HOME", config_home)
+        .args(args);
+    command
+}
+
+fn sksync_with_home(root: &Path, home: &Path, args: &[&str]) -> Output {
+    sksync_command_with_home(root, home, args)
         .output()
         .expect("run sksync")
 }
 
-fn sksync_with_home(root: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sksync"))
-        .current_dir(root)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .args(args)
-        .output()
-        .expect("run sksync")
+#[test]
+fn sksync_command_isolates_home_and_config_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join(".sksync-test-home");
+    let command = sksync_command(root.path(), &["--help"]);
+    for (key, expected) in [
+        ("HOME", home.clone()),
+        ("USERPROFILE", home.clone()),
+        ("XDG_CONFIG_HOME", home.join(".config")),
+    ] {
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            actual,
+            Some(expected.as_os_str()),
+            "{key} must be explicitly isolated"
+        );
+    }
+}
+
+#[test]
+fn sksync_command_with_home_isolates_config_and_retains_supplied_home() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("explicit-home");
+    let command = sksync_command_with_home(root.path(), &home, &["--help"]);
+    for (key, expected) in [
+        ("HOME", home.clone()),
+        ("USERPROFILE", home.clone()),
+        ("XDG_CONFIG_HOME", home.join(".config")),
+    ] {
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            actual,
+            Some(expected.as_os_str()),
+            "{key} must be explicitly isolated"
+        );
+    }
 }
 
 fn assert_success(output: Output) {

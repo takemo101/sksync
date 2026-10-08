@@ -281,6 +281,16 @@ pub trait LockfileStore {
     fn write(&self, lockfile: &Lockfile) -> Result<(), LockfileStoreError>;
 }
 
+/// Serialize before publication; the prepared representation is adapter-owned.
+pub trait PreparedLockfileStore: LockfileStore {
+    type Prepared;
+    fn prepare_lockfile(&self, value: &Lockfile) -> Result<Self::Prepared, LockfileStoreError>;
+    fn publish_lockfile(
+        &self,
+        value: &Self::Prepared,
+    ) -> Result<Vec<CleanupWarning>, LockfileStoreError>;
+}
+
 pub fn display_path(path: &Path) -> String {
     path.display().to_string()
 }

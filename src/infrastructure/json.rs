@@ -1,3 +1,4 @@
+use super::atomic_file::{write_atomic, WriteMode};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -15,8 +16,9 @@ use crate::application::config::{
     ConfigResolveError, ResolvedAgent, ResolvedConfig, ResolvedSkill,
 };
 use crate::application::ports::{
-    display_path, AddDependencyOptions, ConfigStore, ConfigStoreError, DependencyConfigStore,
-    DependencyConfigStoreError, LockfileStore, LockfileStoreError,
+    display_path, AddDependencyOptions, CleanupWarning, ConfigStore, ConfigStoreError,
+    DependencyConfigStore, DependencyConfigStoreError, LockfileStore, LockfileStoreError,
+    PreparedLockfileStore,
 };
 use crate::application::source::{
     git_url_from_repo, parse_install_source_string as parse_source_string, validate_git_subpath,
@@ -289,10 +291,12 @@ pub fn write_bundle_manifest(
             source,
         }
     })?;
-    std::fs::write(path, format!("{content}\n")).map_err(|source| BundleManifestJsonError::Write {
-        path: display_path(path),
-        source,
-    })
+    write_atomic(path, format!("{content}\n").as_bytes(), WriteMode::Replace)
+        .map(|_| ())
+        .map_err(|source| BundleManifestJsonError::Write {
+            path: display_path(path),
+            source,
+        })
 }
 
 pub fn parse_bundle_manifest(
@@ -1464,11 +1468,15 @@ impl FileDependencyConfigStore {
             })?;
         }
         let content = serde_json::to_string_pretty(value)?;
-        std::fs::write(&self.path, format!("{content}\n")).map_err(|source| {
-            DependencyConfigStoreError::Write {
-                path: display_path(&self.path),
-                source,
-            }
+        write_atomic(
+            &self.path,
+            format!("{content}\n").as_bytes(),
+            WriteMode::Replace,
+        )
+        .map(|_| ())
+        .map_err(|source| DependencyConfigStoreError::Write {
+            path: display_path(&self.path),
+            source,
         })
     }
 }
@@ -2045,13 +2053,13 @@ pub fn write_lockfile(
     lockfile: &Lockfile,
 ) -> Result<(), LockfileJsonError> {
     let path = path.as_ref();
-    let lockfile_root = path.parent().unwrap_or_else(|| Path::new("."));
-    let raw = RawLockfile::from_domain(lockfile, lockfile_root);
-    let content = serde_json::to_string_pretty(&raw)?;
-    std::fs::write(path, format!("{content}\n")).map_err(|source| LockfileJsonError::Write {
-        path: display_path(path),
-        source,
-    })
+    let serialized = serialize_lockfile(path, lockfile)?;
+    write_atomic(path, &serialized.0, WriteMode::Replace)
+        .map(|_| ())
+        .map_err(|source| LockfileJsonError::Write {
+            path: display_path(path),
+            source,
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -2067,8 +2075,40 @@ impl FileLockfileStore {
 
 impl LockfileStore for FileLockfileStore {
     fn write(&self, lockfile: &Lockfile) -> Result<(), LockfileStoreError> {
-        write_lockfile(&self.path, lockfile)
+        let prepared = self.prepare_lockfile(lockfile)?;
+        self.publish_lockfile(&prepared).map(|_| ())
+    }
+}
+
+/// Opaque serialized v5 bytes. Preparation retains the logical lockfile base.
+pub struct SerializedLockfile(Vec<u8>);
+
+fn serialize_lockfile(
+    path: &Path,
+    lockfile: &Lockfile,
+) -> Result<SerializedLockfile, LockfileJsonError> {
+    let lockfile_root = path.parent().unwrap_or_else(|| Path::new("."));
+    let raw = RawLockfile::from_domain(lockfile, lockfile_root);
+    let mut bytes = serde_json::to_vec_pretty(&raw)?;
+    bytes.push(b'\n');
+    Ok(SerializedLockfile(bytes))
+}
+
+impl PreparedLockfileStore for FileLockfileStore {
+    type Prepared = SerializedLockfile;
+
+    fn prepare_lockfile(&self, value: &Lockfile) -> Result<Self::Prepared, LockfileStoreError> {
+        serialize_lockfile(&self.path, value)
             .map_err(|error| LockfileStoreError::Write(error.to_string()))
+    }
+
+    fn publish_lockfile(
+        &self,
+        value: &Self::Prepared,
+    ) -> Result<Vec<CleanupWarning>, LockfileStoreError> {
+        write_atomic(&self.path, &value.0, WriteMode::Replace)
+            .map(|outcome| outcome.warnings)
+            .map_err(|error| LockfileStoreError::Write(format!("{}: {error}", self.path.display())))
     }
 }
 
@@ -2231,6 +2271,184 @@ mod tests {
     use crate::domain::source::{GitInstallSource, InstallSource};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dependency_config_symlink_keeps_fields_permissions_and_logical_base() {
+        use std::io::Read;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let dotfiles = dir.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let path = dir.path().join("sksync.config.json");
+        let referent = dotfiles.join("config.json");
+        let original =
+            br#"{ "skillDir": "./skills", "unknown": {"answer": 42}, "dependencies": {} }"#;
+        std::fs::write(&referent, original).unwrap();
+        std::fs::set_permissions(&referent, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&referent, &path).unwrap();
+        let mut previous = std::fs::File::open(&path).unwrap();
+        let store = FileDependencyConfigStore::new(&path, "./ignored");
+        let failed = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            store.add_dependency(
+                "review",
+                "./review",
+                &["pi".into()],
+                AddDependencyOptions { include: None },
+            )
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        store
+            .add_dependency(
+                "review",
+                "./review",
+                &["pi".into()],
+                AddDependencyOptions { include: None },
+            )
+            .unwrap();
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let mut bytes = Vec::new();
+        previous.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, original);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["unknown"]["answer"], 42);
+        assert_eq!(value["skillDir"], "./skills");
+        assert_eq!(value["dependencies"]["review"]["source"], "./review");
+        let config = FileConfigStore::new(&path).load().unwrap();
+        assert_eq!(config.skill_dir.as_path(), dir.path().join("skills"));
+    }
+
+    #[test]
+    fn lockfile_symlink_keeps_logical_portable_base_and_old_inode() {
+        use crate::application::ports::LockfileStore;
+        use std::io::Read;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let dotfiles = dir.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let referent = dotfiles.join("lock.json");
+        let path = dir.path().join("sksync-lock.json");
+        let original = include_bytes!("../../sksync-lock.example.json");
+        std::fs::write(&referent, original).unwrap();
+        std::fs::set_permissions(&referent, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&referent, &path).unwrap();
+        let mut previous = std::fs::File::open(&path).unwrap();
+        let lock = read_lockfile(&path).unwrap();
+        let store = super::FileLockfileStore::new(&path);
+        let failed = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            store.write(&lock)
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        store.write(&lock).unwrap();
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let mut bytes = Vec::new();
+        previous.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, original);
+        assert_eq!(read_lockfile(&path).unwrap(), lock);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["root"], ".");
+        assert_eq!(value["lockfileVersion"], 5);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("dotfiles"));
+    }
+
+    #[test]
+    fn prepared_lockfile_failed_publication_preserves_bytes_or_absence() {
+        use crate::application::ports::{LockfileStore, PreparedLockfileStore};
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.json");
+        std::fs::write(&source, include_bytes!("../../sksync-lock.example.json")).unwrap();
+        let lock = read_lockfile(&source).unwrap();
+        for exists in [false, true] {
+            let path = dir.path().join(format!("lock-{exists}.json"));
+            let original = b"original raw lock bytes\n";
+            if exists {
+                std::fs::write(&path, original).unwrap();
+            }
+            let store = super::FileLockfileStore::new(&path);
+            let prepared = store.prepare_lockfile(&lock).unwrap();
+            let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+                store.publish_lockfile(&prepared)
+            });
+            assert!(result.is_err());
+            let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+                store.write(&lock)
+            });
+            assert!(result.is_err());
+            if exists {
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+            } else {
+                assert!(!path.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_lockfile_serializes_without_publishing() {
+        use crate::application::ports::PreparedLockfileStore;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock.json");
+        std::fs::write(&path, include_bytes!("../../sksync-lock.example.json")).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut lock = read_lockfile(&path).unwrap();
+        lock.generated_by = "prepared snapshot".into();
+        let store = super::FileLockfileStore::new(&path);
+        let prepared = store.prepare_lockfile(&lock).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        lock.generated_by = "later change".into();
+        assert!(store.publish_lockfile(&prepared).unwrap().is_empty());
+        let saved = read_lockfile(&path).unwrap();
+        assert_eq!(saved.generated_by, "prepared snapshot");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["lockfileVersion"], 5);
+        assert_eq!(raw["root"], ".");
+    }
+
+    #[test]
+    fn lockfile_failed_publication_preserves_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sksync-lock.json");
+        let original = include_bytes!("../../sksync-lock.example.json");
+        std::fs::write(&path, original).unwrap();
+        let lock = read_lockfile(&path).unwrap();
+        let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            write_lockfile(&path, &lock)
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn dependency_config_failed_publication_preserves_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let original = b"{ \"skillDir\": \"./skills\", \"unknown\": 42, \"dependencies\": {} }\n";
+        std::fs::write(&path, original).unwrap();
+        let store = FileDependencyConfigStore::new(&path, "./skills");
+        let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            store.add_dependency(
+                "review",
+                "./review",
+                &["pi".into()],
+                AddDependencyOptions { include: None },
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
 
     #[test]
     fn parses_example_config() {
