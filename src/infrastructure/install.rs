@@ -115,6 +115,10 @@ struct OwnedDirectory {
 
 impl OwnedDirectory {
     fn create(parent: &Path, kind: &str, destination: &Path) -> std::io::Result<Self> {
+        Self::create_excluding(parent, kind, &[destination])
+    }
+
+    fn create_excluding(parent: &Path, kind: &str, excluded: &[&Path]) -> std::io::Result<Self> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
         loop {
@@ -123,8 +127,10 @@ impl OwnedDirectory {
             // Skip the final name's ASCII sequence suffix regardless of prefix.
             // Unicode filesystem aliases can change prefix spelling, so matching
             // the complete candidate name (even ASCII-insensitively) is unsafe.
-            if destination.file_name().is_some_and(|final_name| {
-                final_name.as_encoded_bytes().ends_with(suffix.as_bytes())
+            if excluded.iter().any(|destination| {
+                destination.file_name().is_some_and(|final_name| {
+                    final_name.as_encoded_bytes().ends_with(suffix.as_bytes())
+                })
             }) {
                 continue;
             }
@@ -132,9 +138,19 @@ impl OwnedDirectory {
             let path = parent.join(name);
             match fs::create_dir(&path) {
                 Ok(()) => {
-                    let identity = DirectoryIdentity::read(&path)?.ok_or_else(|| {
-                        std::io::Error::other("new private directory disappeared")
-                    })?;
+                    let identity = DirectoryIdentity::read(&path)
+                        .map_err(|error| {
+                            std::io::Error::other(format!(
+                                "private directory identity failed; retained path {}: {error}",
+                                path.display()
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            std::io::Error::other(format!(
+                                "new private directory disappeared: {}",
+                                path.display()
+                            ))
+                        })?;
                     return Ok(Self { path, identity });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -151,6 +167,270 @@ impl OwnedDirectory {
         }
         fs::remove_dir_all(&self.path)
     }
+}
+
+/// Called under the managed-store writer guard, before any skill preparation.
+/// Probe only missing components beside their actual nearest existing container,
+/// never by creating an absent selected body or entering an existing one.
+pub(crate) fn validate_update_destination_aliases(
+    managed_root: &Path,
+    destinations: &[(&SkillName, &Path)],
+) -> Result<(), SkillInstallError> {
+    validate_update_destination_aliases_inner(
+        managed_root,
+        destinations,
+        #[cfg(test)]
+        false,
+    )
+}
+
+fn validate_update_destination_aliases_inner(
+    managed_root: &Path,
+    destinations: &[(&SkillName, &Path)],
+    #[cfg(test)] fail_cleanup: bool,
+) -> Result<(), SkillInstallError> {
+    if destinations.len() < 2 {
+        return Ok(());
+    }
+    let root = managed_root
+        .canonicalize()
+        .map_err(|error| prepare_io(managed_root, error))?;
+    let mut groups: Vec<UpdateDestinationProbe> = Vec::new();
+    for (index, (_, path)) in destinations.iter().enumerate() {
+        validate_managed_destination(&root, path)?;
+        let physical = resolve_managed_directory(path)?;
+        let mut parent = physical.as_path();
+        let identity = loop {
+            if let Some(identity) =
+                DirectoryIdentity::read(parent).map_err(|error| prepare_io(parent, error))?
+            {
+                break identity;
+            }
+            parent = parent
+                .parent()
+                .ok_or_else(|| prepare_io(path, "missing alias probe container"))?;
+        };
+        let relative = physical
+            .strip_prefix(parent)
+            .map_err(|error| prepare_io(path, error))?
+            .to_path_buf();
+        if !relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(prepare_io(
+                path,
+                "unsupported destination components for alias validation",
+            ));
+        }
+        let mut matching_group = None;
+        for (group_index, group) in groups.iter().enumerate() {
+            if group
+                .identity
+                .matches(parent)
+                .map_err(|error| prepare_io(parent, error))?
+            {
+                matching_group = Some(group_index);
+                break;
+            }
+        }
+        if let Some(group_index) = matching_group {
+            groups[group_index].destinations.push((index, relative));
+        } else {
+            groups.push(UpdateDestinationProbe {
+                parent: parent.to_path_buf(),
+                identity,
+                destinations: vec![(index, relative)],
+            });
+        }
+    }
+    for group in groups {
+        if group.destinations.len() < 2 {
+            continue;
+        }
+        if let Some(existing) = group
+            .destinations
+            .iter()
+            .position(|(_, path)| path.as_os_str().is_empty())
+        {
+            let other = if existing == 0 { 1 } else { 0 };
+            return Err(update_destination_overlap(
+                &root,
+                destinations,
+                group.destinations[existing].0,
+                group.destinations[other].0,
+            ));
+        }
+        if !group
+            .identity
+            .matches(&group.parent)
+            .map_err(|error| prepare_io(&group.parent, error))?
+        {
+            return Err(prepare_io(&group.parent, "alias probe container changed"));
+        }
+        // Every first missing component is excluded before allocation. Numeric
+        // suffix matching remains safe for case/Kelvin-sign/long-s aliases.
+        let excluded = group
+            .destinations
+            .iter()
+            .map(|(_, path)| {
+                group.parent.join(
+                    path.components()
+                        .next()
+                        .expect("nonempty missing suffix")
+                        .as_os_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let excluded = excluded.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+        let probe =
+            OwnedDirectory::create_excluding(&group.parent, "destination-probe-é", &excluded)
+                .map_err(|error| prepare_io(&group.parent, error))?;
+        let result = probe_update_destination_group(&probe, &group, destinations);
+        let cleanup = || {
+            #[cfg(test)]
+            if fail_cleanup {
+                return Err(std::io::Error::other(
+                    "injected alias probe cleanup failure",
+                ));
+            }
+            probe.remove()
+        };
+        if let Err(cleanup) = cleanup() {
+            let original = result
+                .err()
+                .map(|error| format!("{error}; "))
+                .unwrap_or_default();
+            return Err(prepare_io(&probe.path, format!("{original}alias probe cleanup failed: {cleanup}; retained owned recovery path {}", probe.path.display())));
+        }
+        result?;
+    }
+    Ok(())
+}
+
+struct UpdateDestinationProbe {
+    parent: PathBuf,
+    identity: DirectoryIdentity,
+    destinations: Vec<(usize, PathBuf)>,
+}
+
+fn update_destination_overlap(
+    root: &Path,
+    destinations: &[(&SkillName, &Path)],
+    left: usize,
+    right: usize,
+) -> SkillInstallError {
+    prepare_io(root, format!(
+        "dependency destinations overlap: '{}' ({}) and '{}' ({}); use separate managed body directories",
+        destinations[left].0, destinations[left].1.display(), destinations[right].0, destinations[right].1.display()
+    ))
+}
+
+fn probe_update_destination_group(
+    probe: &OwnedDirectory,
+    group: &UpdateDestinationProbe,
+    destinations: &[(&SkillName, &Path)],
+) -> Result<(), SkillInstallError> {
+    // A per-directory case/normalization policy need not be inherited by a new
+    // private directory. Verify inheritance against lookups in the real parent;
+    // otherwise the mirror cannot establish physical equivalence safely.
+    let basename = probe
+        .path
+        .file_name()
+        .expect("owned probe name")
+        .to_str()
+        .expect("generated UTF-8 name");
+    let marker = probe.path.join(basename);
+    fs::create_dir(&marker).map_err(|error| prepare_io(&marker, error))?;
+    let marker_identity = DirectoryIdentity::read(&marker)
+        .map_err(|error| prepare_io(&marker, error))?
+        .ok_or_else(|| prepare_io(&marker, "alias marker disappeared"))?;
+    for alias in [
+        basename.to_uppercase(),
+        basename.replace('k', "K"),
+        basename.replace('s', "ſ"),
+        basename.replace('é', "e\u{301}"),
+    ] {
+        let parent_alias = probe
+            .identity
+            .matches(&probe.path.with_file_name(&alias))
+            .map_err(|error| prepare_io(&group.parent, error))?;
+        let private_alias = marker_identity
+            .matches(&marker.with_file_name(&alias))
+            .map_err(|error| prepare_io(&marker, error))?;
+        if parent_alias != private_alias {
+            return Err(prepare_io(&group.parent, "cannot establish inherited directory alias behavior; update aborted before preparation"));
+        }
+    }
+    fs::remove_dir(&marker).map_err(|error| prepare_io(&marker, error))?;
+    let mut mirrored = Vec::new();
+    for (_, path) in &group.destinations {
+        let mut target = probe.path.clone();
+        for component in path.components() {
+            if !probe
+                .identity
+                .matches(&probe.path)
+                .map_err(|error| prepare_io(&probe.path, error))?
+                || !group
+                    .identity
+                    .matches(&group.parent)
+                    .map_err(|error| prepare_io(&group.parent, error))?
+                || !fs::symlink_metadata(&target)
+                    .map_err(|error| prepare_io(&target, error))?
+                    .is_dir()
+            {
+                return Err(prepare_io(
+                    &target,
+                    "owned alias probe changed; refusing traversal",
+                ));
+            }
+            target.push(component.as_os_str());
+            match fs::create_dir(&target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if !fs::symlink_metadata(&target)
+                        .map_err(|error| prepare_io(&target, error))?
+                        .is_dir()
+                    {
+                        return Err(prepare_io(
+                            &target,
+                            "alias probe component is not a directory",
+                        ));
+                    }
+                }
+                Err(error) => return Err(prepare_io(&target, error)),
+            }
+        }
+        let identity = DirectoryIdentity::read(&target)
+            .map_err(|error| prepare_io(&target, error))?
+            .ok_or_else(|| prepare_io(&target, "alias probe disappeared"))?;
+        mirrored.push((target, identity));
+    }
+    for (index, (left, identity)) in mirrored.iter().enumerate() {
+        for (other_index, (right, other_identity)) in mirrored.iter().enumerate().skip(index + 1) {
+            let overlaps = right
+                .ancestors()
+                .map(|ancestor| identity.matches(ancestor))
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(|error| prepare_io(right, error))?
+                .contains(&true)
+                || left
+                    .ancestors()
+                    .map(|ancestor| other_identity.matches(ancestor))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|error| prepare_io(left, error))?
+                    .contains(&true);
+            if overlaps {
+                return Err(update_destination_overlap(
+                    &group.parent,
+                    destinations,
+                    group.destinations[index].0,
+                    group.destinations[other_index].0,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn prepare_io(path: &Path, error: impl std::fmt::Display) -> SkillInstallError {
@@ -942,6 +1222,140 @@ mod tests {
     use crate::domain::source::{GitInstallSource, InstallSource};
     use std::path::Path;
     use std::process::Command;
+
+    #[test]
+    fn update_destination_probe_allocator_excludes_all_missing_prefix_aliases() {
+        use std::fs;
+        if std::env::var_os("SKSYNC_TEST_DESTINATION_PROBE_ALLOCATOR").is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let config = home.path().join(".config");
+            fs::create_dir(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env("HOME", home.path()).env("USERPROFILE", home.path()).env("XDG_CONFIG_HOME", &config)
+                .env("SKSYNC_TEST_DESTINATION_PROBE_ALLOCATOR", "1")
+                .args(["--exact", "infrastructure::install::tests::update_destination_probe_allocator_excludes_all_missing_prefix_aliases", "--nocapture"])
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let excluded = [".SKSYNC", ".sKsync", ".ſksync", "legitimate-user-prefix"].map(|prefix| {
+            temp.path().join(format!(
+                "{prefix}-destination-probe-é-{}-0",
+                std::process::id()
+            ))
+        });
+        let paths = excluded
+            .iter()
+            .map(|path| path.as_path())
+            .collect::<Vec<_>>();
+        let owned =
+            super::OwnedDirectory::create_excluding(temp.path(), "destination-probe-é", &paths)
+                .unwrap();
+        assert!(!owned
+            .path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with("-0"));
+        assert!(
+            excluded.iter().all(|path| !path.exists()),
+            "probe allocation created a selected prefix alias"
+        );
+        owned.remove().unwrap();
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn update_destination_probe_cleanup_failure_reports_retained_path_and_original_overlap() {
+        use std::fs;
+        for overlaps in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("skills");
+            fs::create_dir(&root).unwrap();
+            let first = crate::domain::skill::SkillName::new("first").unwrap();
+            let second = crate::domain::skill::SkillName::new("second").unwrap();
+            let left = root.join("missing");
+            let right = if overlaps {
+                left.join("child")
+            } else {
+                root.join("other")
+            };
+            let error = super::validate_update_destination_aliases_inner(
+                &root,
+                &[(&first, &left), (&second, &right)],
+                true,
+            )
+            .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("injected alias probe cleanup failure"));
+            assert_eq!(
+                message.contains("dependency destinations overlap"),
+                overlaps
+            );
+            let SkillInstallError::Prepare { path, .. } = error else {
+                panic!("missing recovery path")
+            };
+            assert!(Path::new(&path).is_dir());
+            assert!(message.contains(&path));
+            assert!(!left.exists() && !right.exists());
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            eprintln!("injected alias probe cleanup retained temporary owned root: {path}");
+        }
+    }
+
+    #[test]
+    fn update_destination_probe_reports_existing_parent_even_when_listed_last() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("SKILL.md"), "old body").unwrap();
+        let first = crate::domain::skill::SkillName::new("first").unwrap();
+        let second = crate::domain::skill::SkillName::new("second").unwrap();
+        let last = crate::domain::skill::SkillName::new("parent").unwrap();
+        let left = parent.join("first");
+        let right = parent.join("second");
+        let error = super::validate_update_destination_aliases(
+            temp.path(),
+            &[(&first, &left), (&second, &right), (&last, &parent)],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("'parent'") && error.contains("'first'"),
+            "{error}"
+        );
+        assert!(!left.exists() && !right.exists());
+        assert_eq!(fs::read(parent.join("SKILL.md")).unwrap(), b"old body");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn update_destination_probe_refuses_cleanup_of_replaced_unmanaged_directory() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let owned =
+            super::OwnedDirectory::create_excluding(temp.path(), "destination-probe-é", &[])
+                .unwrap();
+        let retained = temp.path().join("retained-original-probe");
+        fs::rename(&owned.path, &retained).unwrap();
+        fs::create_dir(&owned.path).unwrap();
+        fs::write(owned.path.join("unmanaged"), "must remain").unwrap();
+        assert!(owned.remove().is_err());
+        assert_eq!(
+            fs::read(owned.path.join("unmanaged")).unwrap(),
+            b"must remain"
+        );
+        assert!(retained.is_dir());
+    }
 
     #[test]
     fn prepared_install_skips_final_destination_as_staging_candidate() {

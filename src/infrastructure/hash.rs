@@ -74,21 +74,33 @@ pub fn hash_directory(source_dir: impl AsRef<Path>) -> Result<DirectoryHash, Has
         });
     }
 
-    let mut directory_hasher = Sha256::new();
-    for file in &file_hashes {
-        directory_hasher.update(file.path.to_string_lossy().as_bytes());
-        directory_hasher.update([0]);
-        directory_hasher.update(file.hash.as_str().as_bytes());
-        directory_hasher.update([0]);
-    }
-
     Ok(DirectoryHash {
-        hash: Digest::new(format!(
-            "sha256-{}",
-            hex::encode(directory_hasher.finalize())
-        ))?,
+        hash: hash_file_entries(
+            file_hashes
+                .iter()
+                .map(|file| (file.path.as_path(), &file.hash)),
+        )?,
         files: file_hashes,
     })
+}
+
+/// Reuse the directory hash format for prepared content with rebased file paths.
+pub(crate) fn hash_file_entries<'a>(
+    files: impl IntoIterator<Item = (&'a Path, &'a Digest)>,
+) -> Result<Digest, crate::domain::lockfile::DigestError> {
+    let mut files = files.into_iter().collect::<Vec<_>>();
+    files.sort_by(|left, right| left.0.cmp(right.0));
+    let mut directory_hasher = Sha256::new();
+    for (path, hash) in files {
+        directory_hasher.update(path.to_string_lossy().as_bytes());
+        directory_hasher.update([0]);
+        directory_hasher.update(hash.as_str().as_bytes());
+        directory_hasher.update([0]);
+    }
+    Digest::new(format!(
+        "sha256-{}",
+        hex::encode(directory_hasher.finalize())
+    ))
 }
 
 fn collect_files(source_dir: &Path) -> Result<Vec<PathBuf>, HashError> {
