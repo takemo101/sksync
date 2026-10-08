@@ -1,19 +1,22 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use thiserror::Error;
+
+use super::ports::CleanupWarning;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitResult {
     pub config_path: PathBuf,
     pub skills_dir: PathBuf,
     pub agent_mapping_path: Option<PathBuf>,
+    pub warnings: Vec<CleanupWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitAgentsResult {
     pub agent_mapping_path: PathBuf,
+    pub warnings: Vec<CleanupWarning>,
 }
 
 #[derive(Debug, Error)]
@@ -34,99 +37,53 @@ pub enum InitError {
     },
 }
 
-pub fn init_project(root: impl AsRef<Path>) -> Result<InitResult, InitError> {
+pub trait InitStore {
+    fn initialize(
+        &self,
+        config_path: &Path,
+        skills_dir: &Path,
+        config: &str,
+        agent_mapping_path: Option<&Path>,
+    ) -> Result<InitResult, InitError>;
+    fn refresh_agents(&self, path: &Path) -> Result<InitAgentsResult, InitError>;
+}
+
+pub fn init_project(
+    root: impl AsRef<Path>,
+    store: &impl InitStore,
+) -> Result<InitResult, InitError> {
     let root = root.as_ref();
-    init_with_config(
-        root.join("sksync.config.json"),
-        root.join(".sksync/skills"),
-        project_config(),
+    store.initialize(
+        &root.join("sksync.config.json"),
+        &root.join(".sksync/skills"),
+        &project_config(),
         None,
     )
 }
 
-pub fn init_global(config_root: impl AsRef<Path>) -> Result<InitResult, InitError> {
+pub fn init_global(
+    config_root: impl AsRef<Path>,
+    store: &impl InitStore,
+) -> Result<InitResult, InitError> {
     let config_root = config_root.as_ref();
     let skills_dir = config_root.join("skills");
-    init_with_config(
-        config_root.join("config.json"),
-        skills_dir,
-        global_config(),
-        Some(config_root.join("agents.json")),
+    store.initialize(
+        &config_root.join("config.json"),
+        &skills_dir,
+        &global_config(),
+        Some(&config_root.join("agents.json")),
     )
 }
 
-pub fn init_agents(config_root: impl AsRef<Path>) -> Result<InitAgentsResult, InitError> {
-    let path = config_root.as_ref().join("agents.json");
-    write_agent_mapping(&path)?;
-    Ok(InitAgentsResult {
-        agent_mapping_path: path,
-    })
-}
-
-fn init_with_config(
-    config_path: PathBuf,
-    skills_dir: PathBuf,
-    config: String,
-    agent_mapping_path: Option<PathBuf>,
-) -> Result<InitResult, InitError> {
-    if config_path.exists() {
-        return Err(InitError::ConfigExists(config_path.display().to_string()));
-    }
-
-    fs::create_dir_all(&skills_dir).map_err(|source| InitError::CreateSkillsDir {
-        path: skills_dir.display().to_string(),
-        source,
-    })?;
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| InitError::CreateSkillsDir {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    fs::write(&config_path, config).map_err(|source| InitError::WriteConfig {
-        path: config_path.display().to_string(),
-        source,
-    })?;
-
-    let agent_mapping_path = match agent_mapping_path {
-        Some(path) if write_agent_mapping_if_missing(&path)? => Some(path),
-        _ => None,
-    };
-
-    Ok(InitResult {
-        config_path,
-        skills_dir,
-        agent_mapping_path,
-    })
-}
-
-fn write_agent_mapping_if_missing(path: &Path) -> Result<bool, InitError> {
-    if path.exists() {
-        return Ok(false);
-    }
-    write_agent_mapping(path)?;
-    Ok(true)
-}
-
-fn write_agent_mapping(path: &Path) -> Result<(), InitError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| InitError::CreateSkillsDir {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    fs::write(path, default_agent_mapping()).map_err(|source| InitError::WriteConfig {
-        path: path.display().to_string(),
-        source,
-    })
+pub fn init_agents(
+    config_root: impl AsRef<Path>,
+    store: &impl InitStore,
+) -> Result<InitAgentsResult, InitError> {
+    store.refresh_agents(&config_root.as_ref().join("agents.json"))
 }
 
 fn project_config() -> String {
     config_with_skill_dir("./.sksync/skills")
-}
-
-fn default_agent_mapping() -> &'static str {
-    include_str!("../../sksync.agents.example.json")
 }
 
 fn global_config() -> String {
@@ -147,131 +104,75 @@ fn config_with_skill_dir(skill_dir: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{init_global, init_project, InitError};
+    use super::*;
+    use std::cell::RefCell;
 
-    #[test]
-    fn init_creates_config_and_skills_directory() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
+    type Initialization = (PathBuf, PathBuf, String, Option<PathBuf>);
 
-        let result = init_project(temp_dir.path()).expect("init succeeds");
-
-        assert!(result.config_path.is_file());
-        assert!(result.skills_dir.is_dir());
-        assert_eq!(result.agent_mapping_path, None);
-        let config = std::fs::read_to_string(result.config_path).expect("read config");
-        assert!(config.contains("\"skillDir\": \"./.sksync/skills\""));
-        assert!(config.contains("\"dependencies\": {}"));
-        assert!(!config.contains("example-skill"));
-        assert!(!config.contains("local-example"));
+    #[derive(Default)]
+    struct RecordingInitStore {
+        initialized: RefCell<Option<Initialization>>,
+        refreshed: RefCell<Option<PathBuf>>,
     }
 
-    #[test]
-    fn init_global_creates_config_agents_and_skills_directory() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-
-        let result = init_global(temp_dir.path()).expect("init global succeeds");
-
-        let agent_mapping_path = temp_dir.path().join("agents.json");
-        assert_eq!(result.config_path, temp_dir.path().join("config.json"));
-        assert_eq!(result.skills_dir, temp_dir.path().join("skills"));
-        assert_eq!(result.agent_mapping_path, Some(agent_mapping_path.clone()));
-        assert!(result.config_path.is_file());
-        assert!(result.skills_dir.is_dir());
-        assert!(agent_mapping_path.is_file());
-        let config = std::fs::read_to_string(result.config_path).expect("read config");
-        assert!(config.contains("\"skillDir\": \"~/.sksync/skills\""));
-        assert!(config.contains("\"dependencies\": {}"));
-        let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
-        assert!(agents.contains("\"global\""));
-        assert!(agents.contains("\"project\""));
-        assert!(agents.contains("~/.pi/agent/skills"));
-    }
-
-    #[test]
-    fn init_and_refresh_include_additional_agent_mappings() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        init_global(temp_dir.path()).expect("init global succeeds");
-        let mapping_path = temp_dir.path().join("agents.json");
-        let content = std::fs::read_to_string(&mapping_path).expect("read agents");
-        let agents: serde_json::Value = serde_json::from_str(&content).expect("parse agents");
-
-        for (agent, global, project) in [
-            ("oh-my-pi", "~/.omp/agent/skills", Some(".omp/skills")),
-            ("empryo", "~/.empryo/skills", Some(".empryo/skills")),
-            ("phi", "~/.phi/skills", None),
-            ("pig", "~/.pig/agent/skills", Some(".pig/skills")),
-            ("vtcode", "~/.agents/skills", Some(".agents/skills")),
-            ("fx", "~/.fx/skills", Some(".agents/skills")),
-        ] {
-            assert_eq!(agents["global"][agent]["targetDir"], global, "{agent}");
-            if let Some(project) = project {
-                assert_eq!(agents["project"][agent]["targetDir"], project, "{agent}");
-            } else {
-                assert!(agents["project"].get(agent).is_none(), "{agent}");
-            }
+    impl InitStore for RecordingInitStore {
+        fn initialize(
+            &self,
+            config_path: &Path,
+            skills_dir: &Path,
+            config: &str,
+            agent_mapping_path: Option<&Path>,
+        ) -> Result<InitResult, InitError> {
+            self.initialized.replace(Some((
+                config_path.into(),
+                skills_dir.into(),
+                config.into(),
+                agent_mapping_path.map(Path::to_path_buf),
+            )));
+            Ok(InitResult {
+                config_path: config_path.into(),
+                skills_dir: skills_dir.into(),
+                agent_mapping_path: agent_mapping_path.map(Path::to_path_buf),
+                warnings: vec![CleanupWarning {
+                    path: config_path.into(),
+                    message: "retained temporary name".into(),
+                }],
+            })
         }
+        fn refresh_agents(&self, path: &Path) -> Result<InitAgentsResult, InitError> {
+            self.refreshed.replace(Some(path.into()));
+            Ok(InitAgentsResult {
+                agent_mapping_path: path.into(),
+                warnings: Vec::new(),
+            })
+        }
+    }
 
-        std::fs::write(&mapping_path, "custom agents").expect("write agents");
-        super::init_agents(temp_dir.path()).expect("refresh agents succeeds");
+    #[test]
+    fn init_coordinators_pass_logical_paths_config_and_warnings() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RecordingInitStore::default();
+        let result = init_project(root.path(), &store).unwrap();
+        assert_eq!(result.warnings.len(), 1);
+        let (config_path, skills_dir, config, mapping) = store.initialized.take().unwrap();
+        assert_eq!(config_path, root.path().join("sksync.config.json"));
+        assert_eq!(skills_dir, root.path().join(".sksync/skills"));
+        assert_eq!(mapping, None);
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(config["skillDir"], "./.sksync/skills");
+        assert_eq!(config["dependencies"], json!({}));
+        init_global(root.path(), &store).unwrap();
+        let (config_path, skills_dir, config, mapping) = store.initialized.take().unwrap();
+        assert_eq!(config_path, root.path().join("config.json"));
+        assert_eq!(skills_dir, root.path().join("skills"));
+        assert_eq!(mapping, Some(root.path().join("agents.json")));
+        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(config["skillDir"], "~/.sksync/skills");
+        init_agents(root.path(), &store).unwrap();
         assert_eq!(
-            std::fs::read_to_string(mapping_path).expect("read agents"),
-            content
+            store.refreshed.take(),
+            Some(root.path().join("agents.json"))
         );
-    }
-
-    #[test]
-    fn init_global_does_not_overwrite_existing_agent_mapping() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let agent_mapping_path = temp_dir.path().join("agents.json");
-        std::fs::write(&agent_mapping_path, "custom").expect("write agents");
-
-        let result = init_global(temp_dir.path()).expect("init global succeeds");
-
-        assert_eq!(result.agent_mapping_path, None);
-        assert_eq!(
-            std::fs::read_to_string(agent_mapping_path).expect("read agents"),
-            "custom"
-        );
-    }
-
-    #[test]
-    fn init_agents_overwrites_existing_agent_mapping_only() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let config_path = temp_dir.path().join("config.json");
-        let agent_mapping_path = temp_dir.path().join("agents.json");
-        std::fs::write(&config_path, "custom config").expect("write config");
-        std::fs::write(&agent_mapping_path, "custom agents").expect("write agents");
-
-        let result = super::init_agents(temp_dir.path()).expect("init agents succeeds");
-
-        assert_eq!(result.agent_mapping_path, agent_mapping_path.clone());
-        assert_eq!(
-            std::fs::read_to_string(config_path).expect("read config"),
-            "custom config"
-        );
-        let agents = std::fs::read_to_string(agent_mapping_path).expect("read agents");
-        assert!(agents.contains("\"global\""));
-        assert!(agents.contains("\"project\""));
-        assert!(!agents.contains("custom agents"));
-    }
-
-    #[test]
-    fn init_fails_when_config_exists() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(temp_dir.path().join("sksync.config.json"), "{}").expect("write config");
-
-        let error = init_project(temp_dir.path()).expect_err("existing config fails");
-
-        assert!(matches!(error, InitError::ConfigExists(_)));
-    }
-
-    #[test]
-    fn init_global_fails_when_config_exists() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(temp_dir.path().join("config.json"), "{}").expect("write config");
-
-        let error = init_global(temp_dir.path()).expect_err("existing config fails");
-
-        assert!(matches!(error, InitError::ConfigExists(_)));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }

@@ -46,10 +46,12 @@ use crate::domain::scope::Scope;
 use crate::domain::skill::SkillName;
 use crate::domain::skill_manifest::parse_skill_manifest;
 use crate::domain::source::GitInstallSource;
+use crate::infrastructure::atomic_file::{write_atomic, WriteMode};
 use crate::infrastructure::builtin_agents::TargetPathResolver;
 use crate::infrastructure::fs::FileSystemLinkStore;
 use crate::infrastructure::git::GitClient;
 use crate::infrastructure::hash::{hash_directory, Sha256SourceHashStore};
+use crate::infrastructure::init::FileInitStore;
 use crate::infrastructure::install::FileSystemSkillInstaller;
 use crate::infrastructure::json::{
     default_agent_mapping_config, parse_install_source_value, read_agent_mapping_config,
@@ -432,7 +434,8 @@ fn dispatch(command: Command) -> Result<()> {
 
 fn run_init(args: InitArgs) -> Result<()> {
     if args.agents {
-        let result = init_agents(config_root_for_global()?)?;
+        let result = init_agents(config_root_for_global()?, &FileInitStore)?;
+        print_cleanup_warnings(&result.warnings);
         print_success(format!(
             "Updated agent mappings: {}",
             result.agent_mapping_path.display()
@@ -442,10 +445,11 @@ fn run_init(args: InitArgs) -> Result<()> {
 
     let current_dir = std::env::current_dir().context("failed to determine current directory")?;
     let result = if args.global {
-        init_global(config_root_for_global()?)?
+        init_global(config_root_for_global()?, &FileInitStore)?
     } else {
-        init_project(&current_dir)?
+        init_project(&current_dir, &FileInitStore)?
     };
+    print_cleanup_warnings(&result.warnings);
     print_success(format!("Created config: {}", result.config_path.display()));
     if let Some(agent_mapping_path) = result.agent_mapping_path {
         print_success(format!(
@@ -458,6 +462,12 @@ fn run_init(args: InitArgs) -> Result<()> {
         result.skills_dir.display()
     ));
     Ok(())
+}
+
+fn print_cleanup_warnings(warnings: &[crate::application::ports::CleanupWarning]) {
+    for warning in warnings {
+        eprintln!("Warning: {}: {}", warning.path.display(), warning.message);
+    }
 }
 
 fn run_agents(args: AgentsArgs) -> Result<()> {
@@ -476,7 +486,8 @@ fn run_agents_list() -> Result<()> {
 }
 
 fn run_agents_refresh() -> Result<()> {
-    let result = init_agents(config_root_for_global()?)?;
+    let result = init_agents(config_root_for_global()?, &FileInitStore)?;
+    print_cleanup_warnings(&result.warnings);
     print_success(format!(
         "Updated agent mappings: {}",
         result.agent_mapping_path.display()
@@ -2018,7 +2029,8 @@ impl ConfigFileBackup {
 
     fn restore(&self) -> Result<()> {
         match &self.content {
-            Some(content) => fs::write(&self.path, content)
+            Some(content) => write_atomic(&self.path, content, WriteMode::Replace)
+                .map(|_| ())
                 .with_context(|| format!("failed to restore config {}", self.path.display())),
             None => {
                 if self.path.exists() {
@@ -3413,6 +3425,51 @@ mod tests {
             path: path.to_owned(),
             reason: "regular file exists".to_owned(),
         }
+    }
+
+    #[test]
+    fn config_backup_restoration_preserves_symlink_permissions_and_old_inode() {
+        use std::io::Read;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let referent = dir.path().join("dotfiles.json");
+        let original = b"original raw bytes\n";
+        fs::write(&referent, original).unwrap();
+        fs::set_permissions(&referent, fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&referent, &path).unwrap();
+        let backup = ConfigFileBackup::capture(&path).unwrap();
+        fs::write(&path, b"mutated").unwrap();
+        let mut previous = fs::File::open(&path).unwrap();
+        let failed =
+            crate::infrastructure::atomic_file::with_test_publication_failure(|| backup.restore());
+        assert!(failed.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"mutated");
+        assert_eq!(fs::read_link(&path).unwrap(), referent);
+        backup.restore().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_link(&path).unwrap(), referent);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let mut bytes = Vec::new();
+        previous.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"mutated");
+    }
+
+    #[test]
+    fn config_backup_failed_publication_preserves_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, b"original").unwrap();
+        let backup = ConfigFileBackup::capture(&path).unwrap();
+        let current = b"current raw bytes\n";
+        fs::write(&path, current).unwrap();
+        let result =
+            crate::infrastructure::atomic_file::with_test_publication_failure(|| backup.restore());
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), current);
     }
 
     #[test]

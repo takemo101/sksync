@@ -6,6 +6,7 @@ use serde_json::json;
 use super::config::{config_path_for_scope, load_optional_config_for_scope, ConfigScope};
 use super::{prompt_config_scope, prompt_default_agents};
 use crate::application::config::ResolvedConfig;
+use crate::infrastructure::atomic_file::{write_atomic, WriteMode};
 
 pub(super) fn run(project_root: &Path) -> Result<()> {
     let scope = prompt_config_scope("Which config should store default agents?")?;
@@ -56,11 +57,10 @@ fn write_default_agents_config(
         .as_object_mut()
         .context("config root must be a JSON object")?;
     object.insert("defaultAgents".to_owned(), json!(agents));
-    std::fs::write(
-        config_path,
-        format!("{}\n", serde_json::to_string_pretty(&value)?),
-    )
-    .with_context(|| format!("failed to write {}", config_path.display()))
+    let bytes = format!("{}\n", serde_json::to_string_pretty(&value)?);
+    write_atomic(config_path, bytes.as_bytes(), WriteMode::Replace)
+        .map(|_| ())
+        .with_context(|| format!("failed to write {}", config_path.display()))
 }
 
 fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
@@ -74,6 +74,69 @@ fn default_skill_dir_for_scope(scope: ConfigScope) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::write_default_agents_config;
+
+    #[test]
+    fn default_agents_symlink_preserves_fields_permissions_and_old_inode() {
+        use std::io::Read;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let referent = dir.path().join("dotfiles.json");
+        let original = br#"{ "skillDir": "./skills", "unknown": 42, "dependencies": { "review": {"source": "./review", "agents": ["pi"], "managedByBundles": true} } }"#;
+        std::fs::write(&referent, original).unwrap();
+        std::fs::set_permissions(&referent, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&referent, &path).unwrap();
+        let mut previous = std::fs::File::open(&path).unwrap();
+        let failed = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            write_default_agents_config(&path, "./ignored", &["universal".into()])
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        write_default_agents_config(&path, "./ignored", &["universal".into()]).unwrap();
+        assert_eq!(std::fs::read_link(&path).unwrap(), referent);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let mut bytes = Vec::new();
+        previous.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, original);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["unknown"], 42);
+        assert_eq!(value["skillDir"], "./skills");
+        assert_eq!(value["dependencies"]["review"]["managedByBundles"], true);
+        assert_eq!(
+            value["dependencies"]["review"]["agents"],
+            serde_json::json!(["pi"])
+        );
+        assert_eq!(value["defaultAgents"], serde_json::json!(["universal"]));
+    }
+
+    #[test]
+    fn default_agents_failed_publication_preserves_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            write_default_agents_config(&path, "./skills", &[])
+        });
+        assert!(result.is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn default_agents_failed_publication_preserves_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let original = br#"{ "unknown": 42, "dependencies": {}, "defaultAgents": ["pi"] }"#;
+        std::fs::write(&path, original).unwrap();
+        let result = crate::infrastructure::atomic_file::with_test_publication_failure(|| {
+            write_default_agents_config(&path, "./skills", &["universal".into()])
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
 
     #[test]
     fn write_default_agents_config_creates_missing_config() {

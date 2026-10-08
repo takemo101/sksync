@@ -15,15 +15,11 @@ use crate::application::ports::CleanupWarning;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
     CreateNew,
-    // P02 removes this allowance when replacement writers consume the API.
-    #[allow(dead_code)]
     Replace,
 }
 
 #[derive(Debug)]
 pub struct AtomicWriteOutcome {
-    // P02 removes this allowance when init reports cleanup warnings.
-    #[allow(dead_code)]
     pub warnings: Vec<CleanupWarning>,
 }
 
@@ -61,10 +57,77 @@ pub fn resolve_write_path(path: &Path) -> io::Result<PathBuf> {
 /// Publish complete bytes without truncating or unlinking the destination.
 /// Every error is pre-publication; create-only post-publication cleanup problems
 /// are warnings. Non-cooperating external editors are not isolated.
-// P02 removes this narrow allowance when the state-file writers consume the API.
-#[allow(dead_code)]
 pub fn write_atomic(path: &Path, bytes: &[u8], mode: WriteMode) -> io::Result<AtomicWriteOutcome> {
-    write_atomic_with_hook(path, bytes, mode, |_, _| Ok(()))
+    write_atomic_with_hook(path, bytes, mode, |_phase, _| {
+        #[cfg(test)]
+        {
+            TEST_FAULT.with(|fault| {
+                if fault.get() == Some(_phase) {
+                    return Err(io::Error::other("injected atomic write failure"));
+                }
+                Ok(())
+            })?;
+            if _phase == Phase::Publish {
+                TEST_COMPETING_CREATE.with(|competitor| {
+                    if let Some((target, content)) = competitor.borrow().as_ref() {
+                        if target == path {
+                            fs::write(target, content)?;
+                        }
+                    }
+                    Ok::<_, io::Error>(())
+                })?;
+            }
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_FAULT: std::cell::Cell<Option<Phase>> = const { std::cell::Cell::new(None) };
+    static TEST_COMPETING_CREATE: std::cell::RefCell<Option<(PathBuf, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Thread-local, scoped injection: never affects parallel tests or production.
+#[cfg(test)]
+pub(crate) fn with_test_publication_failure<T>(run: impl FnOnce() -> T) -> T {
+    with_test_failure(Phase::Publish, run)
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_cleanup_failure<T>(run: impl FnOnce() -> T) -> T {
+    with_test_failure(Phase::Remove, run)
+}
+
+#[cfg(test)]
+fn with_test_failure<T>(phase: Phase, run: impl FnOnce() -> T) -> T {
+    struct Reset(Option<Phase>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_FAULT.with(|fault| fault.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_FAULT.with(|fault| fault.replace(Some(phase))));
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_competing_create<T>(
+    path: PathBuf,
+    bytes: Vec<u8>,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<(PathBuf, Vec<u8>)>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_COMPETING_CREATE.with(|competitor| {
+                competitor.replace(self.0.take());
+            });
+        }
+    }
+    let _reset =
+        Reset(TEST_COMPETING_CREATE.with(|competitor| competitor.replace(Some((path, bytes)))));
+    run()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +138,7 @@ enum Phase {
     Remove,
 }
 
-// This private hook is only supplied by module tests; production uses a no-op.
+// Tests inject faults at byte-publication boundaries; production uses a no-op.
 fn write_atomic_with_hook(
     path: &Path,
     bytes: &[u8],

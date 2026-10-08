@@ -9,5 +9,6 @@ pub mod builtin_agents;
 pub mod fs;
 pub mod git;
 pub mod hash;
+pub mod init;
 pub mod install;
 pub mod json;
