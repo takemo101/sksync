@@ -30,6 +30,7 @@
     "skills": {
       "type": "object",
       "description": "Legacy/local skill entries. Dependencies are preferred for installable skills.",
+      "propertyNames": { "$ref": "#/$defs/skillName" },
       "additionalProperties": {
         "$ref": "#/$defs/localSkillConfig"
       }
@@ -37,12 +38,21 @@
     "dependencies": {
       "type": "object",
       "description": "Installable skill dependencies keyed by skill name.",
+      "propertyNames": { "$ref": "#/$defs/skillName" },
       "additionalProperties": {
         "$ref": "#/$defs/dependencyConfig"
       }
     }
   },
   "$defs": {
+    "skillName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?$",
+      "not": {
+        "pattern": "^\\s*\\.{1,2}\\s*$"
+      }
+    },
     "agentName": {
       "type": "string",
       "minLength": 1,

@@ -224,6 +224,28 @@ fn agents_example_includes_skillkit_compatible_mappings() {
     );
 }
 
+#[test]
+fn skill_property_names_exclude_reserved_components_in_both_schemas() {
+    let config = parse_json(include_str!("../schemas/sksync.schema.json"));
+    let bundle = parse_json(include_str!("../schemas/sksync.bundle.schema.json"));
+    let expected = serde_json::json!({
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^\\s/\\\\](?:[^/\\\\]*[^\\s/\\\\])?$",
+        "not": { "pattern": "^\\s*\\.{1,2}\\s*$" }
+    });
+    assert_eq!(config["$defs"]["skillName"], expected);
+    for field in ["skills", "dependencies"] {
+        assert_eq!(
+            config["properties"][field]["propertyNames"],
+            serde_json::json!({ "$ref": "#/$defs/skillName" })
+        );
+    }
+    assert_eq!(bundle["properties"]["entries"]["propertyNames"], expected);
+    // Bundle names are provenance labels, not managed-body components.
+    assert!(bundle["properties"]["name"].get("not").is_none());
+}
+
 fn parse_json(content: &str) -> Value {
     serde_json::from_str(content).expect("valid JSON")
 }

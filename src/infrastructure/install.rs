@@ -44,6 +44,103 @@ impl SkillInstaller for FileSystemSkillInstaller {
     }
 }
 
+// P05 will consume this check once install requests carry the configured managed root.
+#[allow(dead_code)]
+pub(crate) fn validate_managed_destination(
+    skill_dir: &Path,
+    destination: &Path,
+) -> Result<(), SkillInstallError> {
+    let prepare_error = |path: &Path, message: String| SkillInstallError::Prepare {
+        path: path.display().to_string(),
+        message,
+    };
+    let root = skill_dir
+        .canonicalize()
+        .map_err(|error| prepare_error(skill_dir, error.to_string()))?;
+    if !root.is_dir() {
+        return Err(prepare_error(
+            skill_dir,
+            "managed skill store must be a directory".into(),
+        ));
+    }
+    // Strip trailing separators/dots so metadata cannot follow a body symlink via `link/`.
+    let destination = std::path::absolute(destination)
+        .map_err(|error| prepare_error(destination, error.to_string()))?
+        .components()
+        .collect::<PathBuf>();
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(prepare_error(
+                &destination,
+                "managed body must be a directory, not a symlink or other file".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(prepare_error(&destination, error.to_string())),
+    }
+
+    let resolved = resolve_managed_directory(&destination)?;
+    if resolved == root || !resolved.starts_with(&root) {
+        return Err(prepare_error(
+            &destination,
+            "managed body must be strictly inside the configured skill store".into(),
+        ));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        prepare_error(
+            &destination,
+            "managed body must have a parent directory".into(),
+        )
+    })?;
+    if !resolve_managed_directory(parent)?.starts_with(&root) {
+        return Err(prepare_error(
+            parent,
+            "managed body parent escapes the configured skill store".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve through the nearest existing directory without creating missing namespaces.
+/// symlink_metadata distinguishes a dangling alias from a genuinely missing directory.
+fn resolve_managed_directory(path: &Path) -> Result<PathBuf, SkillInstallError> {
+    let prepare_error = |message: String| SkillInstallError::Prepare {
+        path: path.display().to_string(),
+        message,
+    };
+    let mut existing = path;
+    let mut missing = Vec::new();
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(_) => {
+                let mut resolved = existing
+                    .canonicalize()
+                    .map_err(|error| prepare_error(error.to_string()))?;
+                if !resolved.is_dir() {
+                    return Err(prepare_error(
+                        "managed body parent must be a directory".into(),
+                    ));
+                }
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = existing.file_name().ok_or_else(|| {
+                    prepare_error("missing managed path must not contain parent traversal".into())
+                })?;
+                missing.push(component);
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| prepare_error("managed path has no existing parent".into()))?;
+            }
+            Err(error) => return Err(prepare_error(error.to_string())),
+        }
+    }
+}
+
 fn install_to_staging(
     request: &SkillInstallRequest,
     staging: &Path,
@@ -461,12 +558,158 @@ fn staging_dir(skill_dir: &Path, skill_name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::FileSystemSkillInstaller;
+    use super::{validate_managed_destination, FileSystemSkillInstaller};
     use crate::application::ports::{SkillInstallError, SkillInstallRequest, SkillInstaller};
     use crate::domain::package_filter::PackageFilter;
     use crate::domain::source::{GitInstallSource, InstallSource};
     use std::path::Path;
     use std::process::Command;
+
+    #[test]
+    fn managed_destination_accepts_flat_and_missing_namespaced_bodies() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        std::fs::create_dir(&root).unwrap();
+        let flat = root.join("review");
+        std::fs::create_dir(&flat).unwrap();
+        std::fs::write(flat.join("SKILL.md"), b"old").unwrap();
+        validate_managed_destination(&root, &flat).unwrap();
+        let namespaced = root.join("local/source/.review");
+        validate_managed_destination(&root, &namespaced).unwrap();
+        assert!(!root.join("local").exists());
+        assert_eq!(std::fs::read(flat.join("SKILL.md")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn managed_destination_rejects_store_root_and_outside_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("namespace")).unwrap();
+        std::fs::create_dir(temp.path().join("skills-other")).unwrap();
+        for destination in [
+            root.clone(),
+            root.join("."),
+            root.join("namespace/.."),
+            root.join("../review"),
+            temp.path().join("skills-other/review"),
+            root.join("missing/../../review"),
+        ] {
+            assert!(
+                validate_managed_destination(&root, &destination).is_err(),
+                "accepted {}",
+                destination.display()
+            );
+        }
+    }
+
+    #[test]
+    fn managed_destination_rejects_missing_or_non_directory_store_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        assert!(validate_managed_destination(&root, &root.join("review")).is_err());
+        std::fs::write(&root, b"store file").unwrap();
+        assert!(validate_managed_destination(&root, &root.join("review")).is_err());
+        assert_eq!(std::fs::read(&root).unwrap(), b"store file");
+    }
+
+    #[test]
+    fn managed_destination_rejects_regular_files_and_non_directory_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let file = root.join("review");
+        std::fs::write(&file, b"unmanaged").unwrap();
+        assert!(validate_managed_destination(root, &file).is_err());
+        assert!(validate_managed_destination(root, &file.join("child")).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"unmanaged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_destination_rejects_existing_and_dangling_body_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        for (name, target) in [
+            ("linked", root.join("real")),
+            ("dangling", root.join("absent")),
+        ] {
+            let destination = root.join(name);
+            symlink(&target, &destination).unwrap();
+            for body in [
+                destination.clone(),
+                destination.join(""),
+                destination.join("."),
+            ] {
+                assert!(
+                    validate_managed_destination(&root, &body).is_err(),
+                    "accepted body alias {}",
+                    body.display()
+                );
+            }
+            assert_eq!(std::fs::read_link(&destination).unwrap(), target);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_destination_rejects_escaping_parent_aliases() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(outside.join("existing")).unwrap();
+        symlink(&outside, root.join("alias")).unwrap();
+        for destination in [
+            root.join("alias/existing"),
+            root.join("alias/new/namespace/review"),
+        ] {
+            assert!(validate_managed_destination(&root, &destination).is_err());
+        }
+        assert!(!outside.join("new").exists());
+        assert_eq!(std::fs::read_link(root.join("alias")).unwrap(), outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_destination_rejects_dangling_parent_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let alias = root.join("alias");
+        let target = root.join("absent");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        assert!(validate_managed_destination(root, &alias.join("namespace/review")).is_err());
+        assert_eq!(std::fs::read_link(alias).unwrap(), target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_destination_accepts_authorized_store_symlink_and_internal_parent_alias() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().join("physical");
+        let root = temp.path().join("store");
+        std::fs::create_dir_all(physical.join("namespace/existing")).unwrap();
+        symlink(&physical, &root).unwrap();
+        symlink(physical.join("namespace"), physical.join("alias")).unwrap();
+        validate_managed_destination(&root, &root.join("namespace/existing")).unwrap();
+        validate_managed_destination(&root, &root.join("alias/missing/review")).unwrap();
+        assert!(validate_managed_destination(&root, &root).is_err());
+        assert!(!physical.join("namespace/missing").exists());
+        assert_eq!(std::fs::read_link(&root).unwrap(), physical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_destination_rejects_special_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("socket");
+        let _socket = std::os::unix::net::UnixListener::bind(&destination).unwrap();
+        assert!(validate_managed_destination(temp.path(), &destination).is_err());
+        assert!(std::fs::symlink_metadata(&destination).is_ok());
+    }
 
     #[test]
     fn local_dependency_is_copied_into_destination() {
@@ -891,13 +1134,56 @@ mod tests {
         git(path, &["commit", "-m", "add review"]);
     }
 
-    fn git(path: &Path, args: &[&str]) {
-        let output = Command::new("git")
+    #[test]
+    fn git_fixture_command_sets_temporary_home_environment_without_spawning() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("remote");
+        std::fs::create_dir(&repository).unwrap();
+        let command = git_command(&repository, &["rev-parse", "HEAD"]);
+        let home = temp.path().join("git-test-home");
+        let config = home.join(".config");
+
+        for (key, expected) in [
+            ("HOME", &home),
+            ("USERPROFILE", &home),
+            ("XDG_CONFIG_HOME", &config),
+        ] {
+            let actual = command
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .and_then(|(_, value)| value);
+            assert_eq!(
+                actual,
+                Some(expected.as_os_str()),
+                "missing temporary {key}"
+            );
+            assert!(expected.starts_with(temp.path()));
+            assert!(!expected.starts_with(&repository));
+            assert!(expected.is_dir());
+        }
+    }
+
+    fn git_command(path: &Path, args: &[&str]) -> Command {
+        // Keep home configuration outside the repository's committed fixture contents.
+        let home = path
+            .parent()
+            .expect("temporary fixture parent")
+            .join("git-test-home");
+        let config = home.join(".config");
+        std::fs::create_dir_all(&config).unwrap();
+        let mut command = Command::new("git");
+        command
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("XDG_CONFIG_HOME", &config)
             .arg("-C")
             .arg(path)
-            .args(args)
-            .output()
-            .unwrap();
+            .args(args);
+        command
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = git_command(path, args).output().unwrap();
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -907,12 +1193,7 @@ mod tests {
     }
 
     fn git_output(path: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .output()
-            .unwrap();
+        let output = git_command(path, args).output().unwrap();
         assert!(
             output.status.success(),
             "git {:?} failed: {}",

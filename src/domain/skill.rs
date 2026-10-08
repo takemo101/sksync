@@ -9,6 +9,8 @@ pub enum SkillNameError {
     Empty,
     #[error("skill name must not contain path separators")]
     ContainsPathSeparator,
+    #[error("skill name must not be '.' or '..'")]
+    ReservedPathComponent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -28,6 +30,10 @@ impl SkillName {
             || trimmed.contains('\\')
         {
             return Err(SkillNameError::ContainsPathSeparator);
+        }
+
+        if matches!(trimmed, "." | "..") {
+            return Err(SkillNameError::ReservedPathComponent);
         }
 
         Ok(Self(trimmed.to_owned()))
@@ -85,6 +91,18 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
 mod tests {
     use super::{SkillName, SkillNameError, SourcePath, SourcePathError};
     use std::path::Path;
+
+    #[test]
+    fn rejects_reserved_skill_components() {
+        for name in [".", "..", " . ", " .. "] {
+            assert_eq!(
+                SkillName::new(name),
+                Err(SkillNameError::ReservedPathComponent)
+            );
+        }
+        assert!(SkillName::new(".review").is_ok());
+        assert!(SkillName::new("... ").is_ok());
+    }
 
     #[test]
     fn skill_name_accepts_simple_name() {
