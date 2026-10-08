@@ -1,3 +1,7 @@
+mod output;
+
+pub(crate) use output::RenderedFailure;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
@@ -3785,7 +3789,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
         Ok(())
     } else {
         print_check_problems(&report.problems);
-        bail!("check found {} problem(s)", report.problems.len())
+        Err(RenderedFailure { exit_code: 1 }.into())
     }
 }
 

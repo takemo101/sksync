@@ -1,0 +1,753 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-output.schema.json",
+  "title": "sksync command output v1",
+  "description": "Versioned output for list, plan, check and outdated. Consumers must ignore unknown fields. Failed responses may retain usable report data; null data means execution aborted.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "command",
+    "scope",
+    "ok",
+    "data",
+    "error"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "command": {
+      "enum": [
+        "list",
+        "plan",
+        "check",
+        "outdated"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "project",
+        "global"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "data": {},
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "error": {
+              "type": "null"
+            },
+            "data": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "properties": {
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "command": {
+          "const": "list"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/listData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "plan"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/planData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "check"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/checkData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "outdated"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/outdatedData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        }
+      }
+    },
+    "installSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "path"
+          ],
+          "properties": {
+            "type": {
+              "const": "local"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "url",
+            "path"
+          ],
+          "properties": {
+            "type": {
+              "const": "git"
+            },
+            "url": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "listTarget": {
+      "type": "object",
+      "required": [
+        "agent",
+        "target",
+        "status"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "synced",
+            "missing",
+            "drifted",
+            "conflict",
+            "brokenSymlink",
+            "sourceMissing",
+            "resolveFailed",
+            "inspectFailed"
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "synced",
+                "missing",
+                "drifted",
+                "conflict",
+                "brokenSymlink",
+                "sourceMissing"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "resolveFailed",
+                "inspectFailed"
+              ]
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ]
+    },
+    "listSkill": {
+      "type": "object",
+      "required": [
+        "name",
+        "source",
+        "installSource",
+        "include",
+        "lockedHash",
+        "targets"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "installSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/installSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "include": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lockedHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listTarget"
+          }
+        }
+      }
+    },
+    "listData": {
+      "type": "object",
+      "required": [
+        "skills",
+        "lockfileStatus"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listSkill"
+          }
+        },
+        "lockfileStatus": {
+          "enum": [
+            "available",
+            "missing"
+          ]
+        }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "required": [
+        "skill",
+        "agent"
+      ],
+      "properties": {
+        "skill": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        }
+      }
+    },
+    "planItem": {
+      "type": "object",
+      "required": [
+        "owners",
+        "source",
+        "target",
+        "action"
+      ],
+      "properties": {
+        "owners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/owner"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "createSymlink",
+            "alreadySynced",
+            "conflict",
+            "driftedSymlink",
+            "sourceMissing"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "regularFile",
+            "directory",
+            "brokenSymlink"
+          ]
+        },
+        "actualSource": {
+          "type": "string"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "createSymlink",
+                "alreadySynced",
+                "sourceMissing"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "conflict"
+            }
+          },
+          "required": [
+            "reason"
+          ]
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "driftedSymlink"
+            }
+          },
+          "required": [
+            "actualSource"
+          ]
+        }
+      ]
+    },
+    "planData": {
+      "type": "object",
+      "required": [
+        "items",
+        "applicable"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/planItem"
+          }
+        },
+        "applicable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "checkProblem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "expected",
+            "actual"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sourceHashDrift"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "expected": {
+              "type": "string"
+            },
+            "actual": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "agent",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "targetMissing"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "agent",
+            "path",
+            "actualSource"
+          ],
+          "properties": {
+            "kind": {
+              "const": "targetUnexpectedSymlink"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "actualSource": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "agent",
+            "path",
+            "actualSource"
+          ],
+          "properties": {
+            "kind": {
+              "const": "brokenSymlink"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "actualSource": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "agent",
+            "path",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "targetConflict"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "agent",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "inspectFailed"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "const": "hashFailed"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "skill",
+            "expected",
+            "actual"
+          ],
+          "properties": {
+            "kind": {
+              "const": "includeMismatch"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "expected": {
+              "type": "string"
+            },
+            "actual": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "checkData": {
+      "type": "object",
+      "required": [
+        "healthy",
+        "problems"
+      ],
+      "properties": {
+        "healthy": {
+          "type": "boolean"
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/checkProblem"
+          }
+        }
+      }
+    },
+    "outdatedRow": {
+      "type": "object",
+      "required": [
+        "skill",
+        "current",
+        "wanted",
+        "latest",
+        "source",
+        "status"
+      ],
+      "properties": {
+        "skill": {
+          "type": "string"
+        },
+        "current": {
+          "type": "string"
+        },
+        "wanted": {
+          "type": "string"
+        },
+        "latest": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "outdatedProblem": {
+      "type": "object",
+      "required": [
+        "skill",
+        "source",
+        "wanted",
+        "error"
+      ],
+      "properties": {
+        "skill": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "wanted": {
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    "outdatedData": {
+      "type": "object",
+      "required": [
+        "rows",
+        "problems"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/outdatedRow"
+          }
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/outdatedProblem"
+          }
+        }
+      }
+    }
+  }
+}
