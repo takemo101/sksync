@@ -410,3 +410,222 @@ fn create_non_utf8_test_root(path: &Path) -> bool {
         Err(error) => panic!("failed to create non-UTF-8 CLI fixture: {error}"),
     }
 }
+
+#[test]
+fn plan_json_regular_file_blocker_preserves_unmanaged_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("body")).unwrap();
+    fs::create_dir_all(root.join(".agents/skills")).unwrap();
+    let config = br#"{"agents":{"universal":{"scope":"project","targetDir":".agents/skills"}},"skills":{"review":{"source":"./body","agents":["universal"]}}}"#;
+    fs::write(root.join("sksync.config.json"), config).unwrap();
+    let target = root.join(".agents/skills/review");
+    fs::write(&target, b"unmanaged bytes").unwrap();
+    let output = sksync(root, &["plan", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let value = json_response(&output);
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["command"], "plan");
+    assert_eq!(value["scope"], "project");
+    assert_eq!(value["ok"], true);
+    assert!(value["error"].is_null());
+    assert_eq!(value["data"]["applicable"], false);
+    assert_eq!(
+        value["data"]["items"],
+        serde_json::json!([{
+            "owners":[{"skill":"review","agent":"universal"}],
+            "source":root.join("./body"), "target":target,
+            "action":"conflict", "reason":"regularFile"
+        }])
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&target).unwrap(), b"unmanaged bytes");
+    assert_eq!(fs::read(root.join("sksync.config.json")).unwrap(), config);
+    assert!(!root.join(".sksync").exists());
+    assert!(!root.join("sksync-lock.json").exists());
+    let human = sksync(root, &["plan"]);
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("regular file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_json_sorted_shared_owners_and_all_actions_are_read_only() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("body")).unwrap();
+    fs::write(root.join("body/SKILL.md"), "not validated or hashed").unwrap();
+    fs::create_dir(root.join("other")).unwrap();
+    fs::create_dir_all(root.join(".agents/skills")).unwrap();
+    let targets = root.join(".agents/skills");
+    symlink(root.join("body"), targets.join("synced")).unwrap();
+    symlink(root.join("other"), targets.join("drifted")).unwrap();
+    symlink(root.join("absent"), targets.join("broken")).unwrap();
+    fs::create_dir(targets.join("directory")).unwrap();
+    let names = [
+        "synced",
+        "missing",
+        "drifted",
+        "directory",
+        "create",
+        "broken",
+    ];
+    let skills: serde_json::Map<String, serde_json::Value> = names.iter().map(|name| (
+        (*name).to_owned(), serde_json::json!({"source":if *name=="missing" {"./absent"} else {"./body"}, "agents":["universal","fx"]})
+    )).collect();
+    let config = serde_json::json!({
+        "agents":{"universal":{"scope":"project","targetDir":".agents/skills"}, "fx":{"scope":"project","targetDir":".agents/skills"}},
+        "skills":skills,
+        "dependencies":{"remote":{"source":{"provider":"git","url":root.join("unavailable.git"),"path":"skills/remote"},"agents":["universal","fx"]}}
+    }).to_string();
+    fs::write(root.join("sksync.config.json"), &config).unwrap();
+    // Planning does not need or rewrite a lockfile.
+    fs::write(root.join("sksync-lock.json"), b"not read by plan").unwrap();
+    let output = sksync(root, &["plan", "--json", "--dry-run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let value = json_response(&output);
+    assert_eq!(value["data"]["applicable"], false);
+    let items = value["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 7, "one row per physical target");
+    let mut paths = items
+        .iter()
+        .map(|item| item["target"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let original = paths.clone();
+    paths.sort_unstable();
+    assert_eq!(original, paths);
+    for (name, action, reason) in [
+        ("broken", "conflict", Some("brokenSymlink")),
+        ("create", "createSymlink", None),
+        ("directory", "conflict", Some("directory")),
+        ("drifted", "driftedSymlink", None),
+        ("missing", "sourceMissing", None),
+        ("remote", "sourceMissing", None),
+        ("synced", "alreadySynced", None),
+    ] {
+        let item = items
+            .iter()
+            .find(|item| item["target"] == targets.join(name).display().to_string())
+            .unwrap();
+        assert_eq!(
+            item["owners"],
+            serde_json::json!([{"skill":name,"agent":"fx"},{"skill":name,"agent":"universal"}])
+        );
+        assert_eq!(item["action"], action);
+        assert_eq!(item.get("reason").and_then(|x| x.as_str()), reason);
+        if name == "drifted" {
+            assert_eq!(
+                item["actualSource"],
+                root.join("other").display().to_string()
+            );
+        } else {
+            assert!(item.get("actualSource").is_none());
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("sksync.config.json")).unwrap(),
+        config
+    );
+    assert_eq!(
+        fs::read(root.join("sksync-lock.json")).unwrap(),
+        b"not read by plan"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("body/SKILL.md")).unwrap(),
+        "not validated or hashed"
+    );
+    assert_eq!(
+        fs::read_link(targets.join("drifted")).unwrap(),
+        root.join("other")
+    );
+    assert_eq!(
+        fs::read_link(targets.join("broken")).unwrap(),
+        root.join("absent")
+    );
+    assert!(!targets.join("create").exists());
+    assert!(!root.join(".sksync").exists());
+    // Only create and already-synced actions are normally applicable.
+    let mut config: serde_json::Value = serde_json::from_str(&config).unwrap();
+    config["dependencies"] = serde_json::json!({});
+    config["skills"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|name, _| name == "create" || name == "synced");
+    fs::write(root.join("sksync.config.json"), config.to_string()).unwrap();
+    assert_eq!(
+        json_response(&sksync(root, &["plan", "--json"]))["data"]["applicable"],
+        true
+    );
+}
+
+#[test]
+fn plan_json_loading_and_planning_errors_have_null_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("body")).unwrap();
+    fs::write(root.join("blocked"), "unmanaged").unwrap();
+    for (config, code) in [
+        (None, "CONFIG_NOT_FOUND"),
+        (Some("invalid".to_owned()), "INVALID_CONFIG"),
+        (Some(serde_json::json!({"agents":{"custom":{"scope":"project","targetDir":"../outside"}},"skills":{"review":{"source":"./body","agents":["custom"]}}}).to_string()), "TARGET_RESOLUTION_FAILED"),
+        (Some(serde_json::json!({"agents":{"custom":{"scope":"project","targetDir":"blocked/skills"}},"skills":{"review":{"source":"./body","agents":["custom"]}}}).to_string()), "INSPECTION_FAILED"),
+        (Some(serde_json::json!({"agents":{"custom":{"scope":"project","targetDir":"targets"}},"skills":{"review":{"source":"./blocked/body","agents":["custom"]}}}).to_string()), "IO_ERROR"),
+    ] {
+        if let Some(config) = config { fs::write(root.join("sksync.config.json"), config).unwrap(); }
+        for args in [&["plan", "--json"][..], &["plan"][..]] {
+            let output = sksync(root, args);
+            assert_eq!(output.status.code(), Some(1), "{code}: {output:?}");
+            if args.len()==2 {
+                let value = json_response(&output);
+                assert_eq!(value["command"], "plan");
+                assert_eq!(value["ok"], false);
+                assert!(value["data"].is_null());
+                assert_eq!(value["error"]["code"], code);
+                assert!(output.stderr.is_empty());
+            }
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("blocked")).unwrap(),
+        "unmanaged"
+    );
+    assert!(!root.join("targets").exists());
+    assert!(!root.join(".sksync").exists());
+}
+
+#[test]
+fn plan_json_empty_global_scope_does_not_create_store_or_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let global = root.join("home/.sksync");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(root.join("sksync.config.json"), "invalid project").unwrap();
+    fs::write(global.join("config.json"), "{}").unwrap();
+    let output = sksync(root, &["plan", "--json", "--global"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        json_response(&output),
+        serde_json::json!({"schemaVersion":1,"command":"plan","scope":"global","ok":true,"data":{"items":[],"applicable":true},"error":null})
+    );
+    assert!(output.stderr.is_empty());
+    fs::write(
+        global.join("config.json"),
+        r#"{"dependencies":{"review":{"source":"./source","agents":["pi"]}}}"#,
+    )
+    .unwrap();
+    let output = sksync(root, &["plan", "--json", "--global"]);
+    assert!(output.status.success());
+    let value = json_response(&output);
+    assert_eq!(value["data"]["items"][0]["action"], "sourceMissing");
+    assert_eq!(
+        value["data"]["items"][0]["target"],
+        root.join("home/.pi/agent/skills/review")
+            .display()
+            .to_string()
+    );
+    assert!(!root.join("home/.pi").exists());
+    assert!(!global.join("skills").exists());
+    assert!(!global.join("sksync-lock.json").exists());
+}

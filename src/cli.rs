@@ -357,6 +357,9 @@ struct OutdatedArgs {
 
 #[derive(Debug, Args)]
 struct PlanArgs {
+    /// Print a versioned JSON response instead of human output.
+    #[arg(long)]
+    json: bool,
     /// Explicitly run in dry-run mode.
     #[arg(long)]
     dry_run: bool,
@@ -2468,9 +2471,34 @@ impl RemoteRefResolver for GitRemoteRefResolver {
 }
 
 fn run_plan(args: PlanArgs) -> Result<()> {
-    print_progress("Planning links...");
-    let (_config, plan, _current_dir) = load_plan(args.global)?;
-    print_plan(&plan);
+    if !args.json {
+        print_progress("Planning links...");
+    }
+    let result = load_plan(args.global);
+    if args.json {
+        let (data, error) = match &result {
+            Ok((_, plan, _)) => (Some(output::PlanData::from(plan)), None),
+            Err(error) => (None, Some(read_execution_error(error))),
+        };
+        render_command_json(
+            &mut std::io::stdout().lock(),
+            &output::JsonEnvelope {
+                schema_version: 1,
+                command: output::JsonCommand::Plan,
+                scope: if args.global {
+                    output::OutputScope::Global
+                } else {
+                    output::OutputScope::Project
+                },
+                ok: error.is_none(),
+                data,
+                error,
+            },
+        )?;
+    } else {
+        let (_, plan, _) = result?;
+        print_plan(&plan);
+    }
     Ok(())
 }
 
@@ -3804,9 +3832,9 @@ fn run_list(args: ListArgs) -> Result<()> {
                 Some(output::ListData::from(report)),
                 list_report_error(report),
             ),
-            Err(error) => (None, Some(list_execution_error(error))),
+            Err(error) => (None, Some(read_execution_error(error))),
         };
-        render_list_json(
+        render_command_json(
             &mut std::io::stdout().lock(),
             &output::JsonEnvelope {
                 schema_version: 1,
@@ -3831,9 +3859,9 @@ fn run_list(args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-fn render_list_json(
+fn render_command_json<T: serde::Serialize>(
     writer: &mut impl std::io::Write,
-    envelope: &output::JsonEnvelope<output::ListData>,
+    envelope: &output::JsonEnvelope<T>,
 ) -> Result<()> {
     match output::write_json(writer, envelope) {
         Ok(()) => {}
@@ -3905,7 +3933,7 @@ fn list_report_error(report: &ListReport) -> Option<output::OutputError> {
         .find_map(|target| output::list_target_error(&target.state))
 }
 
-fn list_execution_error(error: &anyhow::Error) -> output::OutputError {
+fn read_execution_error(error: &anyhow::Error) -> output::OutputError {
     use crate::application::config::ConfigResolveError;
     use crate::application::ports::ConfigStoreError;
     use crate::infrastructure::json::{AgentMappingJsonError, LockfileJsonError};
@@ -3932,6 +3960,18 @@ fn list_execution_error(error: &anyhow::Error) -> output::OutputError {
         match error {
             AgentMappingJsonError::Read { .. } => codes::IO_ERROR,
             AgentMappingJsonError::Parse { .. } => codes::INVALID_CONFIG,
+        }
+    } else if let Some(error) = error.downcast_ref::<crate::application::plan::PlanError>() {
+        use crate::application::plan::PlanError;
+        match error {
+            PlanError::SourceStore(_) => codes::IO_ERROR,
+            PlanError::LinkStore(_) => codes::INSPECTION_FAILED,
+            PlanError::TargetResolver(_) | PlanError::InvalidTarget(_) => {
+                codes::TARGET_RESOLUTION_FAILED
+            }
+            PlanError::MissingAgent { .. } | PlanError::TargetSourceConflict { .. } => {
+                codes::INVALID_CONFIG
+            }
         }
     } else if error.is::<ConfigResolveError>() {
         codes::INVALID_CONFIG
@@ -5771,7 +5811,7 @@ mod tests {
                 scope,
             );
             let mut bytes = Vec::new();
-            let error = super::render_list_json(&mut bytes, &envelope).unwrap_err();
+            let error = super::render_command_json(&mut bytes, &envelope).unwrap_err();
             assert_eq!(
                 bytes.last(),
                 Some(&b'\n'),
@@ -5820,7 +5860,7 @@ mod tests {
         let envelope =
             list_json_test_envelope(PathBuf::from("source"), super::output::OutputScope::Project);
         let mut writer = ListJsonFailingWriter::default();
-        let error = super::render_list_json(&mut writer, &envelope).unwrap_err();
+        let error = super::render_command_json(&mut writer, &envelope).unwrap_err();
         assert!(
             matches!(error.downcast_ref::<super::output::OutputWriteError>(), Some(super::output::OutputWriteError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
         );
@@ -5839,7 +5879,87 @@ mod tests {
             super::output::OutputScope::Project,
         );
         let mut writer = ListJsonFailingWriter::default();
-        let error = super::render_list_json(&mut writer, &envelope).unwrap_err();
+        let error = super::render_command_json(&mut writer, &envelope).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<super::output::OutputWriteError>(), Some(super::output::OutputWriteError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.prefix.len(), 3);
+        assert!(error.downcast_ref::<super::RenderedFailure>().is_none());
+    }
+
+    fn plan_json_test_envelope(
+        source: PathBuf,
+        scope: super::output::OutputScope,
+    ) -> super::output::JsonEnvelope<super::output::PlanData> {
+        let plan =
+            crate::domain::link_plan::LinkPlan::new(vec![crate::domain::link_plan::LinkPlanItem {
+                owners: Vec::new(),
+                source: SourcePath::new(source.clone()).unwrap(),
+                target: crate::domain::target::TargetPath::new(source.with_extension("target"))
+                    .unwrap(),
+                action: crate::domain::link_plan::PlanAction::CreateSymlink,
+            }]);
+        super::output::JsonEnvelope {
+            schema_version: 1,
+            command: super::output::JsonCommand::Plan,
+            scope,
+            ok: true,
+            data: Some(super::output::PlanData::from(&plan)),
+            error: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_json_renderer_non_utf8_path_emits_failed_envelope() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempfile::tempdir().unwrap();
+        for (scope, scope_name) in [
+            (super::output::OutputScope::Project, "project"),
+            (super::output::OutputScope::Global, "global"),
+        ] {
+            let envelope = plan_json_test_envelope(
+                dir.path().join(OsString::from_vec(b"source-\xff".to_vec())),
+                scope,
+            );
+            let mut bytes = Vec::new();
+            let error = super::render_command_json(&mut bytes, &envelope).unwrap_err();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["command"], "plan");
+            assert_eq!(value["scope"], scope_name);
+            assert_eq!(value["ok"], false);
+            assert!(value["data"].is_null());
+            assert_eq!(value["error"]["code"], "SERIALIZATION_FAILED");
+            assert_eq!(bytes.last(), Some(&b'\n'));
+            assert_eq!(bytes.iter().filter(|&&b| b == b'\n').count(), 1);
+            assert_eq!(
+                error
+                    .downcast_ref::<super::RenderedFailure>()
+                    .unwrap()
+                    .exit_code,
+                1
+            );
+            let mut writer = ListJsonFailingWriter::default();
+            let error = super::render_command_json(&mut writer, &envelope).unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<super::output::OutputWriteError>(),
+                Some(super::output::OutputWriteError::Write(_))
+            ));
+            assert_eq!(writer.calls, 1);
+        }
+    }
+
+    #[test]
+    fn plan_json_renderer_write_failure_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let envelope = plan_json_test_envelope(
+            dir.path().join("source"),
+            super::output::OutputScope::Project,
+        );
+        let mut writer = ListJsonFailingWriter::default();
+        let error = super::render_command_json(&mut writer, &envelope).unwrap_err();
         assert!(
             matches!(error.downcast_ref::<super::output::OutputWriteError>(), Some(super::output::OutputWriteError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
         );
