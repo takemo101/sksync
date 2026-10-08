@@ -4,13 +4,14 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use super::config::ResolvedConfig;
-use super::ports::{SkillInstallError, SkillInstallRequest, SkillInstaller};
+use super::ports::{CleanupWarning, SkillInstallError, SkillInstallRequest, SkillInstaller};
 use crate::domain::source::InstallSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateReport {
     pub updated: Vec<UpdatedSkill>,
     pub skipped: Vec<String>,
+    pub warnings: Vec<CleanupWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub fn update_selected_dependencies(
     let mut report = UpdateReport {
         updated: Vec::new(),
         skipped: Vec::new(),
+        warnings: Vec::new(),
     };
 
     for skill in &config.skills {
@@ -61,10 +63,12 @@ pub fn update_selected_dependencies(
         };
         let destination = skill.source.as_path().to_path_buf();
         let request = SkillInstallRequest {
+            managed_root: config.skill_dir.as_path().to_path_buf(),
             source: install_source.clone(),
             include: skill.include.clone(),
         };
         let installed = installer.install_skill(&request, &destination, skill.name.as_str())?;
+        report.warnings.extend(installed.warnings);
         report.updated.push(UpdatedSkill {
             name: skill.name.as_str().to_owned(),
             source: installed.label,
@@ -118,16 +122,18 @@ mod tests {
             Ok(InstalledSkillSource {
                 label: format!("{:?}", request.source),
                 resolved_source: request.source.clone(),
+                warnings: Vec::new(),
             })
         }
     }
 
     #[test]
     fn dependency_is_installed_into_skill_dir() {
-        let skill_dir = PathBuf::from("skills");
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("skills");
         let config = config(
             skill_dir.clone(),
-            InstallSource::Local(PathBuf::from("remote/review")),
+            InstallSource::Local(temp.path().join("remote/review")),
         );
         let installer = FakeInstaller {
             installed: RefCell::new(Vec::new()),
@@ -138,6 +144,48 @@ mod tests {
         assert_eq!(report.updated.len(), 1);
         assert_eq!(report.updated[0].name, "review");
         assert_eq!(installer.installed.borrow()[0], skill_dir.join("review"));
+    }
+
+    #[test]
+    fn update_passes_configured_managed_root_and_collects_cleanup_warnings() {
+        struct WarningInstaller;
+        impl SkillInstaller for WarningInstaller {
+            fn install_skill(
+                &self,
+                request: &SkillInstallRequest,
+                destination: &Path,
+                _name: &str,
+            ) -> Result<InstalledSkillSource, SkillInstallError> {
+                assert_eq!(
+                    request.managed_root,
+                    destination.parent().unwrap().parent().unwrap()
+                );
+                Ok(InstalledSkillSource {
+                    label: "local".into(),
+                    resolved_source: request.source.clone(),
+                    warnings: vec![crate::application::ports::CleanupWarning {
+                        path: request.managed_root.join("retained"),
+                        message: "cleanup failed".into(),
+                    }],
+                })
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = config(
+            temp.path().join("skills"),
+            InstallSource::Local(temp.path().join("local")),
+        );
+        config.skills[0].source =
+            SourcePath::new(config.skill_dir.as_path().join("namespace/review")).unwrap();
+        let report = update_dependencies(&config, &WarningInstaller).unwrap();
+        assert_eq!(report.updated.len(), 1);
+        assert_eq!(
+            report.warnings,
+            vec![crate::application::ports::CleanupWarning {
+                path: config.skill_dir.as_path().join("retained"),
+                message: "cleanup failed".into()
+            }]
+        );
     }
 
     fn config(skill_dir: PathBuf, install_source: InstallSource) -> ResolvedConfig {

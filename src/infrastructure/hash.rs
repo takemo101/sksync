@@ -115,7 +115,9 @@ fn collect_files(source_dir: &Path) -> Result<Vec<PathBuf>, HashError> {
 }
 
 fn should_descend_into(entry: &DirEntry) -> bool {
-    if !entry.file_type().is_dir() {
+    // Exclusions apply below the explicitly requested root, regardless of its
+    // basename; staged and published bodies must describe identical content.
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
         return true;
     }
 
@@ -194,6 +196,30 @@ mod tests {
         let after = hash_directory(dir.path()).expect("hash after");
 
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn excluded_directory_names_are_allowed_as_roots_but_not_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let ordinary = temp.path().join("review");
+        fs::create_dir(&ordinary).unwrap();
+        fs::write(ordinary.join("SKILL.md"), b"skill").unwrap();
+        let expected = hash_directory(&ordinary).unwrap();
+        assert_eq!(expected.files.len(), 1);
+        for name in ["target", "node_modules", ".git"] {
+            let root = temp.path().join(name);
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("SKILL.md"), b"skill").unwrap();
+            for descendant in ["target", "node_modules", ".git"] {
+                fs::create_dir(root.join(descendant)).unwrap();
+                fs::write(root.join(descendant).join("ignored"), b"ignored").unwrap();
+            }
+            assert_eq!(
+                hash_directory(&root).unwrap(),
+                expected,
+                "root {name} must be traversed while descendants remain excluded"
+            );
+        }
     }
 
     #[test]

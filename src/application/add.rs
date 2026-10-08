@@ -185,6 +185,7 @@ mod tests {
             Ok(InstalledSkillSource {
                 label: "installed".to_owned(),
                 resolved_source: request.source.clone(),
+                warnings: Vec::new(),
             })
         }
     }
@@ -212,6 +213,7 @@ mod tests {
             Ok(InstalledSkillSource {
                 label: "installed".to_owned(),
                 resolved_source: request.source.clone(),
+                warnings: Vec::new(),
             })
         }
     }

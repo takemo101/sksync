@@ -2465,6 +2465,7 @@ fn run_update(args: UpdateArgs) -> Result<()> {
 }
 
 fn print_update_report(report: crate::application::update::UpdateReport) {
+    print_cleanup_warnings(&report.warnings);
     if report.updated.is_empty() && report.skipped.is_empty() {
         print_info("No dependency updates.");
         return;

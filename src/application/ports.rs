@@ -4,10 +4,10 @@ use thiserror::Error;
 
 use super::config::{ConfigResolveError, ResolvedConfig};
 use crate::domain::agent::AgentKind;
-use crate::domain::lockfile::{Digest, Lockfile};
+use crate::domain::lockfile::{Digest, LockedFile, Lockfile};
 use crate::domain::package_filter::PackageFilter;
 use crate::domain::scope::Scope;
-use crate::domain::skill::SourcePath;
+use crate::domain::skill::{SkillName, SourcePath};
 use crate::domain::source::InstallSource;
 use crate::domain::target::TargetPath;
 
@@ -198,6 +198,11 @@ pub trait SourceStore {
 
 #[derive(Debug, Error)]
 pub enum SkillInstallError {
+    #[error("{original}; rollback failed: {failure}")]
+    RollbackFailed {
+        original: Box<SkillInstallError>,
+        failure: SkillRollbackFailure,
+    },
     #[error("failed to prepare destination {path}: {message}")]
     Prepare { path: String, message: String },
     #[error("install source path does not exist: {path}")]
@@ -220,10 +225,12 @@ pub enum SkillInstallError {
 pub struct InstalledSkillSource {
     pub label: String,
     pub resolved_source: InstallSource,
+    pub warnings: Vec<CleanupWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillInstallRequest {
+    pub managed_root: PathBuf,
     pub source: InstallSource,
     pub include: Option<PackageFilter>,
 }
@@ -235,6 +242,53 @@ pub trait SkillInstaller {
         destination: &Path,
         skill_name: &str,
     ) -> Result<InstalledSkillSource, SkillInstallError>;
+}
+
+/// Content metadata prepared without changing the live managed body.
+#[derive(Debug)]
+pub struct PreparedSkill<R> {
+    // P07 consumes this metadata when building the batch lockfile. Remove these
+    // field-level allowances when that coordinator is implemented.
+    #[allow(dead_code)]
+    pub name: SkillName,
+    #[allow(dead_code)]
+    pub destination: PathBuf,
+    pub installed: InstalledSkillSource,
+    #[allow(dead_code)]
+    pub hash: Digest,
+    #[allow(dead_code)]
+    pub files: Vec<LockedFile>,
+    pub receipt: R,
+}
+
+#[derive(Debug)]
+pub struct SkillRollbackFailure {
+    pub skill: SkillName,
+    pub retained_backup: Option<PathBuf>,
+    pub message: String,
+}
+
+impl std::fmt::Display for SkillRollbackFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.skill, self.message)?;
+        if let Some(path) = &self.retained_backup {
+            write!(formatter, "; retained old body at {}", path.display())?;
+        }
+        Ok(())
+    }
+}
+
+pub trait PreparedSkillInstaller {
+    type Receipt;
+    fn prepare_skill(
+        &self,
+        request: &SkillInstallRequest,
+        destination: &Path,
+        skill_name: &str,
+    ) -> Result<PreparedSkill<Self::Receipt>, SkillInstallError>;
+    fn publish_skill(&self, receipt: &mut Self::Receipt) -> Result<(), SkillInstallError>;
+    fn rollback_skill(&self, receipt: &mut Self::Receipt) -> Result<(), SkillRollbackFailure>;
+    fn finalize_skill(&self, receipt: &mut Self::Receipt) -> Vec<CleanupWarning>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
