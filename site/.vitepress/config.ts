@@ -2,7 +2,8 @@ import { defineConfig } from "vitepress";
 
 export default defineConfig({
 	title: "sksync",
-	description: "Sync Agent Skills symlinks across coding agents from one config file",
+	description:
+		"Sync Agent Skills symlinks across coding agents from one config file",
 	lang: "en-US",
 	base: "/sksync/",
 	lastUpdated: true,
@@ -10,9 +11,7 @@ export default defineConfig({
 	srcDir: ".",
 	outDir: ".vitepress/dist",
 	cacheDir: ".vitepress/cache",
-	head: [
-		["meta", { name: "theme-color", content: "#3b82f6" }],
-	],
+	head: [["meta", { name: "theme-color", content: "#3b82f6" }]],
 	themeConfig: {
 		nav: [
 			{ text: "Quickstart", link: "/quickstart" },
@@ -20,16 +19,22 @@ export default defineConfig({
 			{
 				text: "Guides",
 				items: [
-					{ text: "Project Config (sksync.config.json)", link: "/guides/project-config" },
+					{
+						text: "Project Config (sksync.config.json)",
+						link: "/guides/project-config",
+					},
 					{ text: "Agent Mappings (agents.json)", link: "/guides/agent-mappings" },
 					{ text: "Sources & Discovery", link: "/guides/sources" },
 					{ text: "Bundles", link: "/guides/bundles" },
 					{ text: "Lockfile & Sync", link: "/guides/lockfile" },
+					{ text: "Updating Dependencies", link: "/guides/updates" },
+					{ text: "CLI JSON & Migration", link: "/guides/cli-json" },
+					{ text: "State Safety", link: "/guides/state-safety" },
 				],
 			},
 			{ text: "Commands", link: "/reference/commands" },
 			{
-				text: "v0.0.15",
+				text: "v0.0.16",
 				items: [
 					{
 						text: "Changelog",
@@ -54,11 +59,17 @@ export default defineConfig({
 				{
 					text: "Guides",
 					items: [
-						{ text: "Project Config (sksync.config.json)", link: "/guides/project-config" },
+						{
+							text: "Project Config (sksync.config.json)",
+							link: "/guides/project-config",
+						},
 						{ text: "Agent Mappings (agents.json)", link: "/guides/agent-mappings" },
 						{ text: "Sources & Discovery", link: "/guides/sources" },
 						{ text: "Bundles", link: "/guides/bundles" },
 						{ text: "Lockfile & Sync", link: "/guides/lockfile" },
+						{ text: "Updating Dependencies", link: "/guides/updates" },
+						{ text: "CLI JSON & Migration", link: "/guides/cli-json" },
+						{ text: "State Safety", link: "/guides/state-safety" },
 					],
 				},
 				{
@@ -67,7 +78,9 @@ export default defineConfig({
 				},
 			],
 		},
-		socialLinks: [{ icon: "github", link: "https://github.com/takemo101/sksync" }],
+		socialLinks: [
+			{ icon: "github", link: "https://github.com/takemo101/sksync" },
+		],
 		editLink: {
 			pattern: "https://github.com/takemo101/sksync/edit/main/site/:path",
 			text: "Edit this page on GitHub",

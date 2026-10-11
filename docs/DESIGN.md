@@ -2,7 +2,7 @@
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for architectural principles.
 
-[Section 13](#approved-next-iteration) records the approved contract. P01–P15 are implemented in **UNRELEASED source**, not in v0.0.15. P15 adds source-tree documentation and the native acceptance workflow; the repaired code head passed all four macOS/Linux × stable/Rust 1.89 jobs. See [native acceptance](STATE_SAFETY.md#native-acceptance) for the published evidence and coverage omissions. Section 7 describes the released command baseline; see [CLI JSON](CLI_JSON.md), [updates](UPDATES.md), and [state safety](STATE_SAFETY.md) for unreleased behavior.
+[Section 13](#approved-next-iteration) records the approved P01–P15 contract, included in **v0.0.16**. P15 adds documentation and the native acceptance workflow; the repaired code head passed all four macOS/Linux × stable/Rust 1.89 jobs. See [native acceptance](STATE_SAFETY.md#native-acceptance) for the historical checkpoint and coverage omissions; each later release candidate requires its own gate. Section 7 describes the command baseline; [CLI JSON](CLI_JSON.md), [updates](UPDATES.md), and [state safety](STATE_SAFETY.md) define the v0.0.16 contracts.
 
 ## 1. Background
 
@@ -329,7 +329,7 @@ Lockfile v5 avoids machine-local absolute paths and records effective include fi
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.15",
+  "generatedBy": "sksync@0.0.16",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
@@ -428,7 +428,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 
 `sksync` is a single Rust binary. CLI commands are for automation/scripting; the wizard is for prompt-driven local use. The command model follows npm-like dependency management. There is intentionally no dedicated `ci` command.
 
-The selected-update syntax and expanded JSON flags in [section 13](#approved-next-iteration) are implemented in unreleased source, not v0.0.15. The bare `outdated --json` array remains the published v0.0.15 format until the announced release migration.
+v0.0.16 includes the selected-update syntax and expanded JSON flags in [section 13](#approved-next-iteration). `outdated --json` changes from the v0.0.15 bare array to the version-1 envelope; see the [migration guide](CLI_JSON.md#outdated-data-and-migration).
 
 ### npm-like command model
 
@@ -636,7 +636,7 @@ src/
 
 ## 13. Approved next iteration: safe persistence, JSON output, and selected updates
 
-**Status: P01–P15 implemented in UNRELEASED source; repaired-code native acceptance verified.** The [published four-job evidence](STATE_SAFETY.md#native-acceptance), not local Darwin totals or a workflow definition, establishes native Linux/macOS and Rust 1.89 coverage within the reported filesystem-capability limits. The release remains v0.0.15. The two product decisions are:
+**Status: P01–P15 implemented for v0.0.16; repaired-code native acceptance verified.** The [published four-job evidence](STATE_SAFETY.md#native-acceptance), not local Darwin totals or a workflow definition, establishes native Linux/macOS and Rust 1.89 coverage within the reported filesystem-capability limits. Every later release candidate requires its own native gate. The two product decisions are:
 
 1. A handled update failure restores **all selected skill bodies and the previous lockfile**, not just the last failing skill. Automatic recovery after process termination or power loss is out of scope.
 2. `list`, `plan`, `check`, and `outdated` use **one versioned JSON envelope**. Changing the existing `outdated --json` array is an intentional breaking change and requires migration guidance.
@@ -696,7 +696,7 @@ After the commit point, backup-cleanup failure must not trigger rollback: some o
 
 ### 13.3 Common JSON output contract
 
-Supported forms in unreleased source:
+Supported forms in v0.0.16:
 
 ```sh
 sksync list --json [--global]
@@ -780,11 +780,11 @@ Clap syntax errors remain stderr text with exit `2`, because no valid command in
 
 This intentionally replaces the published bare `outdated --json` array with the envelope; there is no legacy-array flag. Use `.data.rows` for array extraction or `.data.rows[]` for the per-row stream formerly produced by `.[]`, and inspect `.ok`, `.error`, and `.data.problems`. Remote-query failure also becomes a nonzero exit in human and JSON modes rather than an apparently successful row containing error text. `list` likewise stops silently ignoring malformed existing lockfiles, and resolution/inspection failures become nonzero exits in both output modes; a missing optional lockfile remains valid.
 
-Before releasing the implementation, announce these changes in release notes, update the manual/examples, and add regression fixtures for all four envelopes. Do not change the advertised v0.0.15 format before implementation. Compatible additions may add optional fields; clients must ignore unknown fields. Renaming/removing fields, changing their types, or changing existing tag meanings requires a new `schemaVersion` and a documented migration. A future new version needs explicit negotiation; do not silently make `--json` emit an incompatible schema for existing clients.
+v0.0.16 includes regression fixtures for all four envelopes and updates the manual/examples. Release notes must announce this migration from the v0.0.15 format. Compatible additions may add optional fields; clients must ignore unknown fields. Renaming/removing fields, changing their types, or changing existing tag meanings requires a new `schemaVersion` and a documented migration. A future new version needs explicit negotiation; do not silently make `--json` emit an incompatible schema for existing clients.
 
 ### 13.4 Selected updates
 
-CLI syntax in unreleased source:
+CLI syntax in v0.0.16:
 
 ```sh
 sksync update [skills...] [--global]

@@ -2,16 +2,16 @@
 
 Use this runbook when preparing and publishing a sksync release.
 
-## Unreleased state-contract acceptance gate
+## State-contract release acceptance gate
 
-Before a future release includes the P01–P15 changes, require:
+For v0.0.16 and later releases containing the P01–P15 changes, require:
 
 - Release notes explicitly announcing the breaking `outdated --json` bare-array → version-1 envelope migration (`.data.rows` extracts the array; `.data.rows[]` replaces the old `.[]` per-row stream), remote-query failure exits in both output modes, and list's malformed-lockfile / resolution / inspection failure exits. Link [CLI JSON migration](CLI_JSON.md#outdated-data-and-migration).
 - Actual successful native `.github/workflows/state-contract.yml` results for **all four** macOS/Linux × stable/Rust 1.89.0 jobs, with the four Cargo gates and complete `cli_json`/`update_cli` nocapture logs. Local Darwin checks and workflow-source tests are not Linux/MSRV proof.
 - Explicit reporting of EILSEQ and filesystem-capability omissions, separate from test totals. Linux must exercise the non-UTF-8 CLI fixtures; macOS skips must not be counted as exercised coverage.
 - Review of [state safety](STATE_SAFETY.md) and [update rollback/recovery limits](UPDATES.md), plus future published-manual updates before release.
 
-Native acceptance was verified for source head `ee625fcef8f580d0243e8270d90a15f40dde82a3` in [run 38110304669](https://github.com/takemo101/sksync/actions/runs/38110304669), with the [documented coverage omissions](STATE_SAFETY.md#native-acceptance). A later release candidate still requires successful native results for its own HEAD. These are requirements for a separately authorized future release, not permission to change a version, tag, publish, deploy the manual, or create a PR in P15. The release remains v0.0.15.
+Native acceptance was verified for source head `ee625fcef8f580d0243e8270d90a15f40dde82a3` in [run 38110304669](https://github.com/takemo101/sksync/actions/runs/38110304669), with the [documented coverage omissions](STATE_SAFETY.md#native-acceptance). A later release candidate still requires successful native results for its own HEAD. The v0.0.16 candidate includes these contracts. Publishing still requires successful candidate-specific results above and explicit release authorization; an older checkpoint does not certify a changed HEAD.
 
 ## Normal release
 

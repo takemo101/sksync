@@ -31,7 +31,10 @@ features:
     details: A portable lockfile v5 pins resolved commits, include filters, and file hashes so `sksync install` reconstructs the exact same skills across macOS and Linux.
   - icon: 🛡️
     title: Safe by default
-    details: Never overwrites plain files, only removes symlinks it manages, rolls back config on failed adds, and refuses to escape the project root for project-scope targets.
+    details: Protects unmanaged target files, publishes complete state files, coordinates sksync writers, and rolls back all selected bodies and the previous lockfile after handled update failures. Crash recovery is not promised.
+  - icon: 🎯
+    title: Selected updates + JSON
+    details: "Update only chosen dependencies with `sksync update review browser`. Inspect skills, plans, health, and upstream changes through versioned JSON; see the migration guide for the new `outdated --json` envelope."
   - icon: 🧙
     title: CLI + interactive wizard
     details: Drive everything from the CLI, or run `sksync wizard` for a guided prompt flow to add skills, manage bundles, configure defaults, inspect status, and apply links.
