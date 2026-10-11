@@ -119,7 +119,7 @@ Healthy checks exit `0` with `ok: true` and `error: null`. Completed unhealthy c
 - Empty results use `rows: []` and `problems: []`. All-success probes exit `0`, even when updates are available. Any failed probe exits `1` in **both** output modes; JSON has `ok: false`, top-level `REMOTE_QUERY_FAILED`, and retains successful rows plus every problem in `data`. Human output shows both rows and failures, without claiming everything is current.
 - Input-loading failures exit `1` with `data: null`: `CONFIG_NOT_FOUND`, `INVALID_CONFIG`, `LOCKFILE_NOT_FOUND`, `INVALID_LOCKFILE`, or `IO_ERROR`. Global scope uses only the global config/lockfile, without project fallback.
 
-**Breaking change:** `outdated --json` now emits the shared envelope instead of a bare array. There is no legacy-array flag. Replace `jq '.[]'` with `jq '.data.rows'`, and inspect `.ok`, `.error`, and `.data.problems`. Exit `1` can carry usable partial rows:
+**Breaking change:** `outdated --json` now emits the shared envelope instead of a bare array. There is no legacy-array flag. Use `jq '.data.rows'` to extract the **array**, or replace the old per-row stream `jq '.[]'` with `jq '.data.rows[]'`. Inspect `.ok`, `.error`, and `.data.problems` before consuming rows. Exit `1` can carry usable partial rows:
 
 ```sh
 status=0

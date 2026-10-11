@@ -1,0 +1,51 @@
+name: State contract
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  state-contract:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        toolchain: [stable, '1.89.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - name: Isolated Cargo gates and visible fixture coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Retain toolchain locations before any temporary HOME replaces them.
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo() (
+            sandbox=$(mktemp -d "$RUNNER_TEMP/sksync-state-XXXXXX")
+            trap 'rm -rf "$sandbox"' EXIT
+            mkdir -p "$sandbox/home/.config" "$sandbox/tmp"
+            export HOME="$sandbox/home"
+            export USERPROFILE="$sandbox/home"
+            export XDG_CONFIG_HOME="$sandbox/home/.config"
+            export TMPDIR="$sandbox/tmp"
+            command cargo "$@"
+          )
+          cargo fmt --check
+          cargo test --quiet --locked
+          cargo build --release --quiet --locked
+          cargo clippy --quiet --locked -- -D warnings
+          cargo test --quiet --locked --test cli_json -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/cli-json.log"
+          if [[ "$RUNNER_OS" == Linux ]] &&
+            grep -Fq 'SKIP non-UTF-8 CLI fixture' "$RUNNER_TEMP/cli-json.log"
+          then
+            echo 'Linux must exercise the non-UTF-8 CLI fixtures.' >&2
+            exit 1
+          fi
+          cargo test --quiet --locked --test update_cli -- --nocapture

@@ -709,16 +709,41 @@ fn legacy_overlap_regular_file_root_is_rejected_before_commit_with_full_snapshot
     }
 }
 
+#[test]
+fn nested_dependency_child_name_preserves_order_for_temporary_roots() {
+    for ancestor_name in ["Users", "home", "var", "private"] {
+        let before = nested_dependency_child_name(ancestor_name, true);
+        let after = nested_dependency_child_name(ancestor_name, false);
+        assert_ne!(before, after);
+        for (child_name, child_first) in [(before, true), (after, false)] {
+            assert_ne!(child_name, ancestor_name);
+            assert_eq!(child_name.as_str() < ancestor_name, child_first);
+            assert!(!matches!(child_name.as_str(), "" | "." | ".."));
+            assert!(child_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')));
+        }
+    }
+}
+
+fn nested_dependency_child_name(ancestor_name: &str, child_first: bool) -> String {
+    if child_first {
+        format!(".{ancestor_name}-child")
+    } else {
+        format!("{ancestor_name}-child")
+    }
+}
+
 fn nested_dependency_fixture_is_rejected(
-    child_name: &str,
+    child_first: bool,
     existing: bool,
     missing_case_alias: bool,
 ) {
-    nested_dependency_fixture(child_name, existing, missing_case_alias, None);
+    nested_dependency_fixture(child_first, existing, missing_case_alias, None);
 }
 
 fn nested_dependency_fixture(
-    child_name: &str,
+    child_first: bool,
     existing: bool,
     missing_case_alias: bool,
     select_child: Option<bool>,
@@ -760,6 +785,21 @@ fn nested_dependency_fixture(
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let repo = root.join("repo.git");
+    let original_prefix = PathBuf::from(
+        repo.to_str()
+            .unwrap()
+            .trim_start_matches('/')
+            .trim_end_matches(".git"),
+    );
+    let ancestor_name = original_prefix
+        .components()
+        .next()
+        .unwrap()
+        .as_os_str()
+        .to_str()
+        .unwrap();
+    let child_name = nested_dependency_child_name(ancestor_name, child_first);
+    let child_name = child_name.as_str();
     assert_success(
         &test_command(root, "git")
             .args(["init", "--bare", "--initial-branch=main"])
@@ -789,19 +829,6 @@ fn nested_dependency_fixture(
         .unwrap();
     assert_success(&git.wait_with_output().unwrap());
 
-    let original_prefix = PathBuf::from(
-        repo.to_str()
-            .unwrap()
-            .trim_start_matches('/')
-            .trim_end_matches(".git"),
-    );
-    let ancestor_name = original_prefix
-        .components()
-        .next()
-        .unwrap()
-        .as_os_str()
-        .to_str()
-        .unwrap();
     let git_url = if missing_case_alias {
         let alias = PathBuf::from(format!("/{}", ancestor_name.to_uppercase()))
             .join(repo.strip_prefix(format!("/{ancestor_name}")).unwrap());
@@ -821,7 +848,7 @@ fn nested_dependency_fixture(
             .trim_end_matches(".git"),
     );
     assert_ne!(ancestor_name, child_name);
-    assert_eq!(child_name < ancestor_name, child_name == "alpha");
+    assert_eq!(child_name < ancestor_name, child_first);
     write_source(root, ancestor_name, "old local body");
     let config_path = root.join("sksync.config.json");
     let mut config = serde_json::json!({
@@ -918,42 +945,42 @@ fn nested_dependency_fixture(
 
 #[test]
 fn full_update_nested_dependencies_child_first_existing_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("alpha", true, false);
+    nested_dependency_fixture_is_rejected(true, true, false);
 }
 
 #[test]
 fn full_update_nested_dependencies_ancestor_first_existing_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("zzchild", true, false);
+    nested_dependency_fixture_is_rejected(false, true, false);
 }
 
 #[test]
 fn full_update_nested_dependencies_child_first_absent_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("alpha", false, false);
+    nested_dependency_fixture_is_rejected(true, false, false);
 }
 
 #[test]
 fn full_update_nested_dependencies_ancestor_first_absent_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("zzchild", false, false);
+    nested_dependency_fixture_is_rejected(false, false, false);
 }
 
 #[test]
 fn full_update_nested_dependencies_case_alias_absent_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("alpha", false, true);
+    nested_dependency_fixture_is_rejected(true, false, true);
 }
 
 #[test]
 fn full_update_nested_dependencies_case_alias_ancestor_first_absent_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("zzchild", false, true);
+    nested_dependency_fixture_is_rejected(false, false, true);
 }
 
 #[test]
 fn full_update_nested_dependencies_case_alias_child_first_existing_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("alpha", true, true);
+    nested_dependency_fixture_is_rejected(true, true, true);
 }
 
 #[test]
 fn full_update_nested_dependencies_case_alias_ancestor_first_existing_preserves_snapshots() {
-    nested_dependency_fixture_is_rejected("zzchild", true, true);
+    nested_dependency_fixture_is_rejected(false, true, true);
 }
 
 #[test]
@@ -1393,7 +1420,7 @@ fn selected_update_does_not_add_force_dry_run_or_json_flags() {
 fn selected_update_dependency_nesting_existing_and_absent_preserves_snapshots() {
     for existing in [false, true] {
         for select_child in [false, true] {
-            nested_dependency_fixture("alpha", existing, false, Some(select_child));
+            nested_dependency_fixture(true, existing, false, Some(select_child));
         }
     }
 }
@@ -1402,7 +1429,7 @@ fn selected_update_dependency_nesting_existing_and_absent_preserves_snapshots() 
 fn selected_update_dependency_missing_prefix_case_alias_preserves_snapshots() {
     for existing in [false, true] {
         for select_child in [false, true] {
-            nested_dependency_fixture("alpha", existing, true, Some(select_child));
+            nested_dependency_fixture(true, existing, true, Some(select_child));
         }
     }
 }

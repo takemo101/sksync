@@ -2,7 +2,7 @@
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for architectural principles.
 
-[Section 13](#approved-next-iteration) records the approved next-iteration contract. Those changes are not implemented in v0.0.15; current command availability remains as described in section 7 until implementation.
+[Section 13](#approved-next-iteration) records the approved contract. P01–P15 are implemented in **UNRELEASED source**, not in v0.0.15. P15 adds source-tree documentation and the native acceptance workflow; the repaired code head passed all four macOS/Linux × stable/Rust 1.89 jobs. See [native acceptance](STATE_SAFETY.md#native-acceptance) for the published evidence and coverage omissions. Section 7 describes the released command baseline; see [CLI JSON](CLI_JSON.md), [updates](UPDATES.md), and [state safety](STATE_SAFETY.md) for unreleased behavior.
 
 ## 1. Background
 
@@ -428,7 +428,7 @@ Windows remains out of scope. Alpine will likely work with musl binaries, but is
 
 `sksync` is a single Rust binary. CLI commands are for automation/scripting; the wizard is for prompt-driven local use. The command model follows npm-like dependency management. There is intentionally no dedicated `ci` command.
 
-The selected-update syntax and expanded JSON flags in [section 13](#approved-next-iteration) are planned, not currently available. In particular, the existing `outdated --json` array remains the v0.0.15 format until the announced migration.
+The selected-update syntax and expanded JSON flags in [section 13](#approved-next-iteration) are implemented in unreleased source, not v0.0.15. The bare `outdated --json` array remains the published v0.0.15 format until the announced release migration.
 
 ### npm-like command model
 
@@ -636,7 +636,7 @@ src/
 
 ## 13. Approved next iteration: safe persistence, JSON output, and selected updates
 
-**Status: approved design; implementation pending.** The two product decisions are:
+**Status: P01–P15 implemented in UNRELEASED source; repaired-code native acceptance verified.** The [published four-job evidence](STATE_SAFETY.md#native-acceptance), not local Darwin totals or a workflow definition, establishes native Linux/macOS and Rust 1.89 coverage within the reported filesystem-capability limits. The release remains v0.0.15. The two product decisions are:
 
 1. A handled update failure restores **all selected skill bodies and the previous lockfile**, not just the last failing skill. Automatic recovery after process termination or power loss is out of scope.
 2. `list`, `plan`, `check`, and `outdated` use **one versioned JSON envelope**. Changing the existing `outdated --json` array is an intentional breaking change and requires migration guidance.
@@ -696,7 +696,7 @@ After the commit point, backup-cleanup failure must not trigger rollback: some o
 
 ### 13.3 Common JSON output contract
 
-Planned supported forms:
+Supported forms in unreleased source:
 
 ```sh
 sksync list --json [--global]
@@ -778,13 +778,13 @@ Clap syntax errors remain stderr text with exit `2`, because no valid command in
 
 #### Compatibility and migration
 
-This intentionally replaces the published bare `outdated --json` array with the envelope; no legacy-array flag is planned. Clients that previously iterated the root array must use `.data.rows` and inspect `.ok`, `.error`, and `.data.problems`. Remote-query failure also becomes a nonzero exit in human and JSON modes rather than an apparently successful row containing error text. `list` likewise stops silently ignoring malformed existing lockfiles, and resolution/inspection failures become nonzero exits in both output modes; a missing optional lockfile remains valid.
+This intentionally replaces the published bare `outdated --json` array with the envelope; there is no legacy-array flag. Use `.data.rows` for array extraction or `.data.rows[]` for the per-row stream formerly produced by `.[]`, and inspect `.ok`, `.error`, and `.data.problems`. Remote-query failure also becomes a nonzero exit in human and JSON modes rather than an apparently successful row containing error text. `list` likewise stops silently ignoring malformed existing lockfiles, and resolution/inspection failures become nonzero exits in both output modes; a missing optional lockfile remains valid.
 
 Before releasing the implementation, announce these changes in release notes, update the manual/examples, and add regression fixtures for all four envelopes. Do not change the advertised v0.0.15 format before implementation. Compatible additions may add optional fields; clients must ignore unknown fields. Renaming/removing fields, changing their types, or changing existing tag meanings requires a new `schemaVersion` and a documented migration. A future new version needs explicit negotiation; do not silently make `--json` emit an incompatible schema for existing clients.
 
 ### 13.4 Selected updates
 
-Planned CLI syntax:
+CLI syntax in unreleased source:
 
 ```sh
 sksync update [skills...] [--global]
@@ -830,6 +830,8 @@ Sequence:
 ### 13.6 Acceptance checks
 
 Use temporary directories and injected home/config roots only; never touch the real home directory or require live network services. Use existing port fakes plus targeted failure injection at publication boundaries, not a new general filesystem abstraction.
+
+P15's native gate is `.github/workflows/state-contract.yml`: macOS/Linux × stable/Rust 1.89.0, the four Cargo gates, and complete `cli_json`/`update_cli` nocapture runs. All four jobs passed for repaired code head `e6a655d8f23efe315e638237ac974398d28c0d37` in [run 38109448646](https://github.com/takemo101/sksync/actions/runs/38109448646). EILSEQ and filesystem-capability omissions must remain visible and cannot count as exercised coverage; Linux must fail on a skipped non-UTF-8 CLI fixture. A later changed HEAD still requires its own successful native gate; local Darwin totals are not a substitute.
 
 Persistence/update checks:
 

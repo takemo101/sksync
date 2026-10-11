@@ -1,3 +1,6 @@
+#[path = "common/output_schema.rs"]
+mod output_schema;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -18,7 +21,28 @@ fn sksync(root: &Path, args: &[&str]) -> Output {
 
 fn json_response(output: &Output) -> serde_json::Value {
     assert_eq!(output.stdout.last(), Some(&b'\n'));
-    serde_json::from_slice(&output.stdout).expect("exactly one JSON response without human text")
+    let value = serde_json::from_slice(&output.stdout)
+        .expect("exactly one JSON response without human text");
+    let schema = serde_json::from_str(include_str!("../schemas/sksync-output.schema.json"))
+        .expect("published output schema is valid JSON");
+    assert!(
+        output_schema::output_schema_matches(&schema, &schema, &value),
+        "response outside published output schema: {value}"
+    );
+    value
+}
+
+#[test]
+#[should_panic(expected = "response outside published output schema")]
+fn json_response_rejects_schema_invalid_envelopes() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("sksync.config.json"), "{}").unwrap();
+    let mut output = sksync(dir.path(), &["list", "--json"]);
+    let mut value = json_response(&output);
+    value["schemaVersion"] = 2.into();
+    output.stdout = serde_json::to_vec(&value).unwrap();
+    output.stdout.push(b'\n');
+    json_response(&output);
 }
 
 #[test]
