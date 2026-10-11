@@ -4,7 +4,13 @@
 
 ## Manual
 
-Read the sksync manual at <https://takemo101.github.io/sksync/>.
+The published release manual is at <https://takemo101.github.io/sksync/>.
+
+Source-tree / **unreleased** contracts (not the v0.0.15 release):
+
+- [State safety and native acceptance limits](docs/STATE_SAFETY.md)
+- [CLI JSON output and outdated migration](docs/CLI_JSON.md)
+- [Full and selected dependency updates](docs/UPDATES.md)
 
 ## Purpose
 

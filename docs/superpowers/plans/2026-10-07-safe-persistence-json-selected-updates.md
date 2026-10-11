@@ -413,24 +413,29 @@ None means full update. Named results are nonempty, validated, deduplicated sets
 
 **Depends on:** P09, P10, P11, P12, P14
 
-**Files:** create `.github/workflows/state-contract.yml` and `site/guides/state-safety.md`; modify `README.md`, `site/reference/commands.md`, `site/guides/lockfile.md`, `site/.vitepress/config.ts` navigation only, `docs/DESIGN.md` implementation status, `docs/RELEASE.md` release-check checklist, and relevant integration tests.
+**Status:** P01–P14 implemented in UNRELEASED source; P15 native four-job acceptance pending publication. The original board/working-method descriptions above are historical, not authority to commit, publish, or complete P15.
 
-- [ ] Add native ubuntu-latest/macOS-latest jobs for stable and Rust 1.89, running the four Cargo gates. Verify directory guards, symlink/permission handling, rollback/cleanup, sorted envelopes, malformed-input exits, and unselected isolation on both OSes. Do not replace the existing release/Linux Docker workflows or add deployment steps.
-- [ ] Audit every new child test command's temporary HOME/USERPROFILE/XDG_CONFIG_HOME. If reusing helpers from `tests/bundle_cli.rs`, fix only the helper isolation necessary for these regressions; do not silently use the real home or live remotes.
-- [ ] Validate JSON DTO fixtures against the published schema structure with existing Rust/serde test tools; no runtime schema-validation dependency. Assert single-response parsing, newline termination, required nulls, tags, empty arrays, partial remote reports, and current lockfile portability.
-- [ ] Document full-selection rollback, advisory/concurrent-reader limits, manual recovery paths, successful local-edit replacement semantics, create-only/permission/symlink behavior, selected baselines, and the deliberate outdated array → envelope and failure-exit changes. Include the concrete migration example below.
+**P15 execution override (NO DEPLOYMENT):** Do not edit `site/**`, `package.json`, `bun.lock`, or the Pages workflow; do not run docs builds, version-control writes, PR/push/merge/release/tag/Mirror operations, or board completion. Preserve unrelated staged files and the index. Local Cargo commands must use the operator-supplied immutable isolated Cargo driver from the first invocation, with unique evidence labels. Native CI retains CARGO_HOME/RUSTUP_HOME and toolchain PATH before replacing HOME. No production-source changes or new dependencies without a genuine defect and separate approval.
+
+**Files:** create `.github/workflows/state-contract.yml`, `docs/STATE_SAFETY.md`, and `tests/common/output_schema.rs`; modify `README.md`, `docs/CLI_JSON.md`, `docs/DESIGN.md` implementation status, `docs/RELEASE.md` release-check checklist, this plan, `tests/cli_json.rs`, `tests/schema_files.rs`, and `tests/state_contract.rs`. The source-tree guides replace the superseded site/navigation edits; existing `docs/UPDATES.md` owns batch rollback/recovery documentation.
+
+- [ ] Add native ubuntu-latest/macos-latest × stable/1.89.0 jobs, running the four Cargo gates plus complete `cli_json` and `update_cli` suites with `--nocapture`. Isolate each invocation with temporary HOME/USERPROFILE/XDG_CONFIG_HOME/TMPDIR from its first Cargo execution, retaining the original toolchain homes and PATH. Verify directory guards, symlink/permission handling, rollback/cleanup, sorted envelopes, malformed-input exits, and unselected isolation on both OSes. Fail Linux if complete CLI logs contain `SKIP non-UTF-8 CLI fixture`; keep Darwin EILSEQ and capability omissions visible and separate from exercised coverage. Do not replace existing release/Linux-smoke/Pages workflows or add deployment steps. Actual native execution remains pending until CI publication is separately authorized.
+- [ ] Audit new/changed child commands and connected Git/CLI helpers for explicit temporary HOME/USERPROFILE/XDG_CONFIG_HOME; no process-global environment/CWD mutation or live-network fixtures. Inspect source rather than executing helpers separately with real HOME. Stop and report if the allowed file scope is insufficient.
+- [ ] Move the existing `tests/schema_files.rs` output-schema evaluator into `tests/common/output_schema.rs`; reuse it for every real parsed `cli_json::json_response` and existing schema fixtures, without duplication or a runtime dependency. Preserve exactly-one-response parsing, newline termination, required nulls, tags, empty arrays, partial remote reports, and current lockfile portability. Retain the behavioral RED regressions; the invalid-schema regression must panic with `response outside published output schema`.
+- [ ] Document full-selection rollback, advisory/concurrent-reader limits, manual recovery paths, successful local-edit replacement semantics, create-only/permission/symlink behavior, selected baselines, and the deliberate outdated array → envelope and failure-exit changes. Link `docs/UPDATES.md` for batch recovery rather than duplicating it. Distinguish array extraction (`jq '.data.rows'`) from the per-row stream (`jq '.data.rows[]'`, replacing the old `.[]`). Include the concrete migration example below.
 
 ```sh
 # Old client: sksync outdated --json | jq '.[]'
-# New client: inspect ok/problems and read data.rows; exit 1 can include partial rows.
+# New client: inspect ok/problems; data.rows is an array, data.rows[] streams rows.
+# Exit 1 can include partial rows.
 status=0
 sksync outdated --json > outdated.json || status=$?
 jq '.ok, .error, .data.problems, .data.rows' outdated.json
 printf 'sksync exit status: %s\n' "$status"
 ```
 
-- [ ] Add a release-check entry in `docs/RELEASE.md` requiring these breaking changes in the future release notes. Mark DESIGN section 13 implemented only when every acceptance check actually passes. Do not select a release version, publish, mirror Issues, open a PR, or modify release assets as part of this Issue.
-- [ ] Run the four Cargo gates, `bun run docs:build`, JSON example parsing, and `git diff --check`. Preserve the pre-existing formatting changes in `.vitepress/config.ts`; use a targeted navigation edit rather than rewriting the file.
+- [ ] Add a release-check entry in `docs/RELEASE.md` requiring the breaking changes in future release notes and actual successful four-job native evidence. Record P01–P14 as implemented in UNRELEASED source, but leave DESIGN section 13/P15 native acceptance pending until every check actually passes. README distinguishes source-tree guides from the existing public manual. Do not select a release version, publish, mirror Issues, open a PR, or modify release assets as part of this Issue.
+- [ ] Run focused GREEN, the four local Cargo gates, and current complete `cli_json`/`update_cli` nocapture through the isolated driver with unique labels; parse documented JSON examples and inspect Markdown links/diffs with `git diff --check`. Verify protected files/index before and after. No `bun run docs:build` or other site build: that old requirement is superseded. Save safe command/cwd/exit evidence and patch/content pins; do not persist whole environments. Local Darwin/compiler results are worker evidence, not native Linux/MSRV acceptance or parent HOST5 gates.
 
 ## Self-review and handoff
 
