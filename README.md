@@ -6,7 +6,7 @@
 
 The published release manual is at <https://takemo101.github.io/sksync/>.
 
-Source-tree / **unreleased** contracts (not the v0.0.15 release):
+Contracts introduced in **v0.0.16**:
 
 - [State safety and native acceptance limits](docs/STATE_SAFETY.md)
 - [CLI JSON output and outdated migration](docs/CLI_JSON.md)
@@ -475,6 +475,8 @@ cargo run -- remove cuekit-dogfood --agent pi --agent claude-code
 ```
 
 In agent-specific removal, sksync removes the selected agents from `dependencies.<skill>.agents` and lockfile targets while keeping the skill body and other agent links. If the last agent is removed, sksync falls back to full skill removal.
+
+**v0.0.16 highlights:** update individual dependencies with `sksync update review browser`; handled update failures roll back the whole selection. `list`, `plan`, `check`, and `outdated` support versioned JSON. **Breaking change:** `outdated --json` now returns an envelope; replace `.[]` with `.data.rows[]` and inspect `.ok`, `.error`, and `.data.problems`. See the guides above for baseline requirements, exit codes, and recovery limits.
 
 ### `sksync outdated`
 

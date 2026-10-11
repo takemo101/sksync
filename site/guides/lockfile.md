@@ -8,7 +8,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.15",
+  "generatedBy": "sksync@0.0.16",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
@@ -87,8 +87,13 @@ Downloads/copies the latest (or pinned) skill from each `dependencies` source in
 
 ```sh
 sksync update
-sksync update --global
+sksync update review
+sksync update review browser --global
 ```
+
+Names are case-sensitive config dependency keys, not package frontmatter names. Explicit selections require an existing readable lockfile with records for every unselected configured skill; missing or edited unselected bodies are not read or repaired. Selected entries are merged into the baseline while unselected and stale records remain unchanged. There is no bundle expansion or project/global fallback.
+
+A handled batch failure rolls back every selected body and the previous lockfile. Successful updates replace selected managed-body local edits; crash/SIGKILL recovery is not promised. See [Updating dependencies](/guides/updates) for preparation, commit, retained-backup recovery, and visibility limits.
 
 ### outdated {#outdated}
 

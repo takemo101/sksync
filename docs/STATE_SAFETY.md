@@ -1,6 +1,6 @@
-# State safety (unreleased source)
+# State safety
 
-These contracts are implemented in the source tree, not the v0.0.15 release. The repaired code head passed native acceptance on macOS and Linux with stable Rust and Rust 1.89; the evidence and coverage limits are recorded below. See [CLI JSON output](CLI_JSON.md) and [Updating dependencies](UPDATES.md) for the other unreleased contracts.
+These contracts are included in v0.0.16. The repaired code head passed native acceptance on macOS and Linux with stable Rust and Rust 1.89; the evidence and coverage limits are recorded below. Every later release candidate requires a successful native gate for its own HEAD. See [CLI JSON output](CLI_JSON.md) and [Updating dependencies](UPDATES.md) for the related contracts.
 
 ## Complete-file publication
 

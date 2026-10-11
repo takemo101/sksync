@@ -213,14 +213,19 @@ sksync outdated -g
 sksync outdated --json
 ```
 
+In v0.0.16, `--json` returns a version-1 envelope, not the old bare array. Replace `jq '.[]'` with `jq '.data.rows[]'`, and inspect `.ok`, `.error`, and `.data.problems` before consuming rows. Failed remote queries do not stop other probes: both human and JSON modes exit `1` with successful rows preserved. See [CLI JSON & migration](/guides/cli-json#outdated-data-and-migration).
+
 ## `sksync plan`
 
-Read the config, inspect current target state, and report create / in-sync / conflict / drift. Read-only with `--dry-run`.
+Read the config, inspect current target state, and report create / in-sync / conflict / drift. Always read-only; blocked plans still exit `0`, with JSON `data.applicable: false` and per-row reasons.
 
 ```sh
 sksync plan --dry-run
 sksync plan -g
+sksync plan --json
 ```
+
+See [CLI JSON](/guides/cli-json) for sorted physical owner/target rows and the difference between a blocked plan and command failure.
 
 ## `sksync install`
 
@@ -236,12 +241,17 @@ sksync install -f
 
 ## `sksync update`
 
-Fetch the latest (or pinned) skill from each `dependencies` source into `skillDir` and update `sksync-lock.json`. Validates fetched skills.
+Fetch the latest (or pinned) skill from all dependencies, or only the named config dependency keys, and update `sksync-lock.json`. Validates fetched skills.
 
 ```sh
 sksync update
-sksync update -g
+sksync update review
+sksync update review browser -g
 ```
+
+Names are case-sensitive, trimmed, and deduplicated; selecting a bundle member does not select its siblings. Explicit selections require a readable existing lockfile with entries for every unselected configured skill. Unselected bodies, sources, links, and lockfile entries remain untouched; there is no project/global fallback. Only selected content records are merged into the baseline.
+
+Preparation completes before replacing live bodies; a handled failure rolls back the whole selection and previous lockfile. Successful updates replace selected managed-body local edits. There is no `--force`, `--dry-run`, `--json`, or wizard selection for update. See [Updating dependencies](/guides/updates) for baseline, batch commit, and retained-backup recovery limits.
 
 ## `sksync apply`
 
@@ -260,7 +270,10 @@ Compare the lockfile against current state — source hash drift, missing target
 ```sh
 sksync check
 sksync check -g
+sksync check --json
 ```
+
+Unhealthy JSON checks exit `1` with `CHECK_FAILED` and the complete findings in `data`; the response is still valid JSON. See [CLI JSON](/guides/cli-json) for typed findings, source/target paths, and owner pairs.
 
 ## `sksync list`
 
@@ -269,7 +282,10 @@ List configured skills with each agent's target path and status. Shows locked ha
 ```sh
 sksync list
 sksync list -g
+sksync list --json
 ```
+
+A missing optional lockfile is valid. An existing malformed lockfile, source-resolution error, or filesystem-inspection error is not silently ignored: both output modes fail with a nonzero exit. JSON observations include agent, physical path, source, lock hash, and status; see [CLI JSON](/guides/cli-json).
 
 ## `sksync wizard`
 
@@ -283,7 +299,9 @@ sksync tui
 
 ## Safety rules
 
-- Existing plain files and directories are never overwritten, even with `-f` / `--force`.
+- Unmanaged target files and directories are never overwritten, even with `-f` / `--force`. Successful updates intentionally replace selected managed skill bodies.
+- Config/lockfile writes publish complete files; cooperative locks coordinate sksync writers, not arbitrary editors or agent readers.
+- Update rollback is for handled failures, not crash/SIGKILL/power-loss recovery. Readers can briefly observe mixed versions during cutover. Follow reported recovery paths after rollback failure; do not delete unknown backups or blindly retry. See [State Safety](/guides/state-safety).
 - `add` rolls back the dependency config on failure.
 - `bundle add` aborts on any config/provenance conflict and rolls back config/lockfile writes on failure.
 - `bundle remove` uses local provenance only and cannot delete manual dependencies solely because they once belonged to a bundle.
