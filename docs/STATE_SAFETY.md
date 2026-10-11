@@ -1,6 +1,6 @@
 # State safety (unreleased source)
 
-These contracts are implemented in the source tree, not the v0.0.15 release. Native acceptance on macOS and Linux with stable Rust and Rust 1.89 remains pending. See [CLI JSON output](CLI_JSON.md) and [Updating dependencies](UPDATES.md) for the other unreleased contracts.
+These contracts are implemented in the source tree, not the v0.0.15 release. The repaired code head passed native acceptance on macOS and Linux with stable Rust and Rust 1.89; the evidence and coverage limits are recorded below. See [CLI JSON output](CLI_JSON.md) and [Updating dependencies](UPDATES.md) for the other unreleased contracts.
 
 ## Complete-file publication
 
@@ -33,5 +33,9 @@ Crash, SIGKILL, power-loss recovery, and isolation from non-cooperating writers 
 ## Native acceptance
 
 `.github/workflows/state-contract.yml` defines four native jobs: `ubuntu-latest` and `macos-latest`, each with stable and Rust 1.89.0. Each Cargo invocation starts with temporary HOME, USERPROFILE, XDG_CONFIG_HOME, and TMPDIR while retaining toolchain homes and PATH. The jobs run formatting, the full tests, release build, clippy, and complete `cli_json`/`update_cli` suites with visible fixture diagnostics.
+
+[State contract run 38109448646](https://github.com/takemo101/sksync/actions/runs/38109448646) passed all four jobs for repaired code head `e6a655d8f23efe315e638237ac974398d28c0d37`, using stable Rust 1.99.0 and Rust 1.89.0. Complete logs show 594 harness passes on macOS and 593 on Linux (one volume-alias test is macOS-only), including CLI 25 and update 46/45 respectively. These totals are **not all-exercised coverage**.
+
+Both macOS jobs visibly omit two non-UTF-8 CLI fixture bodies because of EILSEQ, while exercising 16 nested-update scenarios, eight nested case-alias fixtures, and nine root-only routes. Both Linux jobs exercise the non-UTF-8 CLI bodies, eight nested scenarios, and six root-only routes. Their case-sensitive filesystem omits eight nested case-alias scenarios and reports seven other case/Unicode-alias capability omissions. A later changed HEAD requires a new successful gate; this checkpoint is not a release or deployment.
 
 Linux rejects a skipped non-UTF-8 CLI fixture. macOS filesystems may reject those path bytes with EILSEQ: such skips remain visible and are **not exercised coverage**. Filesystem capability omissions likewise must be reported separately from test pass totals. The workflow definition and local Darwin checks alone are not proof that the native matrix passed; all four published job results are required for acceptance.

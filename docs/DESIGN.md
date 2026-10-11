@@ -2,7 +2,7 @@
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for architectural principles.
 
-[Section 13](#approved-next-iteration) records the approved contract. P01–P14 are implemented in **UNRELEASED source**, not in v0.0.15. P15 adds source-tree documentation and the native acceptance workflow; its four-job macOS/Linux × stable/Rust 1.89 acceptance remains pending actual published CI evidence. Section 7 describes the released command baseline; see [CLI JSON](CLI_JSON.md), [updates](UPDATES.md), and [state safety](STATE_SAFETY.md) for unreleased behavior.
+[Section 13](#approved-next-iteration) records the approved contract. P01–P15 are implemented in **UNRELEASED source**, not in v0.0.15. P15 adds source-tree documentation and the native acceptance workflow; the repaired code head passed all four macOS/Linux × stable/Rust 1.89 jobs. See [native acceptance](STATE_SAFETY.md#native-acceptance) for the published evidence and coverage omissions. Section 7 describes the released command baseline; see [CLI JSON](CLI_JSON.md), [updates](UPDATES.md), and [state safety](STATE_SAFETY.md) for unreleased behavior.
 
 ## 1. Background
 
@@ -636,7 +636,7 @@ src/
 
 ## 13. Approved next iteration: safe persistence, JSON output, and selected updates
 
-**Status: P01–P14 implemented in UNRELEASED source; P15 native acceptance pending.** Local Darwin validation and a workflow definition do not establish Linux/MSRV coverage or completion of every acceptance check. The release remains v0.0.15. The two product decisions are:
+**Status: P01–P15 implemented in UNRELEASED source; repaired-code native acceptance verified.** The [published four-job evidence](STATE_SAFETY.md#native-acceptance), not local Darwin totals or a workflow definition, establishes native Linux/macOS and Rust 1.89 coverage within the reported filesystem-capability limits. The release remains v0.0.15. The two product decisions are:
 
 1. A handled update failure restores **all selected skill bodies and the previous lockfile**, not just the last failing skill. Automatic recovery after process termination or power loss is out of scope.
 2. `list`, `plan`, `check`, and `outdated` use **one versioned JSON envelope**. Changing the existing `outdated --json` array is an intentional breaking change and requires migration guidance.
@@ -831,7 +831,7 @@ Sequence:
 
 Use temporary directories and injected home/config roots only; never touch the real home directory or require live network services. Use existing port fakes plus targeted failure injection at publication boundaries, not a new general filesystem abstraction.
 
-P15's native gate is `.github/workflows/state-contract.yml`: macOS/Linux × stable/Rust 1.89.0, the four Cargo gates, and complete `cli_json`/`update_cli` nocapture runs. Actual four-job execution is pending publication. EILSEQ and filesystem-capability omissions must remain visible and cannot count as exercised coverage; Linux must fail on a skipped non-UTF-8 CLI fixture. Do not mark this acceptance section complete from local Darwin pass totals alone.
+P15's native gate is `.github/workflows/state-contract.yml`: macOS/Linux × stable/Rust 1.89.0, the four Cargo gates, and complete `cli_json`/`update_cli` nocapture runs. All four jobs passed for repaired code head `e6a655d8f23efe315e638237ac974398d28c0d37` in [run 38109448646](https://github.com/takemo101/sksync/actions/runs/38109448646). EILSEQ and filesystem-capability omissions must remain visible and cannot count as exercised coverage; Linux must fail on a skipped non-UTF-8 CLI fixture. A later changed HEAD still requires its own successful native gate; local Darwin totals are not a substitute.
 
 Persistence/update checks:
 
