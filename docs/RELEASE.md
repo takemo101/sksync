@@ -11,7 +11,7 @@ Before a future release includes the P01–P15 changes, require:
 - Explicit reporting of EILSEQ and filesystem-capability omissions, separate from test totals. Linux must exercise the non-UTF-8 CLI fixtures; macOS skips must not be counted as exercised coverage.
 - Review of [state safety](STATE_SAFETY.md) and [update rollback/recovery limits](UPDATES.md), plus future published-manual updates before release.
 
-Native acceptance is currently **pending**. These are requirements for a separately authorized future release, not permission to change a version, tag, publish, deploy the manual, or create a PR in P15. The release remains v0.0.15.
+Native acceptance was verified for source head `ee625fcef8f580d0243e8270d90a15f40dde82a3` in [run 38110304669](https://github.com/takemo101/sksync/actions/runs/38110304669), with the [documented coverage omissions](STATE_SAFETY.md#native-acceptance). A later release candidate still requires successful native results for its own HEAD. These are requirements for a separately authorized future release, not permission to change a version, tag, publish, deploy the manual, or create a PR in P15. The release remains v0.0.15.
 
 ## Normal release
 
