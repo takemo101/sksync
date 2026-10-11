@@ -11,7 +11,7 @@ For v0.0.16 and later releases containing the P01–P15 changes, require:
 - Explicit reporting of EILSEQ and filesystem-capability omissions, separate from test totals. Linux must exercise the non-UTF-8 CLI fixtures; macOS skips must not be counted as exercised coverage.
 - Review of [state safety](STATE_SAFETY.md) and [update rollback/recovery limits](UPDATES.md), plus future published-manual updates before release.
 
-Native acceptance was verified for source head `ee625fcef8f580d0243e8270d90a15f40dde82a3` in [run 38110304669](https://github.com/takemo101/sksync/actions/runs/38110304669), with the [documented coverage omissions](STATE_SAFETY.md#native-acceptance). A later release candidate still requires successful native results for its own HEAD. The v0.0.16 candidate includes these contracts. Publishing still requires successful candidate-specific results above and explicit release authorization; an older checkpoint does not certify a changed HEAD.
+Native acceptance was verified for source head `ee625fcef8f580d0243e8270d90a15f40dde82a3` in [run 38110304669](https://github.com/takemo101/sksync/actions/runs/38110304669), with the [documented coverage omissions](STATE_SAFETY.md#native-acceptance). A later release candidate still requires successful native results for its own HEAD. v0.0.16 introduced these contracts; v0.0.17 also includes the wizard's full/selected update and read-only outdated flows. Publishing still requires successful candidate-specific results above and explicit release authorization; an older checkpoint does not certify a changed HEAD.
 
 ## Normal release
 

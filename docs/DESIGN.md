@@ -329,7 +329,7 @@ Lockfile v5 avoids machine-local absolute paths and records effective include fi
 {
   "$schema": "https://raw.githubusercontent.com/takemo101/sksync/main/schemas/sksync-lock.schema.json",
   "lockfileVersion": 5,
-  "generatedBy": "sksync@0.0.16",
+  "generatedBy": "sksync@0.0.17",
   "generatedAt": "2026-05-17T00:00:00.000Z",
   "root": ".",
   "skills": {
@@ -502,9 +502,12 @@ Example flow:
     Detach skill from agent
     Add bundle
     Remove bundle
-    Configure default agents
+    Update skills
+    Show outdated skills
     Show status
     Apply links
+    Configure default agents
+    Quit
 
 ? Skill source
   github:owner/repo/path/to/skill#main
@@ -534,6 +537,8 @@ Planned changes:
 | detach from agent | project/global scope, configured skill list, configured agent list | `remove --agent` |
 | add bundle | bundle source, manifest preview, project/global scope, agent list, plan confirmation | `bundle add` |
 | remove bundle | project/global scope, exact bundle provenance selection, plan confirmation | `bundle remove` |
+| update skills (v0.0.17) | project/global scope, all/selected mode, optional multi-selection, default-no local-edit warning | `update` |
+| outdated skills (v0.0.17) | project/global scope | human-readable `outdated` |
 | default agents | project/global scope, agent list | config update |
 | status | global scope, output detail | `list` / `check` |
 | apply | global scope, force, confirmation | `plan` -> `apply` |
@@ -553,6 +558,8 @@ Planned changes:
 - `Add bundle` loads the manifest after source entry, shows the bundle name, description, and entries, and asks the user to continue before agent selection.
 - `Remove bundle` lists exact bundle provenance choices as `name — source` so same-name bundles from different sources are never ambiguous in the wizard.
 - Bundle wizard flows stop at add/remove for the first bundle UX iteration; `bundle sync` starts as a CLI flow with dry-run preview.
+- `Update skills` previews the CLI command and confirms before replacing managed-body local edits; cancellation performs no fetch/write. Selected mode requires at least one key and the existing CLI lockfile baseline; full mode can establish a baseline. Scope flags precede `--` so dash-prefixed dependency keys remain positional.
+- `Show outdated skills` delegates to the human-readable CLI without update/apply/lockfile writes; failed probes retain partial reports and nonzero exit. An observation is not automatic approval to update.
 - Status uses `list` / `check` summaries; there is no persistent screen UI.
 
 ## 9. Safety rules

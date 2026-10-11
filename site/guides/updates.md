@@ -8,7 +8,15 @@ sksync update review browser --global # only the global config and lockfile
 
 Names are case-sensitive dependency keys, not frontmatter names, paths, bundle names, or patterns. Surrounding whitespace is trimmed; duplicates are processed once in stable name order. Unknown names, reserved `.`/`..` names, and explicit legacy `skills` entries without an install source fail before source preparation. Bundle membership does not expand the selection. No names retains full-update behavior, skipping legacy-only skills; an empty effective dependency selection succeeds without writing a lockfile.
 
-`update` has no `--force`, `--dry-run`, or `--json` flag and adds no wizard selection menu. Link diagnosis/repair remains the responsibility of `plan`, `check`, and `apply`.
+`update` has no `--force`, `--dry-run`, or `--json` flag. Link diagnosis/repair remains the responsibility of `plan`, `check`, and `apply`.
+
+## Wizard
+
+Since v0.0.17, `sksync wizard` offers `Update skills` and `Show outdated skills`. The `ask` and `tui` aliases offer the same menu.
+
+- `Update skills`: choose project/global config, then `All skills` or `Selected skills`. Selected mode uses the existing multi-skill picker and requires at least one chosen dependency key; it never falls back to an all-skills update. Both modes use the existing CLI safety checks. Full mode can establish a baseline; selected mode retains the baseline requirements below.
+- The wizard previews the command, warns that managed-body local edits will be replaced, and asks for confirmation with **no** as the default. Decline or Esc performs no fetch/write.
+- `Show outdated skills`: choose project/global config and display the existing human-readable report. It does not update/apply or write the lockfile. Remote-query failures retain the CLI's partial-report and nonzero-failure behavior; an observation does not automatically approve an update.
 
 ## Selected baseline and portable lockfile
 

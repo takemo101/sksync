@@ -251,7 +251,7 @@ sksync update review browser -g
 
 Names are case-sensitive, trimmed, and deduplicated; selecting a bundle member does not select its siblings. Explicit selections require a readable existing lockfile with entries for every unselected configured skill. Unselected bodies, sources, links, and lockfile entries remain untouched; there is no project/global fallback. Only selected content records are merged into the baseline.
 
-Preparation completes before replacing live bodies; a handled failure rolls back the whole selection and previous lockfile. Successful updates replace selected managed-body local edits. There is no `--force`, `--dry-run`, `--json`, or wizard selection for update. See [Updating dependencies](/guides/updates) for baseline, batch commit, and retained-backup recovery limits.
+Preparation completes before replacing live bodies; a handled failure rolls back the whole selection and previous lockfile. Successful updates replace selected managed-body local edits. There is no `--force`, `--dry-run`, or `--json` flag for update. Since v0.0.17, the wizard offers all/selected updates. See [Updating dependencies](/guides/updates) for baseline, batch commit, and retained-backup recovery limits.
 
 ## `sksync apply`
 
@@ -289,13 +289,20 @@ A missing optional lockfile is valid. An existing malformed lockfile, source-res
 
 ## `sksync wizard`
 
-Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, Remove bundle, default-agents, list+check, and plan+apply. Add skill can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns entered one at a time. `ask` and `tui` are compatible aliases.
+Interactive prompt flow for add / attach / detach / remove skill operations, Add bundle, Remove bundle, updates, outdated reports, default-agents, list+check, and plan+apply. Add skill can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns entered one at a time. `ask` and `tui` are compatible aliases.
 
 ```sh
 sksync wizard
 sksync ask
 sksync tui
 ```
+
+Since v0.0.17:
+
+- **Update skills**: choose project/global config, then all skills or a multi-selection. Selected updates require an existing readable lockfile baseline. The wizard previews the command and warns that managed-body local edits will be replaced; confirmation defaults to **no**. Decline or Esc performs no fetch/write; an empty selection never becomes an all-skills update.
+- **Show outdated skills**: choose project/global config and display the existing human-readable report. It does not update/apply or write the lockfile. Remote-query failures retain partial results and a nonzero exit; no automatic update follows the observation.
+
+See [Updating dependencies](/guides/updates#wizard) for the detailed flow and baseline/recovery limits.
 
 ## Safety rules
 

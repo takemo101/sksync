@@ -37,5 +37,5 @@ features:
     details: "Update only chosen dependencies with `sksync update review browser`. Inspect skills, plans, health, and upstream changes through versioned JSON; see the migration guide for the new `outdated --json` envelope."
   - icon: 🧙
     title: CLI + interactive wizard
-    details: Drive everything from the CLI, or run `sksync wizard` for a guided prompt flow to add skills, manage bundles, configure defaults, inspect status, and apply links.
+    details: Drive everything from the CLI, or run `sksync wizard` to add skills, manage bundles, update all or selected skills, show outdated skills, configure defaults, inspect status, and apply links. Updates ask for confirmation before replacing local edits.
 ---
