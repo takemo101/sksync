@@ -27,6 +27,8 @@ enum Intent {
     RemoveAgent,
     AddBundle,
     RemoveBundle,
+    Update,
+    Outdated,
     Status,
     Apply,
     ConfigureDefaultAgents,
@@ -42,6 +44,8 @@ impl fmt::Display for Intent {
             Self::RemoveAgent => "Detach skill from agent",
             Self::AddBundle => "Add bundle",
             Self::RemoveBundle => "Remove bundle",
+            Self::Update => "Update skills",
+            Self::Outdated => "Show outdated skills",
             Self::Status => "Show status",
             Self::Apply => "Apply links",
             Self::ConfigureDefaultAgents => "Configure default agents",
@@ -59,6 +63,8 @@ fn wizard_intents() -> Vec<Intent> {
         Intent::RemoveAgent,
         Intent::AddBundle,
         Intent::RemoveBundle,
+        Intent::Update,
+        Intent::Outdated,
         Intent::Status,
         Intent::Apply,
         Intent::ConfigureDefaultAgents,
@@ -82,6 +88,8 @@ pub fn run(project_root: PathBuf) -> Result<()> {
             Intent::RemoveAgent => skill::run_remove_agent(&project_root)?,
             Intent::AddBundle => bundle::run_add(&project_root)?,
             Intent::RemoveBundle => bundle::run_remove(&project_root)?,
+            Intent::Update => operations::run_update(&project_root)?,
+            Intent::Outdated => operations::run_outdated(&project_root)?,
             Intent::Status => operations::run_status(&project_root)?,
             Intent::Apply => operations::run_apply(&project_root)?,
             Intent::ConfigureDefaultAgents => default_agents::run(&project_root)?,
@@ -468,6 +476,20 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "injected command failure");
+    }
+
+    #[test]
+    fn wizard_intents_include_update() {
+        assert!(wizard_intents()
+            .iter()
+            .any(|intent| intent.to_string() == "Update skills"));
+    }
+
+    #[test]
+    fn wizard_intents_include_outdated() {
+        assert!(wizard_intents()
+            .iter()
+            .any(|intent| intent.to_string() == "Show outdated skills"));
     }
 
     #[test]

@@ -552,6 +552,8 @@ cargo run -- list -g
 
 Launch an interactive prompt wizard for add / attach / detach / remove skill flows, Add bundle, Remove bundle, default agents configuration, list+check, and plan+apply flows. The Add skill flow can choose full-package install, manifest-only (`SKILL.md`), or custom include patterns entered one at a time. `ask` and `tui` are compatible aliases.
 
+**Unreleased source additions:** `Update skills` chooses project/global config, then all skills or a multi-selection. Selected updates keep the CLI's existing lockfile-baseline requirement. Before updating, the wizard warns that managed-body local edits will be replaced and asks for confirmation (default: no); cancellation performs no update. `Show outdated skills` chooses a scope and displays the existing human-readable report without updating skills or writing the lockfile. These additions are not in the published v0.0.16 binary/manual. See [Updating dependencies](docs/UPDATES.md).
+
 ```bash
 cargo run -- wizard
 cargo run -- ask

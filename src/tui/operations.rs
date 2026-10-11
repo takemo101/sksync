@@ -1,8 +1,41 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use inquire::Select;
 
-use super::{confirm_and_run, prompt_config_scope, prompt_confirm, run_sksync};
+use super::commands::{outdated_args, update_skill_args};
+use super::config::load_config_for_scope;
+use super::{
+    confirm_and_run, prompt_config_scope, prompt_confirm, prompt_skills_from_config, run_sksync,
+};
+
+pub(super) fn run_update(project_root: &Path) -> Result<()> {
+    let scope = prompt_config_scope("Which config should be updated?")?;
+    let mode = Select::new(
+        "Which skills should be updated?",
+        vec!["All skills", "Selected skills"],
+    )
+    .with_help_message("Selected updates require an existing lockfile baseline")
+    .prompt()
+    .context("failed to read update mode")?;
+    let skills = if mode == "All skills" {
+        Vec::new()
+    } else {
+        let config = load_config_for_scope(project_root, scope)?;
+        prompt_skills_from_config(&config, "Select skill(s) to update")?
+    };
+
+    confirm_and_run(
+        project_root,
+        "Update these skills? Local edits to managed skill bodies will be replaced.",
+        update_skill_args(&skills, scope),
+    )
+}
+
+pub(super) fn run_outdated(project_root: &Path) -> Result<()> {
+    let scope = prompt_config_scope("Which config should be inspected for outdated skills?")?;
+    run_sksync(project_root, &outdated_args(scope))
+}
 
 pub(super) fn run_status(project_root: &Path) -> Result<()> {
     let global = prompt_config_scope("Which config should be inspected?")?.is_global();

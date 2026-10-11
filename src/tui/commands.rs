@@ -75,12 +75,78 @@ pub(super) fn bundle_remove_args(
     args
 }
 
+pub(super) fn update_skill_args(skills: &[String], scope: ConfigScope) -> Vec<String> {
+    let mut args = vec!["update".to_owned()];
+    if scope.is_global() {
+        args.push("--global".to_owned());
+    }
+    if !skills.is_empty() {
+        args.push("--".to_owned());
+        args.extend_from_slice(skills);
+    }
+    args
+}
+
+pub(super) fn outdated_args(scope: ConfigScope) -> Vec<String> {
+    let mut args = vec!["outdated".to_owned()];
+    if scope.is_global() {
+        args.push("--global".to_owned());
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{add_skill_args, bundle_add_args, bundle_remove_args};
+    use super::{
+        add_skill_args, bundle_add_args, bundle_remove_args, outdated_args, update_skill_args,
+    };
     use crate::tui::add_skill::PackageFilterChoice;
     use crate::tui::bundle::BundleProvenanceChoice;
     use crate::tui::ConfigScope;
+
+    #[test]
+    fn wizard_update_args_full_project() {
+        assert_eq!(update_skill_args(&[], ConfigScope::Project), vec!["update"]);
+    }
+
+    #[test]
+    fn wizard_update_args_full_global() {
+        assert_eq!(
+            update_skill_args(&[], ConfigScope::Global),
+            vec!["update", "--global"]
+        );
+    }
+
+    #[test]
+    fn wizard_update_args_selected_project_preserve_option_like_keys() {
+        assert_eq!(
+            update_skill_args(
+                &["--global".to_owned(), "review".to_owned()],
+                ConfigScope::Project,
+            ),
+            vec!["update", "--", "--global", "review"]
+        );
+    }
+
+    #[test]
+    fn wizard_update_args_selected_global_put_scope_before_separator() {
+        assert_eq!(
+            update_skill_args(
+                &["review".to_owned(), "browser".to_owned()],
+                ConfigScope::Global,
+            ),
+            vec!["update", "--global", "--", "review", "browser"]
+        );
+    }
+
+    #[test]
+    fn wizard_outdated_args_are_read_only_human_commands() {
+        assert_eq!(outdated_args(ConfigScope::Project), vec!["outdated"]);
+        assert_eq!(
+            outdated_args(ConfigScope::Global),
+            vec!["outdated", "--global"]
+        );
+    }
 
     #[test]
     fn add_skill_args_omit_include_flags_for_full_package() {
