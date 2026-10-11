@@ -10,9 +10,9 @@ Names are case-sensitive dependency keys, not frontmatter names, paths, bundle n
 
 `update` has no `--force`, `--dry-run`, or `--json` flag. Link diagnosis/repair remains the responsibility of `plan`, `check`, and `apply`.
 
-## Wizard (unreleased source)
+## Wizard
 
-The source wizard adds `Update skills` and `Show outdated skills`; the published v0.0.16 binary/manual is unchanged.
+Since v0.0.17, `sksync wizard` offers `Update skills` and `Show outdated skills`. The `ask` and `tui` aliases offer the same menu.
 
 - `Update skills`: choose project/global config, then `All skills` or `Selected skills`. Selected mode uses the existing multi-skill picker and requires at least one chosen dependency key; it never falls back to an all-skills update. Both modes use the existing CLI safety checks. Full mode can establish a baseline; selected mode retains the baseline requirements below.
 - The wizard previews the command, warns that managed-body local edits will be replaced, and asks for confirmation with **no** as the default. Decline or Esc performs no fetch/write.
